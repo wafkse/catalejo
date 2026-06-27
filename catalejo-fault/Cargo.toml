@@ -1,0 +1,21 @@
+[package]
+name = "catalejo-fault"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+build = "build/build.rs"
+
+[lib]
+
+[dependencies]
+catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
+tokel = "0.2.4"
+
+[build-dependencies]
+bindgen = "0.72.1"
+cc = "1.2.65"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+libc = "0.2.186"
