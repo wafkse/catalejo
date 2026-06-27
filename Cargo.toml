@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["catalejo","catalejo-fault", "catalejo-memory","catalejo-sys"]
