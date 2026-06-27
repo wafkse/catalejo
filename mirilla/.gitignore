@@ -1,0 +1,25 @@
+# Kernel module build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.o.d
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+.module-common.o
+*.unsigned
+
+compile_commands.json
+
+.cache
+
+# Backup files
+*~
+*.swp
+*.swo
+
+# Test Suite Binaries
+test-suite

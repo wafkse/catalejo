@@ -1,0 +1,19 @@
+CompileFlags:
+    Remove:
+        - -fconserve-stack
+        - -fdiagnostics-show-context=*
+        - -falign-jumps=*
+        - -fmin-function-alignment=*
+        - -falign-loops=*
+        - -fno-allow-store-data-races
+        - -fzero-init-padding-bits=all
+        - -mrecord-mcount
+        - -mindirect-branch=*
+        - -mfunction-return=*
+        - -mindirect-branch-register
+        - -mpreferred-stack-boundary=*
+
+Diagnostics:
+    Suppress:
+        - "pp_including_mainfile_in_preamble"
+        - "err_pp_error"
