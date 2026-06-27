@@ -1,0 +1,3 @@
+/target
+# For clang-based LSP:
+/compile_commands.json
