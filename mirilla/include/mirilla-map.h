@@ -25,6 +25,7 @@
 #include <linux/kref.h>
 #include <linux/mm.h>
 #include <linux/mmu_notifier.h>
+#include <linux/mutex.h>
 #include <linux/pid.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -307,6 +308,23 @@ MIRILLA_CONTEXT_DEFINE(
        * List of pinned pages for this peephole.
        */
 		struct xarray page_list;
+
+		/*
+       * Serializes peephole-VMA PTE installs against the interval-notifier
+       * invalidate callback.
+       *
+       * The fault path holds this across `mmu_interval_read_retry()` and the
+       * `vmf_insert_mixed()` install; the invalidate callback holds it across
+       * `mmu_interval_set_seq()` and the PTE/pin teardown. This is the "user
+       * provided lock" the `mmu_interval_read_*` API mandates be held by both
+       * sides so a racing install cannot slip past a collision.
+       *
+       * A plain mutex suffices: the expensive `pin_user_pages_remote()` runs
+       * outside it, real contention is low (pinned pages block kernel-initiated
+       * invalidation, so only explicit target unmaps race an install), and each
+       * page faults just once before its PTE persists.
+       */
+		struct mutex install_lock;
 
 		/*
        *  The Read-Copy-Update callback for this peephole.

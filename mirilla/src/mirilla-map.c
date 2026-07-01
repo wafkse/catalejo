@@ -101,6 +101,8 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_peephole)
 
 	xa_init(&target_context->page_list);
 
+	mutex_init(&target_context->install_lock);
+
 	return error_code;
 }
 
@@ -147,6 +149,8 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 
 	/*
 	 * If the whole interval subscription is being released, we prematurely kill the peephole.
+	 * The page teardown itself rides on the ordinary unmap invalidations that
+	 * `exit_mmap` emits over the range as the target address space is destroyed.
 	 */
 	if (range->event == MMU_NOTIFY_RELEASE) {
 		atomic_set_release(&peephole_context->peephole_state, MIRILLA_PEEPHOLE_STATE_DEAD);
@@ -154,14 +158,38 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 		return true;
 	}
 
+	/*
+	 * Both the seqcount hand-off (`mmu_interval_set_seq`) and the zap
+	 * (`unmap_mapping_range`) below require `install_lock`, which is sleepable.
+	 * A non-blockable invalidation can take neither, so bounce it and let the
+	 * caller retry in blockable context.
+	 */
+	if (!mmu_notifier_range_blockable(range))
+		return /* needed to block but couldn't! */ false;
+
+	mutex_lock(&peephole_context->install_lock);
+
+	/*
+	 * Publish the collision under the same lock the fault path holds across
+	 * `mmu_interval_read_retry()`. This is the ordering hinge: a racing fault
+	 * either observes the advanced sequence and retries, or it has already
+	 * installed its PTE (and stored its pin) before we reach the zap below, so
+	 * the zap tears that install down. Without this call the per-subscription
+	 * sequence never advances and `read_retry` can never report a collision.
+	 */
+	mmu_interval_set_seq(target_subscribe, sequence_count);
+
 	unsigned long range_start = range->start, range_end = range->end;
 
 	/*
 	 * Is this event meant for this peephole?
 	 */
 	if (peephole_context->start_address >= range_end ||
-	    peephole_context->end_address <= range_start)
+	    peephole_context->end_address <= range_start) {
+		mutex_unlock(&peephole_context->install_lock);
+
 		return true;
+	}
 
 	unsigned long overlap_start = range_start > peephole_context->start_address ?
 					      range_start :
@@ -177,12 +205,6 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 	MIRILLA_LOG("invalidate: range: [0x%lx, 0x%lx) local range: [0x%lx, 0x%lx "
 		     "+ 0x%lx)",
 		     range_start, range_end, region_start, region_start, region_end);
-
-	/*
-	 * `unmap_mapping_range` can potentially block, so this is required.
-	 */
-	if (!mmu_notifier_range_blockable(range))
-		return /* needed to block but couldn't! */ false;
 
 	{
 		unsigned long page_offset;
@@ -206,6 +228,8 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 		unmap_mapping_range(peephole_context->file->f_mapping, region_start, region_length,
 				    1);
 
+	mutex_unlock(&peephole_context->install_lock);
+
 	return true;
 }
 
@@ -221,7 +245,6 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	int page_count = 0;
 	struct page *target_page = NULL;
 
-	// NOTE: We read-lock the mmap by-default.
 	int mmap_read_locked = true;
 
 	/*
@@ -262,19 +285,41 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	if (target_page) {
 		unsigned long pfn = page_to_pfn(target_page);
 
-		put_page(target_page);
+		vm_fault_t insert_outcome;
+		unsigned int reclaim_flags;
+
+		mutex_lock(&peephole_context->install_lock);
 
 		/*
-		 * If an invalidation raced us since `notifier_seq` was sampled, do
-		 * not install a possibly-stale PTE; re-fault instead. This narrows
-		 * but does not fully close the window: a complete fix would re-check
-		 * under the destination page-table lock, which `vmf_insert_mixed`
-		 * does not expose.
+		 * With `install_lock` held, this retry check is atomic against the
+		 * invalidate callback's `mmu_interval_set_seq()` (taken under the same
+		 * lock). A collision means the cached pin is being (or has been) torn
+		 * down, so drop the transient ref and re-fault rather than install a
+		 * stale PFN.
 		 */
-		if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq))
-			return VM_FAULT_NOPAGE;
+		if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
+			mutex_unlock(&peephole_context->install_lock);
 
-		return vmf_insert_mixed(vma, vmf->address, pfn);
+			put_page(target_page);
+
+			return VM_FAULT_NOPAGE;
+		}
+
+		/*
+		 * `vmf_insert_mixed()` may allocate a page table with a reclaiming
+		 * GFP. Reclaim of an unpinned page in our own interval would invoke
+		 * the invalidate callback, which blocks on the lock held here ->
+		 * self-deadlock. Fence the install off from reclaim.
+		 */
+		reclaim_flags = memalloc_noreclaim_save();
+		insert_outcome = vmf_insert_mixed(vma, vmf->address, pfn);
+		memalloc_noreclaim_restore(reclaim_flags);
+
+		mutex_unlock(&peephole_context->install_lock);
+
+		put_page(target_page);
+
+		return insert_outcome;
 	}
 
 	if (!mmget_not_zero(peephole_context->address_space))
@@ -324,32 +369,61 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 						  target_address);
 		}
 
+	mutex_lock(&peephole_context->install_lock);
+
 	/*
-	 * Validate against a racing invalidation before caching/installing the
-	 * freshly pinned page (see the cached-path note above).
+	 * Atomic against the invalidate callback (see the cached path). On a
+	 * collision the freshly pinned page has already been superseded, so drop
+	 * the pin and re-fault against whatever the target now maps.
 	 */
 	if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
+		mutex_unlock(&peephole_context->install_lock);
+
 		unpin_user_page(target_page);
 
 		return VM_FAULT_NOPAGE;
 	}
 
-	void *target_value =
-		xa_store(&peephole_context->page_list, relative_address, target_page, GFP_KERNEL);
+	{
+		void *target_value;
 
-	if (xa_is_err(target_value)) {
-		unpin_user_page(target_page);
+		vm_fault_t insert_outcome;
+		unsigned int reclaim_flags;
 
-		MIRILLA_ERROR_AND_RETURN(VM_FAULT_OOM,
-					  "page fault: failed to track page at address "
-					  "0x%lx",
-					  target_address);
+		/*
+		 * Publish the pin and install the PTE together under the lock: the
+		 * invalidate callback either misses both (and the `read_retry` above
+		 * caught the collision), or, ordered after us, finds the xarray entry
+		 * to unpin and the installed PTE to zap. `GFP_NOWAIT` keeps the store
+		 * from re-entering reclaim; `vmf_insert_mixed()` is fenced off from
+		 * reclaim for the same reason (reclaim would call our own invalidate
+		 * callback, which blocks on `install_lock`).
+		 */
+		target_value = xa_store(&peephole_context->page_list, relative_address, target_page,
+					GFP_NOWAIT);
+
+		if (xa_is_err(target_value)) {
+			mutex_unlock(&peephole_context->install_lock);
+
+			unpin_user_page(target_page);
+
+			MIRILLA_ERROR_AND_RETURN(VM_FAULT_OOM,
+						  "page fault: failed to track page at address "
+						  "0x%lx",
+						  target_address);
+		}
+
+		if (target_value)
+			unpin_user_page(target_value);
+
+		reclaim_flags = memalloc_noreclaim_save();
+		insert_outcome = vmf_insert_mixed(vma, vmf->address, page_to_pfn(target_page));
+		memalloc_noreclaim_restore(reclaim_flags);
+
+		mutex_unlock(&peephole_context->install_lock);
+
+		return insert_outcome;
 	}
-
-	if (target_value)
-		unpin_user_page(target_value);
-
-	return vmf_insert_mixed(vma, vmf->address, page_to_pfn(target_page));
 }
 
 void mirilla_map_peephole_vm_open(struct vm_area_struct *vma)
