@@ -519,6 +519,9 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 	if (argument->end_address <= argument->start_address)
 	    MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad peephole address range");
 
+	if (!PAGE_ALIGNED(argument->start_address) || !PAGE_ALIGNED(argument->end_address))
+        MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad peephole address range: not pagesize aligned");
+
 	rcu_read_lock();
 	if (!(target_context = xa_load(&device_context->map_target_list, target_id))) {
 		rcu_read_unlock();
