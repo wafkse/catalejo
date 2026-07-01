@@ -7,6 +7,7 @@
 #include "linux/pid.h"
 #include "linux/pid_types.h"
 #include "linux/sched.h"
+#include "linux/sched/signal.h"
 #include "linux/sched/task.h"
 #include "mirilla-id.h"
 #include "mirilla-log.h"
@@ -438,12 +439,14 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 
 	struct pid *target_pid = NULL;
 
-	if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
-		MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
-
 	if (!(target_pid = find_get_pid(argument->process_id)))
 		MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find process with pid %d",
 					  argument->process_id);
+
+	/* NOTE: Allow self-engagement if the target process id corresponds to the current thread group. */
+	if (target_pid != task_tgid(current))
+	    if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
+				MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
 
 	struct mirilla_map_target_context *target_context = NULL;
 
@@ -552,6 +555,7 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 		MIRILLA_ERROR_AND_RETURN(-ESRCH, "map target id task has no associated address "
 						  "space");
 	}
+
 	// NOTE: Take a `mm_count` reference from an active `mm_users` one.
 	mmgrab(target_space);
 
