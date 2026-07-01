@@ -12,10 +12,7 @@ use catalejo_fault::{
     ffi::Subsystem,
     maybe::{MaybeFault, Opaque},
 };
-use catalejo_sys::{
-    ffi::{self},
-    id::PeepholeId,
-};
+use catalejo_sys::{ffi, id::PeepholeId};
 use nix::sys::mman::{MapFlags, ProtFlags};
 
 use crate::{
