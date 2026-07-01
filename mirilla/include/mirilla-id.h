@@ -13,6 +13,8 @@
 
 /*
  * A generic monotonic identifier type.
+ *
+ * NOTE(invariant): These must never be zero.
  */
 typedef MIRILLA_ID_TYPE_NAME mirilla_id_t;
 
@@ -22,13 +24,14 @@ typedef MIRILLA_ID_TYPE_NAME mirilla_id_t;
 
 /*
  * Atomic type with the same bits as an identifier.
+ *
+ * NOTE(invariant): These must never be zero.
  */
 typedef atomic64_t mirilla_atomic_id_t;
 
-static_assert(sizeof(mirilla_id_t) == sizeof(mirilla_atomic_id_t),
-              "size missmatch between "
-              "atomic and non-atomic "
-              "integer ID primitive");
+static_assert(sizeof(mirilla_id_t) == sizeof(mirilla_atomic_id_t), "size missmatch between "
+								   "atomic and non-atomic "
+								   "integer ID primitive");
 
 #endif /* __KERNEL__ */
 
