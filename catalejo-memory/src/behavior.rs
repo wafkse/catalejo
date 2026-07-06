@@ -7,6 +7,7 @@ use core::mem::MaybeUninit;
 /// By "immortal", this denotes a type that is fixed in size and has no lifetime dependencies.
 pub trait Immortal: Sized + 'static {}
 
+/// Blanket implementation for all "immortal" types.
 impl<I> Immortal for I where I: Sized + 'static {}
 
 /// A trait that models an unassociated (i.e., no attached lifetime, immortal), trivially-copiable type that can be read from memory.
@@ -41,7 +42,7 @@ impl<I> Immortal for I where I: Sized + 'static {}
 /// - The alignment for the type you're reading is correct.
 /// - The type itself or individual primitive components do not cross cacheline boundaries.
 ///
-/// If these concerns are not satifies, the data remains safe to read, but may prove of little use due to low validity.
+/// If these concerns are not satified, the data remains safe to read, but may prove of little use due to low validity.
 pub unsafe trait Unassociated: Immortal + Copy {}
 
 // SAFETY: If `T` implements `Unassociated`, `MaybeUninit` does too.
