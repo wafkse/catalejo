@@ -19,6 +19,9 @@ pub mod peephole;
 
 pub mod address;
 
+pub mod context;
+
+
 pub mod prelude {
     //! The prelude of the `catalejo` crate.
 

@@ -1,6 +1,7 @@
 //! In-memory peephole module.
 
 use alloc::sync::Arc;
+use catalejo_memory::prelude::Unassociated;
 use core::{alloc::Layout, marker, num::NonZero, ptr::NonNull};
 use std::{
     io::{self, ErrorKind},
@@ -39,7 +40,7 @@ pub struct Peephole {
 impl Peephole {
     /// Create a peephole into the target at the specified virtual address range.
     #[inline]
-    pub fn view(target_context: Target, address_range: ViRange) -> io::Result<Self> {
+    pub fn view(target_context: &Target, address_range: ViRange) -> io::Result<Self> {
         let ViRange {
             start_address: ViAddr(start_address),
             end_address: ViAddr(end_address),
@@ -144,6 +145,14 @@ impl Peephole {
         } else {
             None
         }
+    }
+
+    /// Fabricate a reference to then underlying window area.
+    #[inline]
+    pub fn window(&self) -> Arc<Window> {
+        let Self { target_window, .. } = self;
+
+        Arc::clone(target_window)
     }
 }
 

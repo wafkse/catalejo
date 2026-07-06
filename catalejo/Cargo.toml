@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 catalejo-fault = { path = "../catalejo-fault", version = "0.1.0" }
 catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
 catalejo-sys = { path = "../catalejo-sys", version = "0.1.0" }
+dashmap = "6.2.1"
 libc = "0.2.186"
 nix = { version = "0.31.3", features = ["mman"] }
 tracing = "0.1.44"
