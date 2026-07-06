@@ -34,7 +34,9 @@ unsafe impl Faultable for Opaque {
 /// This may be due to an unpopulated page table, bad access to the underlying page table, or any other hardware exception that is signaled via
 /// a `SIGBUS` or `SIGSEGV` signal to the faulting thread.
 ///
-/// This is `repr(transparent)` over the managed [`NonZero`]`<usize>` address. It stores a bare, provenance-free address rather than a live pointer. At the point of access the address is reconstituted into a pointer carrying *exposed* provenance, under which memory outside the Rust abstract machine, such as this MMU-adjudicated foreign region disjoint from the stack, heap, and statics, is always accessible.
+/// This is `repr(transparent)` over the managed [`NonZero`] `<usize>` address. It stores a bare, provenance-free address rather than a live pointer. At
+/// the point of access the address is reconstituted into a pointer carrying *exposed* provenance, under which memory outside the Rust abstract machine,
+/// such as this MMU-adjudicated foreign region disjoint from the stack, heap, and statics, is always accessible.
 ///
 /// ## Remarks
 ///
@@ -72,8 +74,6 @@ where
 {
     /// Read from the maybe-fault pointer.
     ///
-    /// This is identical to a volatile memory read.
-    ///
     /// # Safety
     ///
     /// See [`ffi::read`] for safety concerns.
@@ -91,8 +91,6 @@ where
     }
 
     /// Write to the maybe-fault pointer. Returns *true* if the write did *not fault*, *false* otherwise.
-    ///
-    /// This is identical to a volatile memory read.
     ///
     /// # Safety
     ///
