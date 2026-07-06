@@ -221,7 +221,7 @@ where
     /// Attempt to read a [`Faultable`] `F` from the foreign address space.
     ///
     /// This is a fault-protected, machine-word-coherent read of the foreign window. A [`Some`]
-    /// holds the value observed at the instant of the read; a [`None`] denotes that the read
+    /// holds the value observed at the instant of the read, a [`None`] denotes that the read
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
     pub fn read(&self, target_subsystem: Subsystem) -> Option<F> {
