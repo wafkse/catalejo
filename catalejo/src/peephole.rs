@@ -211,7 +211,8 @@ impl Drop for Window {
 // NOTE(invariant): Offset is in-bounds and properly aligned for `F`.
 pub struct Foreign<'a, F>(&'a Peephole, Offset, marker::PhantomData<F>)
 where
-    F: Faultable;
+    // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
+    F: Unassociated;
 
 impl<'a, F> Foreign<'a, F>
 where
