@@ -1,11 +1,15 @@
 #define _GNU_SOURCE
 
+#include <stdint.h>
 #include <stddef.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+
 #include <signal.h>
 #include <sched.h>
 
+#include "catalejo-macro.h"
+#include "catalejo-section.h"
 #include "catalejo-fault.h"
 #include "catalejo-signal.h"
 
@@ -15,6 +19,7 @@ static atomic_int catalejo_initialize_state = CATALEJO_INITIALIZE_STATE_UNINITIA
  * Initialize the catalejo-fault environment.
  *
  * This attempts to initialize the environment in which the fault-handling semantics are to be performed.
+ *
  * Particularly, this sets up the signal handlers in a lazy yet thread-safe manner.
  */
 catalejo_faultable_outcome_t catalejo_fault_initialize() {
@@ -85,7 +90,8 @@ catalejo_faultable_outcome_t catalejo_fault_initialize() {
 
 #define X(target_typename, target_type, target_mnemonic, target_register,      \
           target_register32) \
-    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename) (CATALEJO_UNUSED const target_type *target_source,         \
+    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename) \
+                           (CATALEJO_UNUSED const target_type *target_source,         \
                             CATALEJO_UNUSED target_type *target_value) { \
         __asm__ volatile( \
             /* %rdi = target_source, %rsi = target_value */ \
@@ -109,7 +115,8 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 #define X(target_typename, target_type, target_mnemonic, target_register,      \
           target_register32) \
-    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename) (CATALEJO_UNUSED target_type * target_value,             \
+    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename) \
+                          (CATALEJO_UNUSED target_type * target_value,             \
                            CATALEJO_UNUSED const target_type *target_source) { \
         __asm__ volatile( \
             /* %rdi = target_value, %rsi = target_source */ \
@@ -130,3 +137,33 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
+
+FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_destination,
+                                                                CATALEJO_UNUSED const uint8_t *target_source,
+                                                                CATALEJO_UNUSED size_t target_count) {
+    __asm__ volatile(
+        /* %rdi = target_destination, %rsi = target_source, %rdx = target_count.
+           This is already the register layout `rep movsb` expects (destination
+           in %rdi, source in %rsi, count in %rcx), so no shuffling is needed
+           beyond seeding the counter. */
+
+        /* NOTE: The System V ABI guarantees a clear direction flag (RFLAGS.DF=0) on entry, but
+         * we re-assert it so the copy advances forward. */
+        "cld\n\t"
+
+        /* NOTE: Seed the string-operation counter with the byte count. */
+        "movq %rdx, %rcx\n\t"
+
+        /* NOTE: [%rdi] = [%rsi] for %rcx bytes. A page fault on either side is
+           restartable, as %rcx holds the remaining count at the faulting byte. */
+        "rep movsb\n\t"
+
+        /* NOTE: Reached only on full success, where %rcx has drained to zero, we
+           surface it as the (zero) remaining count in the second return value. */
+        "movq %rcx, %rdx\n\t"
+
+        /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */
+        "xorl %eax, %eax\n\t"
+        "ret\n\t"
+    );
+}

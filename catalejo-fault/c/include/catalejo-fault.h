@@ -2,6 +2,7 @@
 #define _CATALEJO_FAULT_H_
 
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "catalejo-macro.h"
@@ -68,6 +69,33 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
+
+/**
+ * Structure to be used to report back after a stream read-write operation.
+ */
+typedef struct catalejo_faultable_copy_outcome {
+  /**
+   * The status of the operation.
+   *
+   * NOTE(invariant): This should be contained in the `%rax` register.
+   */
+  catalejo_faultable_outcome_t outcome_status;
+
+  /**
+   * The count of affected bytes, depending on the operation performed.
+   *
+   * NOTE(invariant): This should be contained in the `%rdx` register.
+   */
+  uint64_t byte_count;
+} catalejo_faultable_copy_outcome_t;
+
+/**
+ * Perform a bulk-copy that is fault-protected.
+ */
+extern FAULT_ROUTINE catalejo_faultable_copy_outcome_t
+catalejo_copy(CATALEJO_UNUSED uint8_t *target_destination,
+              CATALEJO_UNUSED const uint8_t *target_source,
+              CATALEJO_UNUSED size_t target_count);
 
 #ifdef __cplusplus
 }

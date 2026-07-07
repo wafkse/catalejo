@@ -41,6 +41,14 @@ void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *tar
         // NOTE: Override the `%rax` register, as it is used for the first return value as per the System V ABI.
         machine_context->gregs[REG_RAX] = CATALEJO_OUTCOME_ERROR;
 
+        // NOTE: Copy the string-operation counter register (`%rcx`) into `%rdx`,
+        // as this is required to report a complete `struct catalejo_faultable_copy_outcome`
+        // to the caller via the (`%rax`, `%rdx`) pair.
+        //
+        // The second System V integer return value is not used in the non-copy routine, which guarantees
+        // that performing this unconditionally is safe as long as done in the respective `%rip` range.
+        machine_context->gregs[REG_RDX] = machine_context->gregs[REG_RCX];
+
         return;
     }
 
