@@ -93,7 +93,7 @@ typedef struct catalejo_faultable_copy_outcome {
  * Perform a bulk-copy that is fault-protected.
  */
 extern FAULT_ROUTINE catalejo_faultable_copy_outcome_t
-catalejo_copy(CATALEJO_UNUSED uint8_t *target_destination,
+catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
               CATALEJO_UNUSED const uint8_t *target_source,
               CATALEJO_UNUSED size_t target_count);
 

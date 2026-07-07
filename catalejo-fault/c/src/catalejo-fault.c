@@ -138,7 +138,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
-FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_destination,
+FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
                                                                 CATALEJO_UNUSED const uint8_t *target_source,
                                                                 CATALEJO_UNUSED size_t target_count) {
     __asm__ volatile(
