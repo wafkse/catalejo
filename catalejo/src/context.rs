@@ -40,7 +40,7 @@ pub enum Granunality {
     /// A `1 GiB` peephole range.
     ///
     /// It is recommended to use [`Granularity::Hugepage`] instead.
-    HumongousPage = 1 * 1024 * 1024 * 1024 - 1,
+    HumongousPage = 1024 * 1024 * 1024 - 1,
 }
 
 impl Granunality {
@@ -106,11 +106,9 @@ impl Manager {
             Offset::byte(peephole_size.offset(target_address).unwrap() as _),
         );
 
-        if let Some(target_peephole) = target_mapping.get(&peephole_base) {
-            Some(target_closure(target_peephole.value(), peephole_offset))
-        } else {
-            None
-        }
+        target_mapping
+            .get(&peephole_base)
+            .map(|target_peephole| target_closure(target_peephole.value(), peephole_offset))
     }
 
     /// Find or emplace (as in, create) the peephole relevant to the target address, invoking a closure with the peephole and local offset.

@@ -96,7 +96,7 @@ impl Target {
         let Self(target_device, target_id) = self;
 
         // SAFETY: The provided file descriptor was created by "mirilla".
-        let _ = unsafe { ffi::command::disengage(target_device, target_id)? };
+        unsafe { ffi::command::disengage(target_device, target_id)? };
 
         Ok(())
     }

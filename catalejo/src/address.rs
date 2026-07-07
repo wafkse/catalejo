@@ -2,8 +2,7 @@
 
 // FIXME(arch): This assumes 64-bit canonical virtual addresses. Will need to
 
-use core::num::NonZero;
-use std::mem;
+use core::{mem, num::NonZero};
 
 use catalejo_sys::ffi;
 
@@ -50,10 +49,8 @@ impl ViRange {
         end_address
             .checked_sub(start_address)
             .map(usize::try_from)
-            .map(Result::ok)
-            .flatten()
-            .map(NonZero::<usize>::new)
-            .flatten()
+            .and_then(Result::ok)
+            .and_then(NonZero::<usize>::new)
     }
 }
 
