@@ -316,11 +316,57 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		return insert_outcome;
 	}
 
-	if (!mmget_not_zero(peephole_context->address_space))
-		MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
-							   "in teardown");
+	/*
+	 * NOTE(lock): Self-peephole. The target is the faulting task's own mm,
+	 * whose `mmap_lock` we already hold from the outer fault. Re-acquiring it
+	 * would recurse, and the unlockable retry in `pin_user_pages_remote()` can
+	 * drop then blocking-reacquire it and self-deadlock against a queued
+	 * writer. Reuse the held lock and pin with `locked == NULL`.
+	 */
+	if (peephole_context->address_space == current->mm) {
+		/*
+		 * NOTE(lock): Under a per-VMA lock we do not hold `mmap_lock`, breaking
+		 * the above (and GUP's `mmap_assert_locked()`). Bounce to the
+		 * `mmap_lock` path.
+		 */
+		if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+			return VM_FAULT_RETRY;
 
-	if (!mmap_read_trylock(peephole_context->address_space)) {
+		/* NOTE(lifetime): Re-check liveness under the held lock. */
+		if (atomic_read_acquire(&peephole_context->peephole_state) ==
+		    MIRILLA_PEEPHOLE_STATE_DEAD)
+			MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
+
+		page_count = pin_user_pages_remote(current->mm, target_address, 1,
+						   /*gup_flags=*/0, &target_page, NULL);
+	} else {
+		if (!mmget_not_zero(peephole_context->address_space))
+			MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
+								   "in teardown");
+
+		if (!mmap_read_trylock(peephole_context->address_space)) {
+			mmput(peephole_context->address_space);
+
+			MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
+								  "space lock is unavailable");
+		}
+
+		/* NOTE(lifetime): Re-check liveness. */
+		if (atomic_read_acquire(&peephole_context->peephole_state) ==
+		    MIRILLA_PEEPHOLE_STATE_DEAD) {
+			mmap_read_unlock(peephole_context->address_space);
+
+			mmput(peephole_context->address_space);
+
+			MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
+		}
+
+		page_count = pin_user_pages_remote(peephole_context->address_space, target_address, 1,
+						   /*gup_flags=*/0, &target_page, &mmap_read_locked);
+
+		if (mmap_read_locked)
+			mmap_read_unlock(peephole_context->address_space);
+
 		mmput(peephole_context->address_space);
 	}
 #undef MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN
