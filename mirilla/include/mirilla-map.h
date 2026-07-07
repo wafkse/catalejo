@@ -1,5 +1,5 @@
 /*
- * TODO: Docs
+ * NOTE(docs): Module documentation is pending.
  */
 
 #ifndef _MIRILLA_MAP_H_
@@ -124,8 +124,8 @@ MIRILLA_MAP_CONTEXT_LIST
 #ifdef __KERNEL__
 
 /*
- * NOTE: Avoid multi-page `copy_{to,from}_user` for input-output intermediate
- * structures.
+ * NOTE(invariant): Avoid multi-page `copy_{to,from}_user` for input-output
+ * intermediate structures.
  */
 #define MIRILLA_ASSERT_IO_SIZE(name) \
 	static_assert(sizeof(union mirilla_map_##name##_io) <= PAGE_SIZE, "IO too large: " #name)
@@ -133,7 +133,7 @@ MIRILLA_MAP_CONTEXT_LIST
 #else
 
 /*
- * HACK: Bindgen doesn't seem to like `static_assert`.
+ * NOTE(workaround): Bindgen dislikes `static_assert`.
  */
 #define MIRILLA_ASSERT_IO_SIZE(name)
 
@@ -310,19 +310,15 @@ MIRILLA_CONTEXT_DEFINE(
 		struct xarray page_list;
 
 		/*
-       * Serializes peephole-VMA PTE installs against the interval-notifier
-       * invalidate callback.
-       *
-       * The fault path holds this across `mmu_interval_read_retry()` and the
-       * `vmf_insert_mixed()` install; the invalidate callback holds it across
-       * `mmu_interval_set_seq()` and the PTE/pin teardown. This is the "user
-       * provided lock" the `mmu_interval_read_*` API mandates be held by both
-       * sides so a racing install cannot slip past a collision.
-       *
-       * A plain mutex suffices: the expensive `pin_user_pages_remote()` runs
-       * outside it, real contention is low (pinned pages block kernel-initiated
-       * invalidation, so only explicit target unmaps race an install), and each
-       * page faults just once before its PTE persists.
+       * NOTE(lock): Serializes peephole-VMA PTE installs against the
+       * interval-notifier invalidate callback. The fault path holds it
+       * across `mmu_interval_read_retry()` and the `vmf_insert_mixed()`
+       * install, and the invalidate callback holds it across
+       * `mmu_interval_set_seq()` and the PTE and pin teardown. This is the
+       * user-provided lock the `mmu_interval_read_*` API mandates on both
+       * sides so a racing install cannot slip past a collision. A plain
+       * mutex suffices because `pin_user_pages_remote()` runs outside it
+       * and contention is low.
        */
 		struct mutex install_lock;
 
@@ -351,12 +347,9 @@ mirilla_map_handle_command(struct mirilla_device_context *device_context,
 			    mirilla_command_t command, mirilla_command_argument_t argument);
 
 /*
- * The minimum set of capabilities that an engagement author process must
- * posess.
- *
- * `CAP_SYS_PTRACE` is deemed appropiate as it permits the same access scope to
- * the system: unfettered use of `process_vm_{read,write}v` on arbitrary
- * processes.
+ * NOTE(security): The minimum capability an engagement author must hold.
+ * `CAP_SYS_PTRACE` is appropriate because it already grants the same access
+ * scope, namely unfettered `process_vm_{read,write}v` on arbitrary processes.
  */
 #define MIRILLA_MAP_ENGAGE_CAPABILITIES (CAP_SYS_PTRACE)
 

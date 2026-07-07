@@ -12,8 +12,10 @@
 
 #define CLASS_NAME MIRILLA_DEVICE_NAME
 
-// NOTE: Allow the kernel to assign a major number to us. We do not care about
-// the minor number.
+/*
+ * NOTE(invariant): A zero major requests a kernel-assigned number. The minor
+ * is irrelevant.
+ */
 #define MIRILLA_CHARACTER_DEVICE_MAJOR 0x00
 #define MIRILLA_CHARACTER_DEVICE_MINOR 0x00
 

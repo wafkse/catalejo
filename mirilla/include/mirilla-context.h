@@ -19,7 +19,7 @@
                                                                                \
     if (!(___target_value = refcount_inc_not_zero(                             \
               MIRILLA_CONTEXT_REFERENCE_COUNT_FIELD(context_structure))))     \
-      /* NOTE: No bail attempt here, as this happening indicates very bad      \
+      /* NOTE(invariant): No bail here. It indicates very bad      \
        * memory corruption going on. */                                        \
       MIRILLA_ERROR(MIRILLA_LOG_PREFIX_LIFETIME                              \
                      "attempted to take reference "                            \

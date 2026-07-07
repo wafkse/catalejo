@@ -8,7 +8,7 @@
 #include "mirilla-context.h" // IWYU pragma: export
 #include "mirilla-id.h" // IWYU pragma: export
 
-// NOTE: Same class name and device name are used.
+/* NOTE(invariant): The class name and device name are the same. */
 #define MIRILLA_DEVICE_NAME "mirilla"
 
 #ifdef __KERNEL__

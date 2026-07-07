@@ -148,9 +148,9 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 		target_subscribe, struct mirilla_map_peephole_context, interval_subscribe);
 
 	/*
-	 * If the whole interval subscription is being released, we prematurely kill the peephole.
-	 * The page teardown itself rides on the ordinary unmap invalidations that
-	 * `exit_mmap` emits over the range as the target address space is destroyed.
+	 * NOTE(lifetime): A full-interval release prematurely kills the peephole.
+	 * Page teardown rides on the ordinary unmap invalidations `exit_mmap`
+	 * emits over the range.
 	 */
 	if (range->event == MMU_NOTIFY_RELEASE) {
 		atomic_set_release(&peephole_context->peephole_state, MIRILLA_PEEPHOLE_STATE_DEAD);
@@ -159,30 +159,27 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 	}
 
 	/*
-	 * Both the seqcount hand-off (`mmu_interval_set_seq`) and the zap
-	 * (`unmap_mapping_range`) below require `install_lock`, which is sleepable.
-	 * A non-blockable invalidation can take neither, so bounce it and let the
-	 * caller retry in blockable context.
+	 * NOTE(lock): The seqcount hand-off and the zap below both need the
+	 * sleepable `install_lock`. A non-blockable invalidation can take neither,
+	 * so bounce it for a blockable retry.
 	 */
 	if (!mmu_notifier_range_blockable(range))
-		return /* needed to block but couldn't! */ false;
+		return /* NOTE(lock): had to block, could not */ false;
 
 	mutex_lock(&peephole_context->install_lock);
 
 	/*
-	 * Publish the collision under the same lock the fault path holds across
-	 * `mmu_interval_read_retry()`. This is the ordering hinge: a racing fault
-	 * either observes the advanced sequence and retries, or it has already
-	 * installed its PTE (and stored its pin) before we reach the zap below, so
-	 * the zap tears that install down. Without this call the per-subscription
-	 * sequence never advances and `read_retry` can never report a collision.
+	 * NOTE(coherence): Advance the sequence under the same lock the fault path
+	 * holds across `mmu_interval_read_retry()`. A racing fault either observes
+	 * the bump and retries, or has already installed its PTE for the zap below
+	 * to tear down.
 	 */
 	mmu_interval_set_seq(target_subscribe, sequence_count);
 
 	unsigned long range_start = range->start, range_end = range->end;
 
 	/*
-	 * Is this event meant for this peephole?
+	 * NOTE(bounds): Does this event overlap this peephole?
 	 */
 	if (peephole_context->start_address >= range_end ||
 	    peephole_context->end_address <= range_start) {
@@ -248,7 +245,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	int mmap_read_locked = true;
 
 	/*
-	 * Sequence sampled from the interval notifier, used to detect an
+	 * NOTE(coherence): Sampled from the interval notifier to detect an
 	 * invalidation that races this fault before a page is installed.
 	 */
 	unsigned long notifier_seq;
@@ -281,7 +278,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		rcu_read_unlock();
 	}
 
-	/* NOTE: If the page was cached, insert it into the VMA. */
+	/* NOTE(fault): Cached hit, insert the page into the VMA. */
 	if (target_page) {
 		unsigned long pfn = page_to_pfn(target_page);
 
@@ -291,11 +288,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		mutex_lock(&peephole_context->install_lock);
 
 		/*
-		 * With `install_lock` held, this retry check is atomic against the
-		 * invalidate callback's `mmu_interval_set_seq()` (taken under the same
-		 * lock). A collision means the cached pin is being (or has been) torn
-		 * down, so drop the transient ref and re-fault rather than install a
-		 * stale PFN.
+		 * NOTE(coherence): Under `install_lock` this retry is atomic against
+		 * the invalidate callback's `mmu_interval_set_seq()`. A collision means
+		 * the cached pin is being torn down, so drop the ref and re-fault.
 		 */
 		if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
 			mutex_unlock(&peephole_context->install_lock);
@@ -306,10 +301,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		}
 
 		/*
-		 * `vmf_insert_mixed()` may allocate a page table with a reclaiming
-		 * GFP. Reclaim of an unpinned page in our own interval would invoke
-		 * the invalidate callback, which blocks on the lock held here ->
-		 * self-deadlock. Fence the install off from reclaim.
+		 * NOTE(reclaim): `vmf_insert_mixed()` may allocate a page table under a
+		 * reclaiming GFP. Reclaim in our own interval re-enters the invalidate
+		 * callback, which blocks on the held lock and self-deadlocks. Fence it.
 		 */
 		reclaim_flags = memalloc_noreclaim_save();
 		insert_outcome = vmf_insert_mixed(vma, vmf->address, pfn);
@@ -328,29 +322,8 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 
 	if (!mmap_read_trylock(peephole_context->address_space)) {
 		mmput(peephole_context->address_space);
-
-		MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
-							  "space lock is unavailable");
-	}
-
-	// NOTE: Re-check peephole liveness.
-	if (atomic_read_acquire(&peephole_context->peephole_state) ==
-	    MIRILLA_PEEPHOLE_STATE_DEAD) {
-		mmap_read_unlock(peephole_context->address_space);
-
-		mmput(peephole_context->address_space);
-
-		MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
 	}
 #undef MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN
-
-	page_count = pin_user_pages_remote(peephole_context->address_space, target_address, 1,
-					   /*gup_flags=*/0, &target_page, &mmap_read_locked);
-
-	if (mmap_read_locked)
-		mmap_read_unlock(peephole_context->address_space);
-
-	mmput(peephole_context->address_space);
 
 	if (page_count <= 0)
 		switch (page_count) {
@@ -360,7 +333,10 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 							  "page fault: page at address 0x%lx is "
 							  "busy",
 							  target_address);
-			// NOTE: Explicit fallthrough to common path if the lock is still held even after a `EBUSY`.
+			/*
+			 * NOTE(lock): Lock still held after `-EBUSY`, so fall through to
+			 * the common failure path.
+			 */
 			fallthrough;
 		default:
 			MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGSEGV,
@@ -372,9 +348,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	mutex_lock(&peephole_context->install_lock);
 
 	/*
-	 * Atomic against the invalidate callback (see the cached path). On a
-	 * collision the freshly pinned page has already been superseded, so drop
-	 * the pin and re-fault against whatever the target now maps.
+	 * NOTE(coherence): Atomic against the invalidate callback (see the cached
+	 * path). On a collision the fresh pin is already superseded, so drop it
+	 * and re-fault.
 	 */
 	if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
 		mutex_unlock(&peephole_context->install_lock);
@@ -391,13 +367,11 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		unsigned int reclaim_flags;
 
 		/*
-		 * Publish the pin and install the PTE together under the lock: the
-		 * invalidate callback either misses both (and the `read_retry` above
-		 * caught the collision), or, ordered after us, finds the xarray entry
-		 * to unpin and the installed PTE to zap. `GFP_NOWAIT` keeps the store
-		 * from re-entering reclaim; `vmf_insert_mixed()` is fenced off from
-		 * reclaim for the same reason (reclaim would call our own invalidate
-		 * callback, which blocks on `install_lock`).
+		 * NOTE(coherence): Publish the pin and install the PTE under the lock.
+		 * The invalidate callback either misses both (caught by the retry
+		 * above) or, ordered after us, finds the xarray entry to unpin and the
+		 * PTE to zap. `GFP_NOWAIT` and the reclaim fence keep the store out of
+		 * reclaim, which would re-enter our invalidate callback on `install_lock`.
 		 */
 		target_value = xa_store(&peephole_context->page_list, relative_address, target_page,
 					GFP_NOWAIT);
@@ -444,14 +418,14 @@ void mirilla_map_peephole_vm_close(struct vm_area_struct *vma)
 
 int mirilla_map_peephole_vm_mremap(struct vm_area_struct *vma)
 {
-	// NOTE: Disallow remapping the peephole VMA.
+	/* NOTE(invariant): Disallow remapping the peephole VMA. */
 	return -EPERM;
 }
 
 int mirilla_map_peephole_vm_mprotect(struct vm_area_struct *vma, unsigned long start,
 				      unsigned long end, unsigned long newflags)
 {
-	// NOTE: Disallow changing page protections.
+	/* NOTE(invariant): Disallow changing page protections. */
 	return -EPERM;
 }
 
@@ -459,7 +433,7 @@ int mirilla_map_peephole_file_release(struct inode *ino, struct file *file)
 {
 	struct mirilla_map_peephole_context *peephole_context = file->private_data;
 
-	/* NOTE: This is due to this callback being able to be called from error path. */
+	/* NOTE(lifetime): This callback can fire from the error path. */
 	if (file->private_data) {
 		peephole_context->file = NULL;
 
@@ -477,21 +451,21 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 		peephole_context->end_address - peephole_context->start_address;
 	unsigned long vma_length = vma->vm_end - vma->vm_start;
 
-	/* Disallow both executable mappings. */
+	/* NOTE(invariant): Disallow executable and shared mappings. */
 	if (vma->vm_flags & VM_EXEC)
 		return -EACCES;
 	if (vma->vm_flags & VM_SHARED)
 		return -EINVAL;
 
-	/* Prohibit partial mappings, must map the entire peephole */
+	/* NOTE(invariant): Must map the entire peephole, no partial mappings. */
 	if (vma_length != peephole_length)
 		return -EINVAL;
-	/* Prohibit mapping at non-zero offset within the file */
+	/* NOTE(invariant): Reject a non-zero file offset. */
 	if (vma->vm_pgoff != 0)
 		return -EINVAL;
 
 
-	/* Each VMA holds a reference to the peephole context. */
+	/* NOTE(refcount): Each VMA holds a peephole reference. */
 	mirilla_context_map_peephole_reference_get(peephole_context);
 
 	vma->vm_ops = &mirilla_map_peephole_vm_operations;
@@ -499,7 +473,7 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 
 	vm_flags_set(vma, VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_IO);
 
-	/* Disallow writable or executable mappings. */
+	/* NOTE(invariant): Clear writable/executable mapping capability. */
 	vm_flags_clear(vma, VM_MAYSHARE | VM_MAYWRITE | VM_MAYEXEC);
 
 	return 0;
@@ -517,7 +491,10 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 		MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find process with pid %d",
 					  argument->process_id);
 
-	/* NOTE: Allow self-engagement if the target process id corresponds to the current thread group. */
+	/*
+	 * NOTE(self): Allow self-engagement when the target pid is the caller's
+	 * thread group.
+	 */
 	if (target_pid != task_tgid(current))
 	    if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
 				MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
@@ -535,7 +512,9 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 
 	target_context->id = result->target_id = map_target_id;
 
-	/* NOTE: The structure now handles this reference. */
+	/*
+	 * NOTE(refcount): The context now owns this reference.
+	 */
 	target_context->process_id = target_pid;
 
 	if (xa_insert(&device_context->map_target_list, map_target_id, target_context,
@@ -567,7 +546,9 @@ mirilla_map_handle_command_disengage(struct mirilla_device_context *device_conte
 			MIRILLA_ERROR_AND_RETURN(-ENOENT, "map target id is nonexistent");
 		}
 
-		// NOTE: XArray lock is held.
+		/*
+		 * NOTE(lock): XArray lock is held.
+		 */
 		__xa_erase(&device_context->map_target_list, target_id);
 
 		xa_unlock(&device_context->map_target_list);
@@ -630,7 +611,9 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 						  "space");
 	}
 
-	// NOTE: Take a `mm_count` reference from an active `mm_users` one.
+	/*
+	 * NOTE(refcount): Take an `mm_count` ref from the active `mm_users` one.
+	 */
 	mmgrab(target_space);
 
 	put_task_struct(target_task);
@@ -638,29 +621,30 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 	if (mirilla_context_map_peephole_construct(&peephole_context)) {
 		mirilla_context_map_target_reference_set(target_context);
 
-		/* Release the transient `mm_users` ref, then the `mm_count` ref. */
+		/*
+		 * NOTE(refcount): Release the transient `mm_users` ref, then the `mm_count` ref.
+	     */
 		mmput(target_space);
 		mmdrop(target_space);
 
 		MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to allocate peephole context");
 	}
 
-	// NOTE: Reference to address space is owned by the peephole.
+	/* NOTE(refcount): The peephole owns the address-space reference. */
 	peephole_context->address_space = target_space;
 
 	/*
-	 * Publish the address range before registering the notifier: the
-	 * invalidate callback gates on these fields, so an invalidation that
-	 * races registration would otherwise be silently dropped.
+	 * NOTE(coherence): Publish the range before registering the notifier. The
+	 * invalidate callback gates on these fields, so an invalidation racing
+	 * registration would otherwise be dropped.
 	 */
 	peephole_context->start_address = argument->start_address;
 	peephole_context->end_address = argument->end_address;
 
 	/*
-	 * Use a private inode (NULL context inode) so each peephole gets its own
-	 * `address_space`. Sharing the single global anon-inode mapping would
-	 * make `unmap_mapping_range` zap unrelated peepholes mapped at the same
-	 * page offset.
+	 * NOTE(coherence): A private inode gives each peephole its own
+	 * `address_space`. A shared anon-inode mapping would let
+	 * `unmap_mapping_range` zap unrelated peepholes at the same page offset.
 	 */
 	struct file *anonymous_file = anon_inode_create_getfile(
 		"[mirilla-peephole]", &mirilla_map_peephole_file_operations,
@@ -668,9 +652,9 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 
 	if (IS_ERR(anonymous_file)) {
 		/*
-		 * The file never took ownership of the peephole, so destruct it
-		 * directly (this drops the `mm_count` ref via the destructor). The
-		 * transient `mm_users` ref must still be released here.
+		 * NOTE(refcount): The file never took ownership, so destruct directly
+		 * and drop the `mm_count` ref. Release the transient `mm_users` ref
+		 * here.
 		 */
 		mirilla_context_map_peephole_destruct(peephole_context);
 		mirilla_context_map_target_reference_set(target_context);
@@ -693,12 +677,11 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 		mirilla_context_map_target_reference_set(target_context);
 
 		/*
-		 * The anon file now owns the peephole reference; `fput` runs
-		 * `->release`, which drops that reference and destructs the
-		 * peephole (releasing the `mm_count` ref). Calling the destructor
-		 * here as well would be a double free. The notifier insert failed,
-		 * so `interval_subscribe.mm` is NULL and the destructor will not
-		 * try to remove it.
+		 * NOTE(refcount): The anon file now owns the peephole reference. `fput`
+		 * runs the release handler, which drops it and destructs the peephole
+		 * and releases `mm_count`. Destructing here too would double-free. The
+		 * insert failed, so `interval_subscribe.mm` is NULL and the destructor
+		 * skips removal.
 		 */
 		mmput(target_space);
 		fput(anonymous_file);
@@ -706,7 +689,10 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 		MIRILLA_ERROR_AND_RETURN(register_code, "failed to register interval-based "
 							 "subscriber");
 	}
-	// NOTE: Subscriber registration requires a `mmget()` held.
+	/*
+	 * NOTE(refcount): Notifier registration required a held `mm_users`, so drop
+	 * it now.
+	 */
 	mmput(target_space);
 
 
@@ -716,9 +702,9 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 		mirilla_context_map_target_reference_set(target_context);
 
 		/*
-		 * The anon file owns the peephole reference; `fput` destructs it
-		 * (which removes the now-registered notifier and drops the
-		 * `mm_count` ref). The `mm_users` ref was already released above.
+		 * NOTE(refcount): The anon file owns the peephole reference. `fput`
+		 * destructs it, removing the notifier and dropping `mm_count`. The
+		 * `mm_users` ref was already released above.
 		 */
 		fput(anonymous_file);
 
