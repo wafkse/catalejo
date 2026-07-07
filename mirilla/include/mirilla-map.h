@@ -301,11 +301,6 @@ MIRILLA_CONTEXT_DEFINE(
 		struct mm_struct *address_space;
 
 		/*
-       * List of pinned pages for this peephole.
-       */
-		struct xarray page_list;
-
-		/*
        * NOTE(lock): Serializes peephole-VMA PTE installs against the
        * interval-notifier invalidate callback. The fault path holds it
        * across `mmu_interval_read_retry()` and the `vmf_insert_mixed()`

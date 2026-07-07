@@ -100,8 +100,6 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_peephole)
 	target_context->interval_subscribe.ops =
 		&mirilla_peephole_mmu_interval_notifier_operations;
 
-	xa_init(&target_context->page_list);
-
 	mutex_init(&target_context->install_lock);
 
 	return error_code;
@@ -109,29 +107,10 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_peephole)
 
 MIRILLA_CONTEXT_DESTRUCTOR(map_peephole)
 {
-	struct page *pinned_page = NULL;
-
-	unsigned long page_offset;
-
 	MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "destruct `map_peephole`");
 
 	if (target_context->interval_subscribe.mm != NULL)
 	    mmu_interval_notifier_remove(&target_context->interval_subscribe);
-
-	xa_lock(&target_context->page_list);
-
-	xa_for_each(&target_context->page_list, page_offset, pinned_page)
-	{
-		__xa_erase(&target_context->page_list, page_offset);
-
-		MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "removed cached page at relative address: %lx", page_offset);
-
-		unpin_user_page(pinned_page);
-	}
-
-	xa_unlock(&target_context->page_list);
-
-	xa_destroy(&target_context->page_list);
 
 	if (target_context->address_space)
 		mmdrop(target_context->address_space);
@@ -204,24 +183,10 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 		     "+ 0x%lx)",
 		     range_start, range_end, region_start, region_start, region_end);
 
-	{
-		unsigned long page_offset;
-
-		struct page *target_page = NULL;
-
-		xa_lock(&peephole_context->page_list);
-
-		xa_for_each_range(&peephole_context->page_list, page_offset, target_page,
-				  region_start, region_end)
-		{
-			__xa_erase(&peephole_context->page_list, page_offset);
-
-			unpin_user_page(target_page);
-		}
-
-		xa_unlock(&peephole_context->page_list);
-	}
-
+	/*
+	 * NOTE(coherence): The invalidate callback runs before the page is uninstalled, therefore, we
+	 * have to unmap the respective range in the peephole.
+	 */
 	if (peephole_context->file && peephole_context->file->f_mapping)
 		unmap_mapping_range(peephole_context->file->f_mapping, region_start, region_length,
 				    1);
@@ -268,55 +233,6 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 
 	notifier_seq = mmu_interval_read_begin(&peephole_context->interval_subscribe);
 
-	{
-		rcu_read_lock();
-
-		target_page = xa_load(&peephole_context->page_list, relative_address);
-		if (target_page)
-			if (!get_page_unless_zero(target_page))
-				target_page = NULL;
-
-		rcu_read_unlock();
-	}
-
-	/* NOTE(fault): Cached hit, insert the page into the VMA. */
-	if (target_page) {
-		unsigned long pfn = page_to_pfn(target_page);
-
-		vm_fault_t insert_outcome;
-		unsigned int reclaim_flags;
-
-		mutex_lock(&peephole_context->install_lock);
-
-		/*
-		 * NOTE(coherence): Under `install_lock` this retry is atomic against
-		 * the invalidate callback's `mmu_interval_set_seq()`. A collision means
-		 * the cached pin is being torn down, so drop the ref and re-fault.
-		 */
-		if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
-			mutex_unlock(&peephole_context->install_lock);
-
-			put_page(target_page);
-
-			return VM_FAULT_NOPAGE;
-		}
-
-		/*
-		 * NOTE(reclaim): `vmf_insert_mixed()` may allocate a page table under a
-		 * reclaiming GFP. Reclaim in our own interval re-enters the invalidate
-		 * callback, which blocks on the held lock and self-deadlocks. Fence it.
-		 */
-		reclaim_flags = memalloc_noreclaim_save();
-		insert_outcome = vmf_insert_mixed(vma, vmf->address, pfn);
-		memalloc_noreclaim_restore(reclaim_flags);
-
-		mutex_unlock(&peephole_context->install_lock);
-
-		put_page(target_page);
-
-		return insert_outcome;
-	}
-
 	/*
 	 * NOTE(lock): Self-peephole. The target is the faulting task's own mm,
 	 * whose `mmap_lock` we already hold from the outer fault. Re-acquiring it
@@ -338,7 +254,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		    MIRILLA_PEEPHOLE_STATE_DEAD)
 			MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
 
-		page_count = pin_user_pages_remote(current->mm, target_address, 1,
+		page_count = get_user_pages_remote(current->mm, target_address, 1,
 						   /*gup_flags=*/0, &target_page, NULL);
 	} else {
 		if (!mmget_not_zero(peephole_context->address_space))
@@ -362,7 +278,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 			MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
 		}
 
-		page_count = pin_user_pages_remote(peephole_context->address_space, target_address, 1,
+		page_count = get_user_pages_remote(peephole_context->address_space, target_address, 1,
 						   /*gup_flags=*/0, &target_page, &mmap_read_locked);
 
 		if (mmap_read_locked)
@@ -402,44 +318,24 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
 		mutex_unlock(&peephole_context->install_lock);
 
-		unpin_user_page(target_page);
+		put_page(target_page);
 
 		return VM_FAULT_NOPAGE;
 	}
 
 	{
-		void *target_value;
-
 		vm_fault_t insert_outcome;
+
 		unsigned int reclaim_flags;
-
-		/*
-		 * NOTE(coherence): Publish the pin and install the PTE under the lock.
-		 * The invalidate callback either misses both (caught by the retry
-		 * above) or, ordered after us, finds the xarray entry to unpin and the
-		 * PTE to zap. `GFP_NOWAIT` and the reclaim fence keep the store out of
-		 * reclaim, which would re-enter our invalidate callback on `install_lock`.
-		 */
-		target_value = xa_store(&peephole_context->page_list, relative_address, target_page,
-					GFP_NOWAIT);
-
-		if (xa_is_err(target_value)) {
-			mutex_unlock(&peephole_context->install_lock);
-
-			unpin_user_page(target_page);
-
-			MIRILLA_ERROR_AND_RETURN(VM_FAULT_OOM,
-						  "page fault: failed to track page at address "
-						  "0x%lx",
-						  target_address);
-		}
-
-		if (target_value)
-			unpin_user_page(target_value);
 
 		reclaim_flags = memalloc_noreclaim_save();
 		insert_outcome = vmf_insert_mixed(vma, vmf->address, page_to_pfn(target_page));
 		memalloc_noreclaim_restore(reclaim_flags);
+
+		/*
+		 * NOTE(refcount): Put back the transient page reference used to retrieve the PFN.
+		 */
+		put_page(target_page);
 
 		mutex_unlock(&peephole_context->install_lock);
 
