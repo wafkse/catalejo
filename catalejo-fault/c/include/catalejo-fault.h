@@ -86,7 +86,7 @@ typedef struct catalejo_faultable_copy_outcome {
    *
    * NOTE(invariant): This should be contained in the `%rdx` register.
    */
-  uint64_t byte_count;
+  size_t byte_count;
 } catalejo_faultable_copy_outcome_t;
 
 /**

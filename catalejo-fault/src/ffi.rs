@@ -90,7 +90,7 @@ pub mod lower {
 
     /// Perform a bulk memory copy via the C-implemented shim.
     ///
-    /// # SAFETY
+    /// # Safety
     ///
     /// This has the same safety constraints as [`binding::catalejo_copy`].
     #[inline]
@@ -242,6 +242,76 @@ where
     match target_outcome {
         binding::CATALEJO_OUTCOME_SUCCESS => true,
         binding::CATALEJO_OUTCOME_ERROR => false,
+        // NOTE: No other such result may be possible.
+        _ => unreachable!(),
+    }
+}
+
+/// Perform a fault-protected copy from the target source to the target address.
+///
+/// This function attempts to copy `target_count` bytes as a byte-granular ascending stream. If
+/// the underlying physical page of the fault-adjudicated side is unmapped, the hardware exception
+/// is caught by the subsystem and the function gracefully returns `Err` carrying the count of
+/// bytes left uncopied at the faulting byte, the target already holds the copied prefix of
+/// `target_count` minus that count, and the rest of the target is untouched.
+///
+/// # Safety
+///
+/// The copy is dual-use, as it mirrors foreign memory in through a faulting source, or publishes
+/// into it through a faulting target, so the constraints below attach to *sides*, not to the
+/// call, and swap with the direction.
+///
+/// * Exactly one side names memory outside the Rust Abstract Machine, such as an MMU-adjudicated
+///   foreign mapping. That side must be non-null and accessible under *exposed* provenance. The
+///   access is carried out by hand-written assembly, never as an abstract-machine access. Its
+///   liveness is adjudicated by the hardware MMU, and a fault is caught and reported instead of
+///   being undefined behavior. A copy between two fault-adjudicated ranges is unsupported.
+///
+/// * The other side names ordinary abstract-machine memory, and the subsystem cannot rescue it:
+///   it must be valid for the whole `target_count` range under the ordinary rules, it is readable
+///   when it is the source, writable when it is the target. A bogus abstract-machine range does not
+///   reliably fault, as it aliases live allocations, and the copy corrupts them.
+///
+/// * A fault-adjudicated *target* must additionally name memory that is permitted to be written,
+///   otherwise the store faults and is reported as `Err`. Its stores must not race, in the Rust
+///   sense, with another thread of the *current* process for the same range. A concurrent
+///   mutation by a foreign process is not such a race, as nothing aliases the range as a reference.
+///   Unlike the primitive [`write()`], the stores are not indivisible, so a foreign reader may
+///   observe a torn prefix.
+///
+/// * The ranges must not overlap. The stream advances byte-wise ascending, so an overlap re-reads
+///   bytes the copy itself just wrote, duplicating them instead of moving them.
+///
+/// * No alignment is demanded, the stream is byte-granular, so it carries no machine-word nor snapshot
+///   coherence, and a caught fault leaves the copied prefix visible. However, alignment of the target
+///   address is required to avoid slowdown of ERMS (Enhanced REP MOVSB).
+///
+/// * Neither side may target memory-mapped I/O hardware registers where a speculative access
+///   could trigger a device-level side-effect.
+///
+/// * No foreign library has hijacked the synchronous POSIX signal handlers without implementing
+///   perfect chaining since the subsystem token was issued.
+pub unsafe fn copy(
+    _: Subsystem,
+    target_address: *mut u8,
+    target_source: *const u8,
+    target_count: usize,
+) -> Result<(), usize> {
+    // SAFETY:
+    // * The fault-adjudicated side carries exposed provenance over outside-abstract-machine
+    //   memory and is accessed by assembly, so a resulting fault is caught by the subsystem, never
+    //   undefined behavior.
+    //
+    // * The abstract-machine side is valid for the whole range, as asserted by the caller.
+    let binding::catalejo_faultable_copy_outcome {
+        outcome_status,
+        byte_count,
+    } = unsafe { lower::copy(target_address, target_source, target_count) };
+
+    match outcome_status {
+        binding::CATALEJO_OUTCOME_SUCCESS => Ok(()),
+        // NOTE: On a fault the remaining count at the faulting byte is reported back.
+        binding::CATALEJO_OUTCOME_ERROR => Err(byte_count),
         // NOTE: No other such result may be possible.
         _ => unreachable!(),
     }
