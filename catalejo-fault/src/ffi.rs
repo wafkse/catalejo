@@ -87,6 +87,21 @@ pub mod lower {
             }
         }
     }
+
+    /// Perform a bulk memory copy via the C-implemented shim.
+    ///
+    /// # SAFETY
+    ///
+    /// This has the same safety constraints as [`binding::catalejo_copy`].
+    #[inline]
+    pub unsafe fn copy(
+        target_address: *mut u8,
+        target_source: *const u8,
+        target_count: usize,
+    ) -> binding::catalejo_faultable_copy_outcome_t {
+        // SAFETY: The safety concerns of the foreign call have been satisfied by the caller.
+        unsafe { binding::catalejo_copy(target_address, target_source, target_count) }
+    }
 }
 
 /// A token that guarantees that the *catalejo* C-based subsystem has been initialized properly.
