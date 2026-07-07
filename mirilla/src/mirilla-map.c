@@ -407,6 +407,17 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 	if (vma->vm_pgoff != 0)
 		return -EINVAL;
 
+	/*
+	 * NOTE(invariant): Reject a self-observing view that overlaps its own
+	 * observed range. Such a view can never resolve (GUP refuses `VM_IO`
+	 * mappings), and zapping it from the interval notifier would raise a
+	 * nested invalidation over the subscribed interval, re-entering the
+	 * callback against the held `install_lock`.
+	 */
+	if (vma->vm_mm == peephole_context->address_space &&
+	    vma->vm_start < peephole_context->end_address &&
+	    peephole_context->start_address < vma->vm_end)
+		MIRILLA_ERROR_AND_RETURN(-EINVAL, "peephole view overlaps its own observed range");
 
 	/* NOTE(refcount): Each VMA holds a peephole reference. */
 	mirilla_context_map_peephole_reference_get(peephole_context);
