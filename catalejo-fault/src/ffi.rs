@@ -32,7 +32,7 @@ pub mod lower {
     ///
     /// # Safety
     ///
-    /// This has the same safety constraints as an individual `binding::catalejo_read_uN` operation.
+    /// This has the same safety constraints as an individual `binding::catalejo_read_uN` operation, where `N` is the size of the primitive read.
     #[inline]
     pub unsafe fn read(
         target_source: *const PrimitiveUnion,
@@ -62,7 +62,7 @@ pub mod lower {
     ///
     /// # Safety
     ///
-    /// This has the same safety constraints as an individual `binding::catalejo_write_uN` operation.
+    /// This has the same safety constraints as an individual `binding::catalejo_write_uN` operation, where `N` is the size of the primitive written.
     #[inline]
     pub unsafe fn write(
         target_value: *mut PrimitiveUnion,
