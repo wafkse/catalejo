@@ -78,8 +78,7 @@ pub mod command {
             (binding::MIRILLA_COMMAND_OK, Some(target_id)) => Ok(target_id),
             (binding::MIRILLA_COMMAND_OK, ..) => Err(io::Error::from(ErrorKind::InvalidInput)),
             (
-                target_errno
-                @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK,
+                target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK,
                 ..,
             ) => Err(io::Error::from_raw_os_error(target_errno.abs())),
             // NOTE: This is impossible, hence unreachable.
@@ -108,8 +107,7 @@ pub mod command {
 
         match target_outcome {
             binding::MIRILLA_COMMAND_OK => Ok(()),
-            target_errno
-            @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
+            target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
                 Err(io::Error::from_raw_os_error(target_errno.abs()))
             }
             // NOTE: This is impossible, hence unreachable.
@@ -155,8 +153,7 @@ pub mod command {
             }
             (binding::MIRILLA_COMMAND_OK, (..)) => Err(io::Error::from(ErrorKind::InvalidInput)),
             (
-                target_errno
-                @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK,
+                target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK,
                 (..),
             ) => Err(io::Error::from_raw_os_error(target_errno.abs())),
             // NOTE: This is impossible, hence unreachable.
