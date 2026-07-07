@@ -80,9 +80,9 @@ impl Granunality {
 
 /// A managed peephole set for a specific [`Target`].
 #[derive(Debug)]
-pub struct Context(Target, DashMap<ViAddr, Peephole>, Granunality);
+pub struct Manager(Target, DashMap<ViAddr, Peephole>, Granunality);
 
-impl Context {
+impl Manager {
     /// Construct a managed peephole set of the specified target context.
     #[inline]
     pub fn manage(target_context: Target) -> Self {
@@ -96,7 +96,7 @@ impl Context {
     }
 }
 
-impl Context {
+impl Manager {
     /// Find the peephole relevant to the target address, invoking a closure with the peephole and local offset if found.
     #[inline]
     pub fn find<T>(
