@@ -1,95 +1,95 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+    push:
+    pull_request:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  rust:
-    name: Rust workspace
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
+    rust:
+        name: Rust workspace
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+            - uses: Swatinem/rust-cache@v2
 
-      - name: Install bindgen dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm-dev libclang-dev
+            - name: Install bindgen dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang llvm-dev libclang-dev
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+            - name: Check formatting
+              run: cargo fmt --all --check
 
-      - name: Lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
+            - name: Lint
+              run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build
-        run: cargo build --workspace
+            - name: Build
+              run: cargo build --workspace
 
-      - name: Test
-        run: cargo test --workspace
+            - name: Test
+              run: cargo test --workspace
 
-  kernel-tests:
-    name: Kernel tests (${{ matrix.kernel.series }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        kernel:
-          # Latest longterm and latest stable series; bump the tags as
-          # kernel.org moves. The cache key follows the tag.
-          - { series: "6.18", tag: "v6.18.38" }
-          - { series: "7.1", tag: "v7.1.3" }
-    env:
-      VNG_VERSION: "1.41"
-    steps:
-      - uses: actions/checkout@v4
+    kernel-tests:
+        name: Kernel tests (${{ matrix.kernel.series }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 90
+        strategy:
+            fail-fast: false
+            matrix:
+                kernel:
+                    # Latest longterm and latest stable series; bump the tags as
+                    # kernel.org moves. The cache key follows the tag.
+                    - { series: "6.18", tag: "v6.18.38" }
+                    - { series: "7.1", tag: "v7.1.3" }
+        env:
+            VNG_VERSION: "1.41"
+        steps:
+            - uses: actions/checkout@v4
 
-      - name: Install build and VM dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev \
-            bc kmod cpio libncurses-dev qemu-system-x86 pipx
-          pipx install "virtme-ng==$VNG_VERSION"
-          pipx ensurepath
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            - name: Install build and VM dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev \
+                    bc kmod cpio libncurses-dev qemu-system-x86 pipx
+                  pipx install "virtme-ng==$VNG_VERSION"
+                  pipx ensurepath
+                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Check KVM availability
-        run: ls -l /dev/kvm || echo "KVM unavailable; qemu falls back to TCG (slow)"
+            - name: Check KVM availability
+              run: ls -l /dev/kvm || echo "KVM unavailable; qemu falls back to TCG (slow)"
 
-      - name: Restore kernel build
-        id: kernel-cache
-        uses: actions/cache@v4
-        with:
-          path: linux
-          key: kernel-${{ matrix.kernel.tag }}-vng-${{ env.VNG_VERSION }}-${{ hashFiles('ci/kernel-mirilla.config') }}
+            - name: Restore kernel build
+              id: kernel-cache
+              uses: actions/cache@v4
+              with:
+                  path: linux
+                  key: kernel-${{ matrix.kernel.tag }}-vng-${{ env.VNG_VERSION }}-${{ hashFiles('ci/kernel-mirilla.config') }}
 
-      - name: Build kernel
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch "${{ matrix.kernel.tag }}" \
-            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
-          cd linux
-          vng --build --config "$GITHUB_WORKSPACE/ci/kernel-mirilla.config"
-          rm -rf .git
+            - name: Build kernel
+              if: steps.kernel-cache.outputs.cache-hit != 'true'
+              run: |
+                  git clone --depth 1 --branch "${{ matrix.kernel.tag }}" \
+                    https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
+                  cd linux
+                  vng --build --config "$GITHUB_WORKSPACE/ci/kernel-mirilla.config"
+                  rm -rf .git
 
-      - name: Verify kernel configuration
-        run: grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config
+            - name: Verify kernel configuration
+              run: grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config
 
-      - name: Build mirilla module and test suites
-        run: make -C mirilla KDIR="$GITHUB_WORKSPACE/linux" module tests
+            - name: Build mirilla module and test suites
+              run: make -C mirilla KDIR="$GITHUB_WORKSPACE/linux" module tests
 
-      - name: Run test suites in the VM
-        working-directory: linux
-        run: vng --user root --memory 2G --cpu 4 -- "$GITHUB_WORKSPACE/ci/run-in-vm.sh"
+            - name: Run test suites in the VM
+              working-directory: linux
+              run: vng --user root --memory 2G --cpu 4 -- "$GITHUB_WORKSPACE/ci/run-in-vm.sh"
