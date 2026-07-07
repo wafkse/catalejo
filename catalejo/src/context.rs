@@ -14,9 +14,6 @@ use crate::{
 
 /// The specific granularity at which peepholes are open for a target.
 ///
-/// This is to better manage memory exhaustion characteristics of pinning large foreign address space regions
-/// wholesale, albeit it is largely unlikely that a complete region of foreign address space is peepholed in.
-///
 /// # Representation
 ///
 /// This is represented as an [`prim@u64`] or [`prim@u32`], matching the platform's pointer width for implementation simplicity, and
@@ -42,9 +39,7 @@ pub enum Granunality {
 
     /// A `1 GiB` peephole range.
     ///
-    /// This is niche, and will permanently pin any peephole-accessed (as in, faulted-into) memory into
-    /// system memory and impossibilize its swapout to disk, use with caution, as it is
-    /// very noisy at the memory-management level. Opt using [`Granularity::Hugepage`] instead.
+    /// It is recommended to use [`Granularity::Hugepage`] instead.
     HumongousPage = 1 * 1024 * 1024 * 1024 - 1,
 }
 
