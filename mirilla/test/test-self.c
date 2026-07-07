@@ -8,13 +8,16 @@
  * `mmap_lock`) and the `MAP_FIXED` placement of the peephole view,
  * including the degenerate placement over the observed range itself.
  *
- * Expected semantics, per the fault and notifier paths in
+ * Expected semantics, per the fault, notifier and mmap paths in
  * `src/mirilla-map.c`:
  * - A peephole only goes dead on `MMU_NOTIFY_RELEASE` (target teardown).
  * - Unmapping or clobbering the observed range keeps the peephole alive;
  *   the next fault re-resolves the target address, so fresh anonymous
  *   memory reads back its new contents, while an unresolvable address
- *   (or one covered by a `VM_IO` mapping) faults.
+ *   faults.
+ * - A view overlapping its own observed range is refused at mmap time:
+ *   it could never resolve, and its teardown invalidations would re-enter
+ *   the interval notifier against the held `install_lock`.
  *
  * All view accesses ride the `catalejo-fault` protected routines, so a
  * fault the module raises surfaces as `CATALEJO_OUTCOME_ERROR` end to end.
@@ -137,8 +140,10 @@ static int test_self_peephole_map_fixed(void)
 
 /*
  * The degenerate self-observation: `MAP_FIXED` the peephole view over the
- * observed range itself, so the peephole observes the range its own view
- * occupies. The access must fault, and the module must survive it.
+ * observed range itself, so the peephole would observe the range its own
+ * view occupies. The module must refuse the mapping: such a view could
+ * never resolve, and zapping it from the interval notifier would re-enter
+ * the callback against the held `install_lock` and self-deadlock.
  */
 static int test_self_peephole_recursive_map_fixed(void)
 {
@@ -147,6 +152,15 @@ static int test_self_peephole_recursive_map_fixed(void)
 
 	void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_3);
 	ASSERT(region != NULL, "failed to allocate test region");
+
+	/*
+	 * Reserve a scratch home for the later disjoint view up front: the
+	 * refusal below vacates the observed range, and a kernel-chosen
+	 * placement would land the view right back into that hole, only to
+	 * be refused again.
+	 */
+	void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
 
 	mirilla_map_target_id_t target_id = 0;
 	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
@@ -160,54 +174,53 @@ static int test_self_peephole_recursive_map_fixed(void)
 	       "self-peephole failed");
 
 	/*
-	 * `MAP_FIXED` first unmaps the anonymous pages backing the range
-	 * (the interval notifier zaps any installed view pages; the peephole
-	 * stays alive), then installs the peephole VMA in their place.
+	 * NOTE: `MAP_FIXED` unmaps the anonymous pages backing the range
+	 * before the module can refuse the view, so the observed range is
+	 * left vacated after the failure.
 	 */
+	errno = 0;
 	void *view = mmap(region, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED,
 			  peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "recursive MAP_FIXED peephole view failed");
-	ASSERT(view == region, "recursive view landed at the wrong address");
+	ASSERT(view == MAP_FAILED, "recursive view mapping unexpectedly succeeded");
+	ASSERT(errno == EINVAL, "recursive view mapping failed with the wrong errno");
 
-	print_with_timestamp("[SELF] Peephole view placed over its own observed range at %p\n",
-			     view);
+	print_with_timestamp("[SELF] Recursive view over %p refused as expected\n", region);
 
-	/*
-	 * NOTE(recursion): The probe below resolves the observed address back
-	 * to the peephole VMA itself. GUP refuses `VM_IO` mappings outright,
-	 * so the fault cannot recurse: it fails, the module answers SIGSEGV,
-	 * and the protected read reports the error.
-	 */
+	/* The peephole survives, but the vacated range can no longer resolve. */
+	void *elsewhere_view = mmap(scratch, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED,
+				    peephole_fd, 0);
+	ASSERT(elsewhere_view != MAP_FAILED, "failed to mmap a disjoint view after the refusal");
+
 	unsigned int probe_value = 0;
-	ASSERT(faultable_probe_u32(view, &probe_value) == CATALEJO_OUTCOME_ERROR,
-	       "recursive view read succeeded; expected a fault");
+	ASSERT(faultable_probe_u32(elsewhere_view, &probe_value) == CATALEJO_OUTCOME_ERROR,
+	       "read of the vacated range succeeded; expected a fault");
 
-	munmap(view, TEST_REGION_SIZE);
+	munmap(elsewhere_view, TEST_REGION_SIZE);
 	close(peephole_fd);
 	mirilla_disengage(mirilla_fd, target_id);
 	close(mirilla_fd);
 
-	/* The module must remain healthy after the recursive fault. */
+	/* The module must remain healthy after the refusal. */
 	mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "device is unusable after the recursive fault");
+	ASSERT(mirilla_fd >= 0, "device is unusable after the refusal");
 
 	void *fresh_region = allocate_test_region(TEST_REGION_SMALL, MAGIC_VALUE_4);
 	ASSERT(fresh_region != NULL, "failed to allocate test region");
 
 	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed after the recursive fault");
+	       "self-engage failed after the refusal");
 
 	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id,
 						      (virtual_address_t)fresh_region,
 						      (virtual_address_t)fresh_region +
 							      TEST_REGION_SMALL,
 						      &peephole_id, &peephole_fd)),
-	       "self-peephole failed after the recursive fault");
+	       "self-peephole failed after the refusal");
 
 	void *fresh_view = mmap(NULL, TEST_REGION_SMALL, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
-	ASSERT(fresh_view != MAP_FAILED, "failed to mmap peephole view after the recursive fault");
+	ASSERT(fresh_view != MAP_FAILED, "failed to mmap peephole view after the refusal");
 	ASSERT(verify_region_faultable(fresh_view, TEST_REGION_SMALL, MAGIC_VALUE_4) == 0,
-	       "view does not mirror the observed region after the recursive fault");
+	       "view does not mirror the observed region after the refusal");
 
 	munmap(fresh_view, TEST_REGION_SMALL);
 	close(peephole_fd);
@@ -285,7 +298,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	RUN_TEST("Self Engage", test_self_engage);
 	RUN_TEST("Self Peephole - Basic", test_self_peephole_basic);
 	RUN_TEST("Self Peephole - MAP_FIXED View", test_self_peephole_map_fixed);
-	RUN_TEST("Self Peephole - Recursive MAP_FIXED - Fault Expected",
+	RUN_TEST("Self Peephole - Recursive MAP_FIXED View - Rejected",
 		 test_self_peephole_recursive_map_fixed);
 	RUN_TEST("Self Peephole - MAP_FIXED Clobber Reflects New Contents",
 		 test_self_map_fixed_clobber_reflects_new);

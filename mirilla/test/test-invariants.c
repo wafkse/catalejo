@@ -3,12 +3,13 @@
  *
  * The peephole view enforces a read-only, private, whole-length mapping
  * discipline. These negative cases pin down every rejection:
- * - The module's mmap handler refuses executable (`EACCES`), shared,
- *   partial-length and offset (`EINVAL`) mappings.
+ * - The module's mmap handler refuses shared, partial-length and offset
+ *   (`EINVAL`) mappings.
  * - The VMA operations refuse relocation and reprotection (`EPERM`).
- * - Core mm backs the rest: `VM_DONTEXPAND` blocks growth (`EFAULT`) and
- *   the cleared `VM_MAYWRITE` blocks writable reprotection (`EACCES`)
- *   before the module hook is even consulted.
+ * - Core mm backs the rest before the module hook is even consulted:
+ *   `SB_I_NOEXEC` on the anon-inode mount blocks executable mappings
+ *   (`EPERM`), `VM_DONTEXPAND` blocks growth (`EFAULT`) and the cleared
+ *   `VM_MAYWRITE` blocks writable reprotection (`EACCES`).
  */
 
 #define _GNU_SOURCE
@@ -90,11 +91,16 @@ static int expect_mmap_rejection(int prot, int flags, size_t length, off_t offse
 	return 0;
 }
 
-/* NOTE(invariant): Disallow executable mappings. */
+/*
+ * An executable view is refused by core mm before the module is consulted:
+ * the peephole file lives on the anon-inode pseudo mount, whose
+ * `SB_I_NOEXEC` makes `do_mmap` fail `PROT_EXEC` with `EPERM`. The
+ * module's own `VM_EXEC` check (`EACCES`) remains as defense in depth.
+ */
 static int test_reject_prot_exec(void)
 {
 	return expect_mmap_rejection(PROT_READ | PROT_EXEC, MAP_PRIVATE, TEST_REGION_SIZE, 0,
-				     EACCES);
+				     EPERM);
 }
 
 /* NOTE(invariant): Disallow shared mappings. */
