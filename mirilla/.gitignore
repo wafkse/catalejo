@@ -23,3 +23,8 @@ compile_commands.json
 
 # Test Suite Binaries
 test-suite
+test/test-suite
+test/test-self
+test/test-concurrency
+test/test-invariants
+test/test-ioctl

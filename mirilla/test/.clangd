@@ -8,3 +8,5 @@ Diagnostics:
     Suppress:
         - "pp_including_mainfile_in_preamble"
         - "err_pp_error"
+        - "unused-includes"
+        - "unused-function"

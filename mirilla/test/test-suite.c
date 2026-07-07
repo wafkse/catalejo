@@ -18,200 +18,7 @@
  * - Cleanup and error handling
  */
 
-#define _POSIX_C_SOURCE 199309L
-#define _DEFAULT_SOURCE
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <setjmp.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <errno.h>
-#include <signal.h>
-#include <time.h>
-#include <sys/sysinfo.h>
-#include <stdarg.h>
-
-/* Include mirilla headers */
-#include "../include/mirilla-command.h"
-#include "../include/mirilla-map.h"
-
-/* Configuration */
-#define MIRILLA_DEVICE "/dev/mirilla"
-#define TEST_REGION_SIZE (4096 * 4) /* 16KB */
-#define TEST_REGION_SMALL (4096) /* 4KB */
-#define MAGIC_VALUE_1 0xDEADBEEF
-#define MAGIC_VALUE_2 0xCAFEBABE
-#define MAGIC_VALUE_3 0xFEEDFACE
-#define MAGIC_VALUE_4 0xBAADF00D
-#define MAGIC_VALUE_5 0x13371337
-
-/* IPC pipe indices */
-#define PIPE_READ 0
-#define PIPE_WRITE 1
-
-/* Color codes for output */
-#define COLOR_RESET "\033[0m"
-#define COLOR_RED "\033[31m"
-#define COLOR_GREEN "\033[32m"
-#define COLOR_YELLOW "\033[33m"
-#define COLOR_BLUE "\033[34m"
-#define COLOR_MAGENTA "\033[35m"
-#define COLOR_CYAN "\033[36m"
-
-/* Test result tracking */
-typedef struct {
-	int total;
-	int passed;
-	int failed;
-} test_results_t;
-
-static test_results_t results = { 0, 0, 0 };
-
-/* Signal handling for SIGSEGV tests */
-static sigjmp_buf sigsegv_jmp_buf;
-static volatile sig_atomic_t sigsegv_received = 0;
-
-static void sigsegv_handler(int sig)
-{
-	(void)sig;
-	sigsegv_received = 1;
-	siglongjmp(sigsegv_jmp_buf, 1);
-}
-
-/* Helper macros */
-#define TEST_START(name)                                              \
-	do {                                                          \
-		printf(COLOR_CYAN "[ TEST ] %s\n" COLOR_RESET, name); \
-		results.total++;                                      \
-	} while (0)
-
-#define TEST_PASS(name)                                                \
-	do {                                                           \
-		printf(COLOR_GREEN "[ PASS ] %s\n" COLOR_RESET, name); \
-		results.passed++;                                      \
-	} while (0)
-
-#define TEST_FAIL(name, reason)                                                  \
-	do {                                                                     \
-		printf(COLOR_RED "[ FAIL ] %s: %s\n" COLOR_RESET, name, reason); \
-		results.failed++;                                                \
-	} while (0)
-
-#define ASSERT(condition, msg)                                                                    \
-	do {                                                                                      \
-		if (!(condition)) {                                                               \
-			fprintf(stderr, COLOR_RED "ASSERTION FAILED: %s (line %d)\n" COLOR_RESET, \
-				msg, __LINE__);                                                   \
-			return -1;                                                                \
-		}                                                                                 \
-	} while (0)
-
-/* IPC message types */
-typedef enum {
-	MSG_READY = 1,
-	MSG_WRITE_DATA,
-	MSG_VERIFY,
-	MSG_MODIFY,
-	MSG_ALLOCATE_REGION,
-	MSG_UNMAP_REGION,
-	MSG_REMAP_REGION,
-	MSG_EXIT,
-	MSG_ACK,
-	MSG_ERROR
-} msg_type_t;
-
-typedef struct {
-	msg_type_t type;
-	unsigned long data;
-	unsigned long data2; /* For passing additional info */
-} ipc_message_t;
-
-/* Send message through pipe */
-static int send_message(int fd, msg_type_t type, unsigned long data, unsigned long data2)
-{
-	ipc_message_t msg = { type, data, data2 };
-	ssize_t written = write(fd, &msg, sizeof(msg));
-	if (written != sizeof(msg)) {
-		perror("send_message");
-		return -1;
-	}
-	return 0;
-}
-
-/* Receive message from pipe */
-static int recv_message(int fd, ipc_message_t *msg)
-{
-	ssize_t bytes_read = read(fd, msg, sizeof(*msg));
-	if (bytes_read != sizeof(*msg)) {
-		perror("recv_message");
-		return -1;
-	}
-	return 0;
-}
-
-/* Get boot timestamp for correlation with dmesg */
-static double get_boot_time(void)
-{
-	struct sysinfo info;
-	struct timespec ts;
-
-	if (sysinfo(&info) != 0 || clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-		return 0.0;
-	}
-
-	return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-
-/* Print with timestamp */
-static void print_with_timestamp(const char *format, ...)
-{
-	double boot_time = get_boot_time();
-	printf("[%10.6f] ", boot_time);
-
-	va_list args;
-	va_start(args, format);
-	vprintf(format, args);
-	va_end(args);
-}
-
-/* Allocate and initialize a test memory region */
-static void *allocate_test_region(size_t size, unsigned int initial_value)
-{
-	void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (addr == MAP_FAILED) {
-		perror("mmap");
-		return NULL;
-	}
-
-	/* Initialize with pattern */
-	unsigned int *data = (unsigned int *)addr;
-	for (size_t i = 0; i < size / sizeof(unsigned int); i++) {
-		data[i] = initial_value + i;
-	}
-
-	return addr;
-}
-
-/* Verify memory region contents */
-static int verify_region(void *addr, size_t size, unsigned int expected_base)
-{
-	unsigned int *data = (unsigned int *)addr;
-	for (size_t i = 0; i < size / sizeof(unsigned int); i++) {
-		if (data[i] != expected_base + i) {
-			fprintf(stderr,
-				"Verification failed at offset %zu: expected 0x%x, got 0x%x\n",
-				i * sizeof(unsigned int), expected_base + (unsigned int)i, data[i]);
-			return -1;
-		}
-	}
-	return 0;
-}
+#include "test-harness.h"
 
 /* Structure to track multiple regions in child */
 typedef struct {
@@ -478,13 +285,9 @@ static int parent_process(pid_t child_pid, int pipe_in, int pipe_out)
 			     getpid(), child_pid);
 
 	/* Open mirilla device */
-	mirilla_fd = open(MIRILLA_DEVICE, O_RDWR);
-	if (mirilla_fd < 0) {
-		perror("Failed to open mirilla device");
-		fprintf(stderr, "Make sure the mirilla module is loaded (sudo insmod "
-				"mirilla.ko)\n");
+	mirilla_fd = mirilla_open_device();
+	if (mirilla_fd < 0)
 		return -1;
-	}
 	printf("[PARENT] Opened mirilla device (fd=%d)\n", mirilla_fd);
 
 	/* Wait for child to be ready */
@@ -869,41 +672,30 @@ static int parent_process(pid_t child_pid, int pipe_in, int pipe_out)
 
 	/*
      * ========================================================================
-     * Test 11: Access After Remap - SIGSEGV Expected
+     * Test 11: Access After Remap - Fault Expected
      * ========================================================================
      */
-	TEST_START("Access After Remap - SIGSEGV Expected");
+	TEST_START("Access After Remap - Fault Expected");
 	{
 		/* After remap, the old peephole points to invalid memory.
-         * Accessing it should result in SIGSEGV, which is correct behavior.
+         * Accessing it should fault, which the protected read reports as an
+         * error outcome instead of crashing the observer.
          */
-		struct sigaction sa, old_sa;
-		memset(&sa, 0, sizeof(sa));
-		sa.sa_handler = sigsegv_handler;
-		sigemptyset(&sa.sa_mask);
-		sa.sa_flags = 0;
-		sigaction(SIGSEGV, &sa, &old_sa);
-
-		sigsegv_received = 0;
-
 		printf("[PARENT] Attempting to read from peephole after child remap (should "
-		       "SIGSEGV)...\n");
+		       "fault)...\n");
 
-		/* Try to access - should get SIGSEGV */
-		if (sigsetjmp(sigsegv_jmp_buf, 1) == 0) {
-			volatile unsigned int test_val = *(unsigned int *)peepholes[0].mapped_addr;
-			(void)test_val;
-			printf("[PARENT] ERROR: Access succeeded without SIGSEGV! Value: 0x%x\n",
-			       test_val);
-			TEST_FAIL("Access After Remap - SIGSEGV Expected", "no SIGSEGV received");
+		unsigned int probe_value = 0;
+
+		if (faultable_probe_u32(peepholes[0].mapped_addr, &probe_value) ==
+		    CATALEJO_OUTCOME_ERROR) {
+			printf("[PARENT] ✓ Protected read reported the fault as expected (memory "
+			       "no longer accessible)\n");
+			TEST_PASS("Access After Remap - Fault Expected");
 		} else {
-			printf("[PARENT] ✓ SIGSEGV received as expected (memory no longer "
-			       "accessible)\n");
-			TEST_PASS("Access After Remap - SIGSEGV Expected");
+			printf("[PARENT] ERROR: Access succeeded without fault! Value: 0x%x\n",
+			       probe_value);
+			TEST_FAIL("Access After Remap - Fault Expected", "no fault reported");
 		}
-
-		/* Restore old signal handler */
-		sigaction(SIGSEGV, &old_sa, NULL);
 	}
 
 	/*
@@ -1050,25 +842,6 @@ cleanup:
 	return test_status;
 }
 
-/* Print test summary */
-static void print_summary(void)
-{
-	printf("\n");
-	printf(COLOR_CYAN "========================================\n");
-	printf("         TEST SUMMARY\n");
-	printf("========================================\n" COLOR_RESET);
-	printf("Total tests:  %d\n", results.total);
-	printf(COLOR_GREEN "Passed:       %d\n" COLOR_RESET, results.passed);
-	printf(COLOR_RED "Failed:       %d\n" COLOR_RESET, results.failed);
-	printf(COLOR_CYAN "========================================\n" COLOR_RESET);
-
-	if (results.failed == 0 && results.total > 0) {
-		printf(COLOR_GREEN "\n✓ All tests passed!\n" COLOR_RESET);
-	} else if (results.failed > 0) {
-		printf(COLOR_RED "\n✗ Some tests failed.\n" COLOR_RESET);
-	}
-}
-
 int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 {
 	int pipe_parent_to_child[2];
@@ -1076,13 +849,10 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	pid_t child_pid;
 	int status = 0;
 
-	printf(COLOR_MAGENTA);
-	printf("╔════════════════════════════════════════╗\n");
-	printf("║   MIRILLA MODULE TEST SUITE           ║\n");
-	printf("║   New API - Enhanced Test Coverage     ║\n");
-	printf("╚════════════════════════════════════════╝\n");
-	printf(COLOR_RESET);
-	printf("\n");
+	print_banner("MIRILLA MODULE TEST SUITE");
+
+	if (harness_fault_initialize() < 0)
+		return EXIT_FAILURE;
 
 	/* Create pipes for IPC */
 	if (pipe(pipe_parent_to_child) < 0) {
@@ -1142,5 +912,5 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 
 	print_summary();
 
-	return (results.failed == 0 && results.total > 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+	return suite_status();
 }
