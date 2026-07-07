@@ -36,8 +36,8 @@
  */
 extern bool
 mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier *target_subscribe,
-						const struct mmu_notifier_range *range,
-						unsigned long sequence_count);
+					       const struct mmu_notifier_range *range,
+					       unsigned long sequence_count);
 
 /*
  * The MMU notifier operation table and operation declaration.
@@ -54,7 +54,7 @@ extern void mirilla_map_peephole_vm_open(struct vm_area_struct *vma);
 extern void mirilla_map_peephole_vm_close(struct vm_area_struct *vma);
 extern int mirilla_map_peephole_vm_mremap(struct vm_area_struct *vma);
 extern int mirilla_map_peephole_vm_mprotect(struct vm_area_struct *vma, unsigned long start,
-					     unsigned long end, unsigned long newflags);
+					    unsigned long end, unsigned long newflags);
 
 /*
  * The VMA operation table and operation declaration.
@@ -85,7 +85,7 @@ static const struct file_operations mirilla_map_peephole_file_operations = {
  */
 #define MIRILLA_COMMAND_CATEGORY_MAP 0x00
 
-#define MIRILLA_MAP_COMMANDS         \
+#define MIRILLA_MAP_COMMANDS          \
 	X(ENGAGE, 0x00, engage)       \
 	X(DISENGAGE, 0x01, disengage) \
 	X(PEEPHOLE, 0x02, peephole)
@@ -108,11 +108,10 @@ __attribute((unused)) static const char *MIRILLA_COMMAND_NAME_MAP_TABLE[] = {
 #define MIRILLA_COMMAND_NAME_MAP(map_command) (MIRILLA_COMMAND_NAME_MAP_TABLE[map_command])
 
 #define MIRILLA_MAP_CONTEXT_LIST \
-	X(target)                 \
+	X(target)                \
 	X(peephole)
 
-#define MIRILLA_MAP_ID_TYPE_DECLARE(type_name) \
-	typedef mirilla_id_t mirilla_map_##type_name##_id_t
+#define MIRILLA_MAP_ID_TYPE_DECLARE(type_name) typedef mirilla_id_t mirilla_map_##type_name##_id_t
 
 /*
  * Identifier type definitions for context record structures.
@@ -143,7 +142,7 @@ MIRILLA_MAP_CONTEXT_LIST
 	union mirilla_map_##name##_io {                        \
 		struct mirilla_map_##name##_argument argument; \
 		struct mirilla_map_##name##_result result;     \
-	};                                                      \
+	};                                                     \
 	MIRILLA_ASSERT_IO_SIZE(name)
 
 struct mirilla_map_engage_argument {
@@ -214,7 +213,7 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(peephole);
 /*
  * Declare all command handler functions.
  */
-#define X(name, val, io)                                                   \
+#define X(name, val, io)                                                 \
 	extern mirilla_command_status_t mirilla_map_handle_command_##io( \
 		struct mirilla_device_context *device_context, union mirilla_map_##io##_io *io);
 MIRILLA_MAP_COMMANDS
@@ -234,7 +233,6 @@ MIRILLA_CONTEXT_DEFINE(
 
 		/*
        * The peephole atomic counter associated to this map target.
-       *
        */
 		mirilla_atomic_id_t peephole_count;
 
@@ -340,9 +338,9 @@ MIRILLA_MAP_CONTEXT_LIST
 /*
  * Map command handler dispatcher.
  */
-mirilla_command_status_t
-mirilla_map_handle_command(struct mirilla_device_context *device_context,
-			    mirilla_command_t command, mirilla_command_argument_t argument);
+mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_context *device_context,
+						    mirilla_command_t command,
+						    mirilla_command_argument_t argument);
 
 /*
  * NOTE(security): The minimum capability an engagement author must hold.

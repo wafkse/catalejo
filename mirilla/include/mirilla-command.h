@@ -23,12 +23,12 @@
 #define MIRILLA_IOCTL_COMMAND_CATEGORY_OFFSET (16)
 #define MIRILLA_IOCTL_MAGIC_OFFSET (24)
 
-#define MIRILLA_COMMAND_ENCODE(category, enumeration)                                            \
+#define MIRILLA_COMMAND_ENCODE(category, enumeration)                                           \
 	((MIRILLA_IOCTL_MAGIC << MIRILLA_IOCTL_MAGIC_OFFSET) |                                  \
-	 ((category &                                                                             \
+	 ((category &                                                                           \
 	   (MIRILLA_IOCTL_COMMAND_CATEGORY_MASK >> MIRILLA_IOCTL_COMMAND_CATEGORY_OFFSET))      \
-	  << MIRILLA_IOCTL_COMMAND_CATEGORY_OFFSET) |                                            \
-	 (enumeration &                                                                           \
+	  << MIRILLA_IOCTL_COMMAND_CATEGORY_OFFSET) |                                           \
+	 (enumeration &                                                                         \
 	  (MIRILLA_IOCTL_COMMAND_ENUMERATION_MASK >> MIRILLA_IOCTL_COMMAND_ENUMERATION_OFFSET)) \
 		 << MIRILLA_IOCTL_COMMAND_ENUMERATION_OFFSET)
 
