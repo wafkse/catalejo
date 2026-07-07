@@ -13,7 +13,7 @@
   CATALEJO_CONCAT(__stop_, CATALEJO_FAULT_SECTION_BASE)
 
 #define FAULT_ROUTINE                                                          \
-  __attribute__((noinline)) __attribute__((naked))                             \
+  __attribute__((noinline)) __attribute__((sysv_abi)) __attribute__((naked))   \
   __attribute__((section(CATALEJO_FAULT_SECTION_NAME)))
 
 /*
