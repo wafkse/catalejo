@@ -233,10 +233,8 @@ MIRILLA_CONTEXT_DEFINE(
 		struct pid *process_id;
 
 		/*
-       * The peephole list associated to this map target.
+       * The peephole atomic counter associated to this map target.
        *
-       * This is merely identificative and has no functionality depending on
-       * identifier uniqueness.
        */
 		mirilla_atomic_id_t peephole_count;
 
