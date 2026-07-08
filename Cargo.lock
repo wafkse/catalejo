@@ -55,6 +55,7 @@ name = "catalejo"
 version = "0.1.0"
 dependencies = [
  "catalejo-fault",
+ "catalejo-macro",
  "catalejo-memory",
  "catalejo-sys",
  "dashmap",
@@ -73,6 +74,15 @@ dependencies = [
  "libc",
  "tokel",
  "walkdir",
+]
+
+[[package]]
+name = "catalejo-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
