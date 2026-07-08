@@ -33,7 +33,7 @@ pub mod command {
 
     /// The canonical name of the device exposed by the kernel module.
     ///
-    /// This is used for identifying and interfacing with the appropiate character device.
+    /// This is used for identifying and interfacing with the appropriate character device.
     pub const MIRILLA_DEVICE_NAME: &str = const {
         // SAFETY: The `CStr` is obtained from a `bindgen`-generated C string literal, so it always properly nul-delimited.
         let target_value =

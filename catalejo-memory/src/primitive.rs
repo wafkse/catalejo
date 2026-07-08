@@ -21,9 +21,9 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    /// Determine an appropiate [`Primitive`] type variant for the target type.
+    /// Determine an appropriate [`Primitive`] type variant for the target type.
     #[inline]
-    pub const fn appropiate<T>() -> Option<Self>
+    pub const fn appropriate<T>() -> Option<Self>
     where
         T: Unassociated,
     {

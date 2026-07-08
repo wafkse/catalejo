@@ -37,7 +37,7 @@
 	       ##__VA_ARGS__)
 
 /*
- * Log a formatted error string and return the appropiate `ERRNO`.
+ * Log a formatted error string and return the appropriate `ERRNO`.
  */
 #define MIRILLA_ERROR_AND_RETURN(retval, fmt, ...) \
 	do {                                       \

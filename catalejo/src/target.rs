@@ -52,7 +52,7 @@ impl Target {
     pub fn engage_within(&self, process_id: libc::pid_t) -> io::Result<Self> {
         let Self(target_device, ..) = self;
 
-        // SAFETY: The file descriptor was created by the appropiate kernel module.
+        // SAFETY: The file descriptor was created by the appropriate kernel module.
         unsafe { Self::engage_with(target_device.as_fd(), process_id) }
     }
 }
