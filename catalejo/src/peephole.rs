@@ -2,10 +2,9 @@
 
 use alloc::sync::Arc;
 
-use core::{alloc::Layout, marker, mem, num::NonZero, ptr::NonNull};
+use core::{alloc::Layout, borrow::Borrow, marker, mem, num::NonZero, ptr::NonNull};
 
 use std::{
-    borrow::Borrow,
     io::{self, ErrorKind},
     os::fd::{AsFd, OwnedFd},
 };
