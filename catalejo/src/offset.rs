@@ -1,8 +1,8 @@
 //! Offset management for elaborate structures.
 
-use core::marker;
+use core::{borrow::Borrow, marker, mem};
 
-use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
+use catalejo_memory::behavior::Immortal;
 
 // NOTE: Re-export so downstream crates can consume both `Field` as a trait and a derive macro.
 pub use catalejo_macro::Field;
@@ -62,12 +62,16 @@ impl Offset {
 }
 
 /// A trait that describes a field inside a specific structure.
-pub trait Field: Unassociated {
+///
+/// # Safety
+///
+/// The returned offset must be within in bounds of the associated structure.
+pub unsafe trait Field: Unassociated {
     /// The structure that this fields belongs to.
     type Structure: Unassociated;
 
     /// Determine the offset of this field in respect to its structure.
-    fn offset(&self) -> Offset;
+    fn offset(target_value: impl Borrow<Self>) -> Offset;
 }
 
 /// A supertrait over [`Field`] to represent possibly-dynamic structure field offsets.

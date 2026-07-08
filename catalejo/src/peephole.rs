@@ -1,23 +1,29 @@
 //! In-memory peephole module.
 
 use alloc::sync::Arc;
-use catalejo_memory::prelude::Unassociated;
+
 use core::{alloc::Layout, marker, num::NonZero, ptr::NonNull};
+
 use std::{
     io::{self, ErrorKind},
     os::fd::{AsFd, OwnedFd},
 };
+
+use catalejo_memory::prelude::Unassociated;
 
 use catalejo_fault::{
     behavior::Faultable,
     ffi::Subsystem,
     maybe::{MaybeFault, Opaque},
 };
+
 use catalejo_sys::{ffi, id::PeepholeId};
+
 use nix::sys::mman::{MapFlags, ProtFlags};
 
 use crate::{
-    address::{Offset, ViAddr, ViRange},
+    address::{ViAddr, ViRange},
+    offset::Offset,
     target::Target,
 };
 
@@ -62,8 +68,8 @@ impl Peephole {
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
 
             // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
-            // file, which is exactly what the kernel module requires; it validates the
-            // parameters and rejects (`-EINVAL`/`-EACCES`) anything else.
+            // file, which is exactly what the kernel module requires, it validates the
+            // parameters and rejects (with `-EINVAL` or `-EACCES`) anything else.
             let target_value = unsafe {
                 nix::sys::mman::mmap(
                     None,
@@ -124,7 +130,7 @@ impl Peephole {
     #[inline]
     pub fn at<F>(&self, target_displacement: Offset) -> Option<Foreign<'_, F>>
     where
-        F: Faultable,
+        F: Unassociated,
     {
         let Peephole { target_window, .. } = self;
 
@@ -238,7 +244,7 @@ where
         //
         // * `Self`'s invariant guarantees the displacement is in-bounds and aligned for `F`, so
         //   `target_address` lies within the live mapping, kept mapped for `'a` by the
-        //   `Arc<Window>` borrowed through the peephole; the foreign window is ordinary RAM,
+        //   `Arc<Window>` borrowed through the peephole, and the foreign window is ordinary RAM,
         //   never side-effecting MMIO.
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
