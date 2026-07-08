@@ -100,10 +100,11 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
         })
         .collect::<Vec<_>>();
 
-    // NOTE: The markers live in a per-type module (named after the annotated type)
-    // so that fields sharing a name across structures (e.g. `Elf32_Ehdr::e_type`
-    // and `Elf64_Ehdr::e_type`) do not collide in the type namespace.
-    let module_ident = format_ident!("{}", ident.to_string().to_lowercase());
+    // NOTE: The markers live in a per-type module so that fields sharing a name across
+    // structures (e.g. `Elf32_Ehdr::e_type` and `Elf64_Ehdr::e_type`) do not collide in
+    // the type namespace. The `__`-affixed name keeps the module distinct from the
+    // annotated type itself, whose own name may already be snake_case (e.g. `link_map`).
+    let module_ident = format_ident!("__{}_fields", ident);
 
     // NOTE: A trailing sentence links each marker back to the structure it describes.
     let marker_doc =
@@ -165,6 +166,8 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[doc(hidden)]
         pub mod #module_ident {
+            use super::*;
+
             #( #markers )*
         }
 
