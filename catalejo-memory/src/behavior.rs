@@ -83,3 +83,6 @@ unsafe impl Unassociated for f32 {}
 
 // SAFETY: 64-bit floats possess no safety-related invariants. NaN bit patterns are mathematically valid states.
 unsafe impl Unassociated for f64 {}
+
+// SAFETY: The element type `U` implements `Unassociated`, therefore, a const-generic array does too.
+unsafe impl<U, const N: usize> Unassociated for [U; N] where U: Unassociated {}
