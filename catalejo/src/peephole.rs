@@ -2,14 +2,15 @@
 
 use alloc::sync::Arc;
 
-use core::{alloc::Layout, marker, num::NonZero, ptr::NonNull};
+use core::{alloc::Layout, marker, mem, num::NonZero, ptr::NonNull};
 
 use std::{
+    borrow::Borrow,
     io::{self, ErrorKind},
     os::fd::{AsFd, OwnedFd},
 };
 
-use catalejo_memory::prelude::Unassociated;
+use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
 
 use catalejo_fault::{
     behavior::Faultable,
@@ -23,7 +24,7 @@ use nix::sys::mman::{MapFlags, ProtFlags};
 
 use crate::{
     address::{ViAddr, ViRange},
-    offset::Offset,
+    offset::{Field, Offset},
     target::Target,
 };
 
@@ -222,6 +223,66 @@ where
 
 impl<'a, F> Foreign<'a, F>
 where
+    // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
+    F: Unassociated,
+{
+    /// Field-project into a field of `F`, to the respective [`P::Value`].
+    #[inline]
+    pub fn project<P>(self, target_project: impl Borrow<P>) -> Foreign<'a, P::Value>
+    where
+        P: Field<Structure = F>,
+    {
+        let Self(peephole_state, target_value, ..) = self;
+
+        Foreign::<'_, P::Value>(
+            peephole_state,
+            // NOTE(invariant): This remains in-bounds as `F` is guaranteed to be contained completely
+            // into the peephole window, and the `Field` trait requires that the field offset is in-bounds
+            // of the containing structure as a safety requirement.
+            Offset::stack(target_value, Field::offset(target_project)),
+            marker::PhantomData::<P::Value>,
+        )
+    }
+
+    /// Cast the foreign value to another, as long as:
+    ///
+    /// * The casted-to type has the same alignment requirement or smaller.
+    /// * The casted-to type is equal or smaller in size compared to the casted-from type.
+    ///
+    /// This is required to not alter the soundness-providing invariants of the [`Foreign`] handle.
+    #[inline]
+    pub const fn cast<V>(self) -> Option<Foreign<'a, V>>
+    where
+        V: Unassociated,
+    {
+        let Self(peephole_state, target_value, ..) = self;
+
+        let is_equal_or_smaller_size = mem::size_of::<V>() <= mem::size_of::<F>();
+        let is_equal_or_smaller_alignment = mem::align_of::<V>() <= mem::align_of::<F>();
+
+        if is_equal_or_smaller_alignment && is_equal_or_smaller_size {
+            Some(Foreign::<'_, V>(
+                peephole_state,
+                target_value,
+                marker::PhantomData::<V>,
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Attempt to lift the [`Foreign`] type into the locally-managed value.
+    #[inline]
+    pub fn lift<L>(self, subsystem: Subsystem) -> Result<L, L::Error>
+    where
+        L: Lift<Value = F>,
+    {
+        L::construct(subsystem, self)
+    }
+}
+
+impl<'a, F> Foreign<'a, F>
+where
     F: Faultable,
 {
     /// Attempt to read a [`Faultable`] `F` from the foreign address space.
@@ -230,7 +291,7 @@ where
     /// holds the value observed at the instant of the read, a [`None`] denotes that the read
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
-    pub fn read(&self, target_subsystem: Subsystem) -> Option<F> {
+    pub fn read(self, target_subsystem: Subsystem) -> Option<F> {
         let Self(target_peephole, target_displacement, ..) = self;
 
         let Peephole { target_window, .. } = target_peephole;
@@ -250,4 +311,25 @@ where
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
         unsafe { MaybeFault::<F>::new(target_address).read(target_subsystem) }
     }
+}
+
+/// A trait that is implemented for foreigner-struct-wrapping types.
+///
+/// This describes a type that can be constructed from a respective [`Foreign`] handle.
+pub trait Lift: Immortal {
+    /// The foreign structure to be read for construction purposes.
+    ///
+    /// This does not require to be [`Faultable`], as it may be a structure itself.
+    type Value: Unassociated;
+
+    /// The error that can arise during construction.
+    type Error;
+
+    /// Construct the type from a [`Foreign`] handle to the target value type.
+    fn construct(
+        target_subsystem: Subsystem,
+        target_handle: Foreign<Self::Value>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
 }

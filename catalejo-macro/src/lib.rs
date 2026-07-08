@@ -109,7 +109,7 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
     let marker_doc =
         format!("This is an auto-generated field marker of [`{ident}`](super::{ident}).");
 
-    let markers = field_list.iter().map(|(field_ident, _, doc_attr_list)| {
+    let markers = field_list.iter().map(|(field_ident, field_ty, doc_attr_list)| {
         quote! {
             #( #doc_attr_list )*
             #[doc = ""]
@@ -126,6 +126,8 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
             // `Field` contract that the returned offset lie within its structure.
             unsafe impl ::catalejo::prelude::Field for #field_ident {
                 type Structure = super::#ident;
+
+                type Value = #field_ty;
 
                 #[inline]
                 fn offset(_: impl ::core::borrow::Borrow<Self>) -> ::catalejo::prelude::Offset {

@@ -46,8 +46,8 @@ impl Offset {
 impl Offset {
     /// Determine the encapsulated offset value.
     #[inline]
-    pub const fn value(&self) -> usize {
-        let &Self(target_value) = self;
+    pub const fn value(self) -> usize {
+        let Self(target_value) = self;
 
         target_value
     }
@@ -69,6 +69,9 @@ impl Offset {
 pub unsafe trait Field: Unassociated {
     /// The structure that this fields belongs to.
     type Structure: Unassociated;
+
+    /// The value that this field is for and the thing actually read.
+    type Value: Unassociated;
 
     /// Determine the offset of this field in respect to its structure.
     fn offset(target_value: impl Borrow<Self>) -> Offset;
