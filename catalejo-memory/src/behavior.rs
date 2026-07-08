@@ -86,3 +86,19 @@ unsafe impl Unassociated for f64 {}
 
 // SAFETY: The element type `U` implements `Unassociated`, therefore, a const-generic array does too.
 unsafe impl<U, const N: usize> Unassociated for [U; N] where U: Unassociated {}
+
+// SAFETY: A thin raw pointer has no illegal bit patterns, as every bit pattern is a valid
+// pointer value, it is byte-transmutable, and a torn read still yields a valid (if mangled and
+// meaningless) address that is never dereferenced. The `P: Immortal` bound supplies
+// `Sized` (the pointer is thin, a single machine word) and `'static` (satisfying the
+// `Immortal` supertrait of `Unassociated`).
+// NOTE(warning): This is to be used as an escape hatch to model pointers in a foreign address space.
+unsafe impl<P> Unassociated for *const P where P: Immortal {}
+
+// SAFETY: A thin raw pointer has no illegal bit patterns, as every bit pattern is a valid
+// pointer value, it is byte-transmutable, and a torn read still yields a valid (if mangled and
+// meaningless) address that is never dereferenced. The `P: Immortal` bound supplies
+// `Sized` (the pointer is thin, a single machine word) and `'static` (satisfying the
+// `Immortal` supertrait of `Unassociated`).
+// NOTE(warning): This is to be used as an escape hatch to model pointers in a foreign address space.
+unsafe impl<P> Unassociated for *mut P where P: Immortal {}
