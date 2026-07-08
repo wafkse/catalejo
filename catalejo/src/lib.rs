@@ -27,7 +27,8 @@ pub mod prelude {
     //! The prelude of the `catalejo` crate.
 
     pub use crate::{
-        address::{Offset, ViAddr, ViRange},
+        address::{ViAddr, ViRange},
+        offset::{AddressSpace, Field, Offset, Retrievable, Retrieve, Unassociated},
         peephole::{Foreign, Peephole, Window},
         target::Target,
     };

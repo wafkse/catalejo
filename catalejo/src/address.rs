@@ -2,7 +2,7 @@
 
 // FIXME(arch): This assumes 64-bit canonical virtual addresses. Will need to
 
-use core::{mem, num::NonZero};
+use core::num::NonZero;
 
 use catalejo_sys::ffi;
 

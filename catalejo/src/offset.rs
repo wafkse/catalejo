@@ -4,7 +4,62 @@ use core::marker;
 
 use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
 
-use crate::address::Offset;
+// NOTE: Re-export so downstream crates can consume both `Field` as a trait and a derive macro.
+pub use catalejo_macro::Field;
+
+// NOTE: Re-exported so downstream `Field` derive output can name `Unassociated`
+// through `catalejo` without depending on `catalejo-memory` directly.
+pub use catalejo_memory::behavior::Unassociated;
+
+/// A local offset applied to a virtual base.
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
+#[repr(transparent)]
+pub struct Offset(usize);
+
+impl Offset {
+    /// Construct a byte-level offset from the target value.
+    #[inline]
+    pub const fn byte(target_value: usize) -> Self {
+        Self(target_value)
+    }
+
+    /// Construct a type-level offset from the target value.
+    ///
+    /// This determines the offset using the size of the parametric type.
+    #[inline]
+    pub const fn typed<T>(target_value: usize) -> Self {
+        Self::byte(mem::size_of::<T>().wrapping_mul(target_value))
+    }
+
+    /// Stack two disjoint offsets onto a singular one.
+    ///
+    /// This is equivalent to add the two byte-level together via wrapping arithmetic.
+    #[inline]
+    pub const fn stack(self, target_value: Self) -> Self {
+        let Self(target_left) = self;
+        let Self(target_right) = target_value;
+
+        Self(target_left.wrapping_add(target_right))
+    }
+}
+
+impl Offset {
+    /// Determine the encapsulated offset value.
+    #[inline]
+    pub const fn value(&self) -> usize {
+        let &Self(target_value) = self;
+
+        target_value
+    }
+
+    /// Borrow the encapsulated offset value.
+    #[inline]
+    pub const fn value_mut(&mut self) -> &mut usize {
+        let Self(target_value) = self;
+
+        target_value
+    }
+}
 
 /// A trait that describes a field inside a specific structure.
 pub trait Field: Unassociated {

@@ -7,7 +7,8 @@ use catalejo_sys::ffi;
 use dashmap::DashMap;
 
 use crate::{
-    address::{Offset, ViAddr, ViRange},
+    address::{ViAddr, ViRange},
+    offset::Offset,
     prelude::Peephole,
     target::Target,
 };
