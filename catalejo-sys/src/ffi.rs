@@ -17,8 +17,9 @@ pub mod command {
 
     use core::ffi::CStr;
 
+    use core::io::{self, ErrorKind};
+
     use std::{
-        io::{self, ErrorKind},
         os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
         path::PathBuf,
         sync::LazyLock,
