@@ -175,7 +175,7 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(disengage);
 /**
  * An integer primitive capable of representing a virtual address.
  */
-typedef unsigned long virtual_address_t;
+typedef size_t virtual_address_t;
 
 struct mirilla_map_peephole_argument {
 	/*
