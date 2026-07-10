@@ -27,7 +27,7 @@ pub mod command {
     use core::ptr;
 
     use crate::{
-        ffi::binding,
+        ffi::binding::{self, virtual_address_t},
         id::{PeepholeId, TargetId},
     };
 
@@ -133,8 +133,8 @@ pub mod command {
     pub unsafe fn peephole(
         fd: BorrowedFd,
         target_id: TargetId,
-        start_address: u64,
-        end_address: u64,
+        start_address: virtual_address_t,
+        end_address: virtual_address_t,
     ) -> io::Result<(PeepholeId, OwnedFd)> {
         let mut peephole_id = None::<PeepholeId>;
         let mut peephole_fd = None::<OwnedFd>;
