@@ -19,7 +19,7 @@ pub mod peephole;
 
 pub mod address;
 
-pub mod context;
+pub mod manage;
 
 pub mod offset;
 
