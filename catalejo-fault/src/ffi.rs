@@ -291,6 +291,7 @@ where
 ///
 /// * No foreign library has hijacked the synchronous POSIX signal handlers without implementing
 ///   perfect chaining since the subsystem token was issued.
+#[inline]
 pub unsafe fn copy(
     _: Subsystem,
     target_address: *mut u8,
