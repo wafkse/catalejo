@@ -1,15 +1,30 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
-# clang-format configuration file. Intended for clang-format >= 11.
+# Canonical clang-format configuration for the whole workspace. Every C
+# translation unit under `mirilla` and `catalejo-fault` is formatted against
+# this single file, so the style stays consistent across the kernel module and
+# the userspace fault subsystem.
 #
-# For more information, see:
+# The rules descend from the Linux kernel style but indent with four spaces
+# rather than tabs, matching the `.editorconfig` that governs the rest of the
+# tree. Intended for clang-format >= 12.
 #
-#   Documentation/dev-tools/clang-format.rst
+# For more information, see the clang-format documentation.
+#
 #   https://clang.llvm.org/docs/ClangFormat.html
 #   https://clang.llvm.org/docs/ClangFormatStyleOptions.html
 #
 ---
 AccessModifierOffset: -4
+# Macros that stand in for `__attribute__((...))`, so clang-format keeps them
+# attached to the declaration they decorate rather than indenting under them.
+AttributeMacros:
+    - __init
+    - __exit
+    - __user
+    - FAULT_ROUTINE
+    - CATALEJO_USED
+    - CATALEJO_UNUSED
 AlignAfterOpenBracket: Align
 AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
@@ -57,8 +72,8 @@ AlignEscapedNewlinesLeft: true
 CommentPragmas: "^ IWYU pragma:"
 CompactNamespaces: false
 ConstructorInitializerAllOnOneLineOrOnePerLine: false
-ConstructorInitializerIndentWidth: 8
-ContinuationIndentWidth: 8
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
 Cpp11BracedListStyle: false
 DerivePointerAlignment: false
 DisableFormat: false
@@ -72,7 +87,7 @@ IncludeIsMainRegex: "(Test)?$"
 IndentCaseLabels: false
 IndentGotoLabels: false
 IndentPPDirectives: None
-IndentWidth: 8
+IndentWidth: 4
 IndentWrappedFunctionNames: false
 JavaScriptQuotes: Leave
 JavaScriptWrapImports: true
@@ -82,7 +97,7 @@ MacroBlockEnd: ""
 MaxEmptyLinesToKeep: 1
 NamespaceIndentation: None
 ObjCBinPackProtocolList: Auto
-ObjCBlockIndentWidth: 8
+ObjCBlockIndentWidth: 4
 ObjCSpaceAfterProperty: true
 ObjCSpaceBeforeProtocolList: true
 
@@ -114,6 +129,6 @@ SpacesInCStyleCastParentheses: false
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
 Standard: Cpp03
-TabWidth: 8
-UseTab: Always
+TabWidth: 4
+UseTab: Never
 ...

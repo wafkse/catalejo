@@ -1,0 +1,53 @@
+name: Provision mirilla kernel
+description: >
+    Install the virtme-ng VM toolchain and build (or restore from cache) a
+    kernel configured for mirilla. On success a ready-to-boot kernel tree is
+    left in `linux/` at the workspace root.
+
+inputs:
+    tag:
+        description: The kernel.org stable git tag to build.
+        required: true
+    vng-version:
+        description: The virtme-ng release to install.
+        required: false
+        default: "1.41"
+
+runs:
+    using: composite
+    steps:
+        - name: Install build and VM dependencies
+          shell: bash
+          run: |
+              sudo apt-get update
+              sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev \
+                bc kmod cpio libncurses-dev qemu-system-x86 pipx
+              pipx install "virtme-ng==${{ inputs.vng-version }}"
+              pipx ensurepath
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+        - name: Check KVM availability
+          shell: bash
+          run: ls -l /dev/kvm || echo "KVM unavailable; qemu falls back to TCG (slow)"
+
+        - name: Restore kernel build
+          id: kernel-cache
+          uses: actions/cache@v4
+          with:
+              path: linux
+              # The cache key follows the tag, the vng release, and the config.
+              key: kernel-${{ inputs.tag }}-vng-${{ inputs.vng-version }}-${{ hashFiles('ci/kernel-mirilla.config') }}
+
+        - name: Build kernel
+          if: steps.kernel-cache.outputs.cache-hit != 'true'
+          shell: bash
+          run: |
+              git clone --depth 1 --branch "${{ inputs.tag }}" \
+                https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
+              cd linux
+              vng --build --config "$GITHUB_WORKSPACE/ci/kernel-mirilla.config"
+              rm -rf .git
+
+        - name: Verify kernel configuration
+          shell: bash
+          run: grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config

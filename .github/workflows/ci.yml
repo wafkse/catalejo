@@ -8,11 +8,17 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: true
 
+# The kernel matrix the mirilla-powered jobs run against: the latest longterm and
+# the latest stable series. Bump the tags as kernel.org moves; the cache key
+# follows the tag. Kept here as YAML so every VM job shares one definition.
+env:
+    VNG_VERSION: "1.41"
+
 jobs:
-    rust:
-        name: Rust workspace
+    lint-rust:
+        name: Automated Linting (Rust)
         runs-on: ubuntu-latest
-        timeout-minutes: 30
+        timeout-minutes: 20
         steps:
             - uses: actions/checkout@v4
 
@@ -27,69 +33,128 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y clang llvm-dev libclang-dev
 
-            - name: Check formatting
-              run: cargo fmt --all --check
+            - uses: ./.github/actions/setup-just
 
-            - name: Lint
-              run: cargo clippy --workspace --all-targets -- -D warnings
+            - run: just lint-rust
 
-            - name: Build
-              run: cargo build --workspace
+    lint-c:
+        name: Automated Linting (C)
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@v4
 
-            - name: Test
-              run: cargo test --workspace
+            - name: Install C tooling
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang-format clangd bear build-essential
 
-    kernel-tests:
-        name: Kernel tests (${{ matrix.kernel.series }})
+            - uses: ./.github/actions/setup-just
+
+            - run: just lint-c
+
+    mirilla-test-suite:
+        name: Mirilla-powered Kernel Test Suite (${{ matrix.kernel.series }})
         runs-on: ubuntu-latest
         timeout-minutes: 90
         strategy:
             fail-fast: false
             matrix:
                 kernel:
-                    # Latest longterm and latest stable series; bump the tags as
-                    # kernel.org moves. The cache key follows the tag.
                     - { series: "6.18", tag: "v6.18.38" }
                     - { series: "7.1", tag: "v7.1.3" }
-        env:
-            VNG_VERSION: "1.41"
         steps:
             - uses: actions/checkout@v4
 
-            - name: Install build and VM dependencies
+            - name: Provision mirilla kernel
+              uses: ./.github/actions/mirilla-kernel
+              with:
+                  tag: ${{ matrix.kernel.tag }}
+                  vng-version: ${{ env.VNG_VERSION }}
+
+            - uses: ./.github/actions/setup-just
+
+            - name: Build the module and run the C test suite in the VM
+              run: just mirilla-test-vm
+              env:
+                  KDIR: ${{ github.workspace }}/linux
+
+    catalejo-integration-tests:
+        name: Mirilla-powered Kernel Integration Tests (${{ matrix.kernel.series }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 90
+        strategy:
+            fail-fast: false
+            matrix:
+                kernel:
+                    - { series: "6.18", tag: "v6.18.38" }
+                    - { series: "7.1", tag: "v7.1.3" }
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install bindgen dependencies
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev \
-                    bc kmod cpio libncurses-dev qemu-system-x86 pipx
-                  pipx install "virtme-ng==$VNG_VERSION"
-                  pipx ensurepath
-                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+                  sudo apt-get install -y clang llvm-dev libclang-dev
 
-            - name: Check KVM availability
-              run: ls -l /dev/kvm || echo "KVM unavailable; qemu falls back to TCG (slow)"
-
-            - name: Restore kernel build
-              id: kernel-cache
-              uses: actions/cache@v4
+            - name: Provision mirilla kernel
+              uses: ./.github/actions/mirilla-kernel
               with:
-                  path: linux
-                  key: kernel-${{ matrix.kernel.tag }}-vng-${{ env.VNG_VERSION }}-${{ hashFiles('ci/kernel-mirilla.config') }}
+                  tag: ${{ matrix.kernel.tag }}
+                  vng-version: ${{ env.VNG_VERSION }}
 
-            - name: Build kernel
-              if: steps.kernel-cache.outputs.cache-hit != 'true'
+            - uses: ./.github/actions/setup-just
+
+            - name: Build the module and run the Rust test suite in the VM
+              run: just catalejo-test-vm
+              env:
+                  KDIR: ${{ github.workspace }}/linux
+
+    catalejo-benchmark:
+        name: Mirilla-powered Kernel Benchmark (${{ matrix.kernel.series }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 90
+        strategy:
+            fail-fast: false
+            matrix:
+                kernel:
+                    - { series: "6.18", tag: "v6.18.38" }
+                    - { series: "7.1", tag: "v7.1.3" }
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install bindgen dependencies
               run: |
-                  git clone --depth 1 --branch "${{ matrix.kernel.tag }}" \
-                    https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
-                  cd linux
-                  vng --build --config "$GITHUB_WORKSPACE/ci/kernel-mirilla.config"
-                  rm -rf .git
+                  sudo apt-get update
+                  sudo apt-get install -y clang llvm-dev libclang-dev
 
-            - name: Verify kernel configuration
-              run: grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config
+            - name: Provision mirilla kernel
+              uses: ./.github/actions/mirilla-kernel
+              with:
+                  tag: ${{ matrix.kernel.tag }}
+                  vng-version: ${{ env.VNG_VERSION }}
 
-            - name: Build mirilla module and test suites
-              run: make -C mirilla KDIR="$GITHUB_WORKSPACE/linux" module tests
+            - uses: ./.github/actions/setup-just
 
-            - name: Run test suites in the VM
-              working-directory: linux
-              run: vng --user root --memory 2G --cpu 4 -- "$GITHUB_WORKSPACE/ci/run-in-vm.sh"
+            - name: Build the module and run the self-peephole benchmarks in the VM
+              run: just catalejo-bench-vm
+              env:
+                  KDIR: ${{ github.workspace }}/linux
+
+            # Criterion writes its HTML report, plots, and estimates under
+            # target/criterion at the workspace root. The guest run leaves them
+            # there, so the whole report uploads as the artifact.
+            - name: Upload criterion report
+              uses: actions/upload-artifact@v4
+              with:
+                  name: criterion-report-${{ matrix.kernel.series }}
+                  path: target/criterion
+                  if-no-files-found: error

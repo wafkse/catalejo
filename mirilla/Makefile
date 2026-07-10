@@ -50,8 +50,8 @@ tests: $(TEST_SUITES)
 
 test: tests
 
-run-tests: tests
-	cd test && ./run-tests.sh
+# The suites are run from the workspace `Justfile` (see `just mirilla-test`),
+# which loads the module and drives them inside a mirilla-powered VM.
 
 # --- Developer Experience (DX) Targets ---
 
@@ -59,4 +59,4 @@ run-tests: tests
 language-server: clean
 	bear -- $(MAKE) all
 
-.PHONY: all clean install test tests run-tests module language-server
+.PHONY: all clean install test tests module language-server

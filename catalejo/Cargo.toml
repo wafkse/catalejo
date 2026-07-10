@@ -13,3 +13,14 @@ dashmap = "6.2.1"
 libc = "0.2.186"
 nix = { version = "0.31.3", features = ["mman"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+# `html_reports` adds the plot and report generation on top of the default
+# `plotters` backend, so a benchmark run writes SVGs under target/criterion.
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+# The self-peephole benchmarks drive criterion directly through `criterion_main!`, so the built-in
+# `libtest` harness is disabled and criterion owns `main`.
+[[bench]]
+name = "self_peephole"
+harness = false
