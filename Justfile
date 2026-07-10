@@ -25,8 +25,8 @@ kdir := env("KDIR", "/lib/modules/" + `uname -r` + "/build")
 module := justfile_directory() / "mirilla" / "mirilla.ko"
 
 # Where criterion writes its report. This is the cargo target dir at the workspace
-# root, so it tracks a default (unset) CARGO_TARGET_DIR. The benchmark VM recipe
-# shares this path back to the host, because criterion produces it guest-side.
+# root, so it tracks a default (unset) CARGO_TARGET_DIR. Criterion produces it
+# guest-side, so the benchmark VM recipe copies this path back to the host over SSH.
 
 criterion_dir := justfile_directory() / "target" / "criterion"
 
@@ -216,17 +216,55 @@ catalejo-test-vm: mirilla-module catalejo-build
 # Build the module and run the benchmarks inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-bench-vm: mirilla-module catalejo-build
-    # virtme-ng boots the guest as a copy-on-write snapshot of the host, so any
-    # write the benchmark makes is discarded when the VM shuts down. Criterion
-    # writes its report guest-side, so without help it never reaches the host and
-    # the artifact upload finds nothing. Share the report directory read-write so
-    # criterion's output lands on the host filesystem directly rather than in the
-    # throwaway overlay. --rwdir refuses a host path that does not yet exist, so
-    # create it before booting.
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # virtme-ng boots the guest as a copy-on-write snapshot of the host, so every
+    # write the benchmark makes lands on a throwaway overlay and is discarded at
+    # shutdown. Criterion writes its report guest-side, and sharing the directory
+    # read-write with --rwdir proved unreliable at surfacing it on the host. So
+    # boot the guest with an SSH server instead, drive the run over SSH so its exit
+    # code still gates this recipe, and copy the report back out with scp, which
+    # reads the guest's overlay view and streams it onto the host filesystem across
+    # the transport rather than through the discarded overlay.
+    ssh_config="${HOME}/.cache/virtme-ng/.ssh/virtme-ng-ssh.conf"
+    ssh_host='virtme-ng%2222'
+
+    # Boot the guest in the background with SSH enabled. `sleep infinity` keeps the
+    # VM alive across the SSH-driven run and copy, because virtme-ng powers the
+    # guest off the moment its boot command returns. A minimal PATH is threaded in
+    # so `sleep` resolves under the reset guest environment.
+    cd '{{ kdir }}'
+    vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' --ssh 2222 -- \
+        env 'PATH={{ guest_path }}' sleep infinity &
+    vm_pid=$!
+
+    # Tear the guest down on any exit, successful or not, and reap the process.
+    trap 'kill "${vm_pid}" 2>/dev/null || true; wait "${vm_pid}" 2>/dev/null || true' EXIT
+
+    # Wait for the guest SSH server to accept connections before driving it. The
+    # bounded poll fails the recipe rather than hanging when the guest never comes up.
+    ready=0
+    for _ in $(seq 1 60); do
+        if vng --ssh-client 2222 -- true 2>/dev/null; then
+            ready=1
+            break
+        fi
+        sleep 2
+    done
+    [ "${ready}" -eq 1 ] || { echo "error: the guest SSH server never became ready" >&2; exit 1; }
+
+    # Run the benchmark inside the guest. The environment is re-threaded exactly as
+    # the direct guest runs do, because the SSH session also starts from a reset
+    # environment. The remote exit code propagates, so a guest-side failure, a
+    # silently skipped benchmark included, fails this recipe.
+    vng --ssh-client 2222 -- {{ guest_env }} --justfile '{{ justfile() }}' catalejo-bench
+
+    # Copy the criterion report out of the guest overlay onto the host target dir.
+    # The shared filesystem gives the report the same absolute path in both, so scp
+    # names the guest copy and lands it beside the host build output.
     mkdir -p '{{ criterion_dir }}'
-    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' \
-        --rwdir='{{ criterion_dir }}' -- \
-        {{ guest_env }} --justfile '{{ justfile() }}' catalejo-bench
+    scp -F "${ssh_config}" -r "${ssh_host}:{{ criterion_dir }}" '{{ justfile_directory() }}/target/'
 
 # Publish the latest read-group violin plot into docs for the README embed.
 [group('catalejo')]
