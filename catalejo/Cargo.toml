@@ -19,8 +19,14 @@ tracing = "0.1.44"
 # `plotters` backend, so a benchmark run writes SVGs under target/criterion.
 criterion = { version = "0.8.2", features = ["html_reports"] }
 
-# The self-peephole benchmarks drive criterion directly through `criterion_main!`, so the built-in
-# `libtest` harness is disabled and criterion owns `main`.
+# The peephole benchmarks drive criterion directly rather than through the built-in `libtest`
+# harness, so it is disabled and each benchmark owns `main`. The self-peephole suite hands `main` to
+# `criterion_main!`, whereas the foreign-peephole suite writes its own `main` so it can also serve as
+# the target process the parent peepholes into.
 [[bench]]
 name = "self_peephole"
+harness = false
+
+[[bench]]
+name = "foreign_peephole"
 harness = false
