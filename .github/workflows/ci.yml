@@ -148,14 +148,3 @@ jobs:
               run: just catalejo-bench-vm
               env:
                   KDIR: ${{ github.workspace }}/linux
-
-            # Criterion writes its HTML report, plots, and estimates under
-            # target/criterion at the workspace root. The benchmark recipe copies
-            # them out of the guest over SSH, so the whole report uploads as the
-            # artifact.
-            - name: Upload criterion report
-              uses: actions/upload-artifact@v6
-              with:
-                  name: criterion-report-${{ matrix.kernel.series }}
-                  path: target/criterion
-                  if-no-files-found: error
