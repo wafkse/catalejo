@@ -12,7 +12,7 @@
 
 use catalejo::{
     address::ViAddr,
-    manage::{Manage, Rebased},
+    manage::{Granule, Manage, Memoize},
     target::Target,
 };
 
@@ -37,7 +37,7 @@ fn address_of<T>(target_value: &T) -> ViAddr {
 #[test]
 #[ignore = "requires the mirilla device"]
 fn reads_a_known_word() {
-    let manager = Rebased::new(engage_self());
+    let manager = Memoize::new(engage_self());
 
     let cell = Box::new(0xDEAD_BEEF_CAFE_BABE_u64);
     let target_address = address_of(&*cell);
@@ -62,7 +62,7 @@ fn reads_a_known_word() {
 #[test]
 #[ignore = "requires the mirilla device"]
 fn reads_distinct_words() {
-    let manager = Rebased::new(engage_self());
+    let manager = Memoize::new(engage_self());
 
     let words: Vec<u64> = (0..128_u64)
         .map(|index| index.wrapping_mul(0x9E37_79B9_7F4A_7C15))
@@ -89,25 +89,26 @@ fn reads_distinct_words() {
 
 #[test]
 #[ignore = "requires the mirilla device"]
-fn memoizes_a_peephole_by_frame() {
-    let manager = Rebased::new(engage_self());
+fn memoizes_a_peephole_by_page() {
+    let manager = Memoize::new(engage_self());
 
-    let granule = manager.granule().size();
+    let page = Granule::Page.size();
 
-    // Span two full granules so a granule-distant address is guaranteed to fall in a different frame
-    // regardless of where the allocation lands relative to the granule tiling.
-    let region: Vec<u64> = vec![0; (2 * granule) / size_of::<u64>() + 2];
+    // Span two pages and align the base up to a page, so `here` and `near` share a page while `far`
+    // lands in the next one. Over-allocating by a word keeps every probe inside resident memory.
+    let region: Vec<u64> = vec![0; (2 * page) / size_of::<u64>() + 2];
     let base_address = core::ptr::from_ref(&region[0]) as usize;
+    let aligned_base = (base_address + (page - 1)) & !(page - 1);
 
-    let here = ViAddr::new(base_address);
-    let near = ViAddr::new(base_address + size_of::<u64>());
-    let far = ViAddr::new(base_address + 2 * granule);
+    let here = ViAddr::new(aligned_base);
+    let near = ViAddr::new(aligned_base + size_of::<u64>());
+    let far = ViAddr::new(aligned_base + page);
 
     let peephole_id = |target_address| {
         manager
             .source::<u64>(target_address)
             .expect("the peephole should open")
-            .expect("the granule should admit a word")
+            .expect("the window should admit a word")
             .peephole()
             .id()
     };
@@ -115,12 +116,12 @@ fn memoizes_a_peephole_by_frame() {
     assert_eq!(
         peephole_id(here),
         peephole_id(near),
-        "same-granule addresses should reuse one peephole",
+        "same-page addresses should reuse one peephole",
     );
 
     assert_ne!(
         peephole_id(here),
         peephole_id(far),
-        "granule-distant addresses should resolve to distinct peepholes",
+        "page-distant addresses should resolve to distinct peepholes",
     );
 }
