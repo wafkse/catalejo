@@ -65,7 +65,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_target)
 
 MIRILLA_CONTEXT_DESTRUCTOR(map_target)
 {
-    MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "destruct `map_target`");
+    MIRILLA_DEBUG(MIRILLA_LOG_PREFIX_LIFETIME "destruct `map_target`");
 
     if (target_context->process_id) {
         put_pid(target_context->process_id);
@@ -73,7 +73,7 @@ MIRILLA_CONTEXT_DESTRUCTOR(map_target)
         target_context->process_id = NULL;
     }
 
-    MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "defer `kfree`");
+    MIRILLA_DEBUG(MIRILLA_LOG_PREFIX_LIFETIME "defer `kfree`");
 
     kfree_rcu(target_context, teardown_callback);
 }
@@ -106,7 +106,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_peephole)
 
 MIRILLA_CONTEXT_DESTRUCTOR(map_peephole)
 {
-    MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "destruct `map_peephole`");
+    MIRILLA_DEBUG(MIRILLA_LOG_PREFIX_LIFETIME "destruct `map_peephole`");
 
     if (target_context->interval_subscribe.mm != NULL)
         mmu_interval_notifier_remove(&target_context->interval_subscribe);
@@ -114,7 +114,7 @@ MIRILLA_CONTEXT_DESTRUCTOR(map_peephole)
     if (target_context->address_space)
         mmdrop(target_context->address_space);
 
-    MIRILLA_LOG(MIRILLA_LOG_PREFIX_LIFETIME "defer `kfree`");
+    MIRILLA_DEBUG(MIRILLA_LOG_PREFIX_LIFETIME "defer `kfree`");
 
     kfree_rcu(target_context, teardown_callback);
 }
@@ -175,12 +175,11 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
                                     peephole_context->end_address;
 
     unsigned long region_start = overlap_start - peephole_context->start_address,
-                  region_length = overlap_end - overlap_start,
-                  region_end = region_start + region_length - 1;
+                  region_length = overlap_end - overlap_start;
 
-    MIRILLA_LOG("invalidate: range: [0x%lx, 0x%lx) local range: [0x%lx, 0x%lx "
-                "+ 0x%lx)",
-                range_start, range_end, region_start, region_start, region_end);
+    MIRILLA_DEBUG("invalidate: range: [0x%lx, 0x%lx) local range: [0x%lx, 0x%lx "
+                  "+ 0x%lx)",
+                  range_start, range_end, region_start, region_start, region_start + region_length - 1);
 
     /*
 	 * NOTE(coherence): The invalidate callback runs before the page is uninstalled, therefore, we
@@ -658,7 +657,7 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 
     fd_install(fd, anonymous_file);
 
-    MIRILLA_LOG("created peephole context");
+    MIRILLA_DEBUG("created peephole context");
 
     mirilla_id_t peephole_id = atomic64_inc_return(&target_context->peephole_count);
 
@@ -691,7 +690,7 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
         return -ENOTTY;
     }
 
-    MIRILLA_LOG("handling command: %s", MIRILLA_COMMAND_NAME_MAP(command));
+    MIRILLA_DEBUG("handling command: %s", MIRILLA_COMMAND_NAME_MAP(command));
 
     __kernel void *io = NULL;
 

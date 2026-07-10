@@ -75,7 +75,7 @@ static int mirilla_open(struct inode *inode, struct file *file)
 {
     struct mirilla_device_context *device_context = NULL;
 
-    MIRILLA_LOG("device(%8p,  %8p): open", inode, file);
+    MIRILLA_DEBUG("device(%8p,  %8p): open", inode, file);
 
     int error_code = 0;
 
@@ -99,7 +99,7 @@ static int mirilla_release(struct inode *inode, struct file *file)
 static long mirilla_ioctl(struct file *file, unsigned int ioctl_command,
                           unsigned long target_argument)
 {
-    MIRILLA_LOG("device(%8p): ioctl(%04x, %08lu)", file, ioctl_command, target_argument);
+    MIRILLA_DEBUG("device(%8p): ioctl(%04x, %08lu)", file, ioctl_command, target_argument);
 
     struct mirilla_device_context *device_context = file->private_data;
 
