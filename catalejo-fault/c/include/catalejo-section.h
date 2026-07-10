@@ -7,14 +7,12 @@
 
 #define CATALEJO_FAULT_SECTION_NAME CATALEJO_STR(CATALEJO_FAULT_SECTION_BASE)
 
-#define CATALEJO_FAULT_SECTION_BOUNDARY_START                                  \
-  CATALEJO_CONCAT(__start_, CATALEJO_FAULT_SECTION_BASE)
-#define CATALEJO_FAULT_SECTION_BOUNDARY_STOP                                   \
-  CATALEJO_CONCAT(__stop_, CATALEJO_FAULT_SECTION_BASE)
+#define CATALEJO_FAULT_SECTION_BOUNDARY_START CATALEJO_CONCAT(__start_, CATALEJO_FAULT_SECTION_BASE)
+#define CATALEJO_FAULT_SECTION_BOUNDARY_STOP CATALEJO_CONCAT(__stop_, CATALEJO_FAULT_SECTION_BASE)
 
 #define FAULT_ROUTINE                                                          \
-  __attribute__((noinline)) __attribute__((sysv_abi)) __attribute__((naked))   \
-  __attribute__((section(CATALEJO_FAULT_SECTION_NAME)))
+    __attribute__((noinline)) __attribute__((sysv_abi)) __attribute__((naked)) \
+    __attribute__((section(CATALEJO_FAULT_SECTION_NAME)))
 
 /*
  * The start of the fault section boundary.

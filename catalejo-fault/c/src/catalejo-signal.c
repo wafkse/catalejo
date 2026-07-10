@@ -20,19 +20,21 @@ struct sigaction saved_bus_signal_actor;
 /**
  * The primary signal handler for catalejo.
  */
-void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *target_context) {
+void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *target_context)
+{
     ucontext_t *userlevel_context = (ucontext_t *)target_context;
 
     mcontext_t *machine_context = &userlevel_context->uc_mcontext;
 
     uintptr_t target_address = machine_context->gregs[REG_RIP];
 
-    if (target_address >= (uintptr_t) CATALEJO_FAULT_SECTION_BOUNDARY_START && target_address < (uintptr_t) CATALEJO_FAULT_SECTION_BOUNDARY_STOP) {
+    if (target_address >= (uintptr_t)CATALEJO_FAULT_SECTION_BOUNDARY_START &&
+        target_address < (uintptr_t)CATALEJO_FAULT_SECTION_BOUNDARY_STOP) {
         // NOTE: The shims inside the boundary establish no frame and touch no
         // stack or redzone, using only caller-saved registers. Hence the saved
         // `%rsp` still points exactly at the return address pushed by the `call`
         // that entered the shim, and that single word is all we must unwind.
-        uintptr_t return_address = * (uintptr_t *) machine_context->gregs[REG_RSP];
+        uintptr_t return_address = *(uintptr_t *)machine_context->gregs[REG_RSP];
 
         // NOTE: Simulate a `retq` instruction.
         machine_context->gregs[REG_RSP] += sizeof(uintptr_t);
@@ -57,17 +59,17 @@ void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *tar
     struct sigaction *saved_signal_actor = NULL;
 
     switch (raised_signal) {
-        case SIGSEGV:
-            saved_signal_actor = &saved_segmentation_violation_signal_actor;
+    case SIGSEGV:
+        saved_signal_actor = &saved_segmentation_violation_signal_actor;
 
-            break;
-        case SIGBUS:
-            saved_signal_actor = &saved_bus_signal_actor;
+        break;
+    case SIGBUS:
+        saved_signal_actor = &saved_bus_signal_actor;
 
-            break;
-        default:
-            // NOTE(abort): Somehow handled signal that we did not register for.
-            abort();
+        break;
+    default:
+        // NOTE(abort): Somehow handled signal that we did not register for.
+        abort();
     }
 
     if (saved_signal_actor->sa_flags & SA_SIGINFO)
@@ -78,7 +80,6 @@ void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *tar
 
         // NOTE: This signal handler is setup in `SA_NODEFER` mode.
         raise(raised_signal);
-    }
-    else if(saved_signal_actor->sa_handler != SIG_IGN)
+    } else if (saved_signal_actor->sa_handler != SIG_IGN)
         saved_signal_actor->sa_handler(raised_signal);
 }

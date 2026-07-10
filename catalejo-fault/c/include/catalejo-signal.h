@@ -14,17 +14,16 @@ extern "C" {
 extern struct sigaction saved_segmentation_violation_signal_actor;
 extern struct sigaction saved_bus_signal_actor;
 
-#define CATALEJO_FAULTABLE_TYPES_X                                             \
-  X(u64, movq, rcx)                                                            \
-  X(u32, movl, ecx)                                                            \
-  X(u16, movw, cx)                                                             \
-  X(u8, movb, cl)
+#define CATALEJO_FAULTABLE_TYPES_X \
+    X(u64, movq, rcx)              \
+    X(u32, movl, ecx)              \
+    X(u16, movw, cx)               \
+    X(u8, movb, cl)
 
 /**
  * The primary signal handler for catalejo.
  */
-void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info,
-                            void *target_context);
+void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *target_context);
 
 #ifdef __cplusplus
 }

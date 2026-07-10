@@ -14,9 +14,9 @@
  * The outcome type for the `catalejo-fault` API.
  */
 typedef enum catalejo_faultable_outcome {
-  CATALEJO_OUTCOME_SUCCESS,
-  CATALEJO_OUTCOME_ERROR = -1,
-  CATALEJO_OUTCOME_INVALID_VALUE = -2,
+    CATALEJO_OUTCOME_SUCCESS,
+    CATALEJO_OUTCOME_ERROR = -1,
+    CATALEJO_OUTCOME_INVALID_VALUE = -2,
 } catalejo_faultable_outcome_t;
 
 #endif /* ifndef _CATALEJO_MACRO_H_ */

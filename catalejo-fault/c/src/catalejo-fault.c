@@ -22,13 +22,17 @@ static atomic_int catalejo_initialize_state = CATALEJO_INITIALIZE_STATE_UNINITIA
  *
  * Particularly, this sets up the signal handlers in a lazy yet thread-safe manner.
  */
-catalejo_faultable_outcome_t catalejo_fault_initialize() {
-    if(atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire) == CATALEJO_INITIALIZE_STATE_INITIALIZED)
+catalejo_faultable_outcome_t catalejo_fault_initialize()
+{
+    if (atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire) ==
+        CATALEJO_INITIALIZE_STATE_INITIALIZED)
         return CATALEJO_OUTCOME_SUCCESS;
 
-   int expected_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
+    int expected_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
 
-   if (atomic_compare_exchange_strong_explicit(&catalejo_initialize_state, &expected_state, CATALEJO_INITIALIZE_STATE_INITIALIZING, memory_order_acq_rel, memory_order_acquire)) {
+    if (atomic_compare_exchange_strong_explicit(&catalejo_initialize_state, &expected_state,
+                                                CATALEJO_INITIALIZE_STATE_INITIALIZING,
+                                                memory_order_acq_rel, memory_order_acquire)) {
         struct sigaction install_signal;
 
         {
@@ -62,85 +66,91 @@ catalejo_faultable_outcome_t catalejo_fault_initialize() {
         int r1 = sigaction(SIGBUS, &install_signal, &saved_bus_signal_actor);
 
         if (r0 == 0 && r1 == 0) {
-            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_INITIALIZED, memory_order_release);
+            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_INITIALIZED,
+                                  memory_order_release);
 
             return CATALEJO_OUTCOME_SUCCESS;
         } else {
-            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_FAILED, memory_order_release);
+            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_FAILED,
+                                  memory_order_release);
 
             return CATALEJO_OUTCOME_ERROR;
         }
-   } else
-       while (true)
-       {
-           int target_state = atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire);
+    } else
+        while (true) {
+            int target_state =
+                atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire);
 
-           switch (target_state) {
-               case CATALEJO_INITIALIZE_STATE_INITIALIZED:
+            switch (target_state) {
+            case CATALEJO_INITIALIZE_STATE_INITIALIZED:
                 return CATALEJO_OUTCOME_SUCCESS;
-               case CATALEJO_INITIALIZE_STATE_FAILED:
+            case CATALEJO_INITIALIZE_STATE_FAILED:
                 return CATALEJO_OUTCOME_ERROR;
-               default:
+            default:
                 sched_yield();
-           }
-       }
+            }
+        }
 
-   return CATALEJO_OUTCOME_SUCCESS;
+    return CATALEJO_OUTCOME_SUCCESS;
 }
 
-#define X(target_typename, target_type, target_mnemonic, target_register,      \
-          target_register32) \
-    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename) \
-                           (CATALEJO_UNUSED const target_type *target_source,         \
-                            CATALEJO_UNUSED target_type *target_value) { \
-        __asm__ volatile( \
-            /* %rdi = target_source, %rsi = target_value */ \
-            /* NOTE: Forcefully clear the register for the read. */ \
-            "xorl %" #target_register32 ", %" #target_register32 "\n\t"  \
-            \
-            /* NOTE: Read the value. */ \
-            #target_mnemonic " (%rdi), %" #target_register "\n\t" \
-            \
-            /* NOTE: Move read value to out-pointer. */ \
-            #target_mnemonic " %" #target_register ", (%rsi)\n\t" \
-            \
-            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */ \
-            "xorl %eax, %eax\n\t" \
-            "ret\n\t" \
-        ); \
+// clang-format off
+// The naked routine bodies below are hand-formatted assembly. clang-format
+// cannot lay out the backslash-continued `__asm__` template stably, so it is
+// held off across the macro definitions.
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
+    FAULT_ROUTINE catalejo_faultable_outcome_t                                                       \
+        CATALEJO_CONCAT(catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
+                                                         CATALEJO_UNUSED target_type *target_value)  \
+    {                                                                                                \
+        __asm__ volatile(                                                                            \
+            /* %rdi = target_source, %rsi = target_value */                                          \
+            /* NOTE: Forcefully clear the register for the read. */                                  \
+            "xorl %" #target_register32 ", %" #target_register32 "\n\t"                              \
+                                                                                                     \
+            /* NOTE: Read the value. */                                                              \
+            #target_mnemonic " (%rdi), %" #target_register "\n\t"                                    \
+                                                                                                     \
+            /* NOTE: Move read value to out-pointer. */                                              \
+            #target_mnemonic " %" #target_register ", (%rsi)\n\t"                                    \
+                                                                                                     \
+            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */                   \
+            "xorl %eax, %eax\n\t"                                                                    \
+            "ret\n\t");                                                                              \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
-#define X(target_typename, target_type, target_mnemonic, target_register,      \
-          target_register32) \
-    FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename) \
-                          (CATALEJO_UNUSED target_type * target_value,             \
-                           CATALEJO_UNUSED const target_type *target_source) { \
-        __asm__ volatile( \
-            /* %rdi = target_value, %rsi = target_source */ \
-            /* NOTE: Forcefully clear the register for the write. */ \
-            "xorl %" #target_register32 ", %" #target_register32 "\n\t"  \
-            \
-            /* NOTE: Read the value from the source into a register. */ \
-            #target_mnemonic " (%rsi), %" #target_register "\n\t" \
-            \
-            /* NOTE: Write the value to the target address. */ \
-            #target_mnemonic " %" #target_register ", (%rdi)\n\t" \
-            \
-            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */ \
-            "xorl %eax, %eax\n\t" \
-            "ret\n\t" \
-        ); \
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
+    FAULT_ROUTINE catalejo_faultable_outcome_t                                                       \
+        CATALEJO_CONCAT(catalejo_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
+                                                          CATALEJO_UNUSED const target_type *target_source) \
+    {                                                                                                \
+        __asm__ volatile(                                                                            \
+            /* %rdi = target_value, %rsi = target_source */                                          \
+            /* NOTE: Forcefully clear the register for the write. */                                 \
+            "xorl %" #target_register32 ", %" #target_register32 "\n\t"                              \
+                                                                                                     \
+            /* NOTE: Read the value from the source into a register. */                              \
+            #target_mnemonic " (%rsi), %" #target_register "\n\t"                                    \
+                                                                                                     \
+            /* NOTE: Write the value to the target address. */                                       \
+            #target_mnemonic " %" #target_register ", (%rdi)\n\t"                                    \
+                                                                                                     \
+            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */                   \
+            "xorl %eax, %eax\n\t"                                                                    \
+            "ret\n\t");                                                                              \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
+// clang-format on
 
-FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
-                                                                CATALEJO_UNUSED const uint8_t *target_source,
-                                                                CATALEJO_UNUSED size_t target_count) {
+FAULT_ROUTINE catalejo_faultable_copy_outcome_t
+catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
+              CATALEJO_UNUSED size_t target_count)
+{
     __asm__ volatile(
         /* %rdi = target_destination, %rsi = target_source, %rdx = target_count.
            This is already the register layout `rep movsb` expects (destination
@@ -164,6 +174,5 @@ FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED ui
 
         /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */
         "xorl %eax, %eax\n\t"
-        "ret\n\t"
-    );
+        "ret\n\t");
 }

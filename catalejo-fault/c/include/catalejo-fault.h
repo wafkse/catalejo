@@ -16,11 +16,11 @@ extern "C" {
  * The states of the atomic initialization word for the signal handler.
  */
 typedef enum catalejo_initialize_state {
-  CATALEJO_INITIALIZE_STATE_UNINITIALIZED,
-  CATALEJO_INITIALIZE_STATE_INITIALIZING,
-  CATALEJO_INITIALIZE_STATE_INITIALIZED,
-  CATALEJO_INITIALIZE_STATE_FAILED,
-  NR_CATALEJO_INITIALIZE_STATES
+    CATALEJO_INITIALIZE_STATE_UNINITIALIZED,
+    CATALEJO_INITIALIZE_STATE_INITIALIZING,
+    CATALEJO_INITIALIZE_STATE_INITIALIZED,
+    CATALEJO_INITIALIZE_STATE_FAILED,
+    NR_CATALEJO_INITIALIZE_STATES
 } catalejo_initialize_state_t;
 
 /**
@@ -40,32 +40,28 @@ extern catalejo_faultable_outcome_t catalejo_fault_initialize();
  * zero-extension due to legacy concerns. This also manages to break a pipeline
  * dependency.
  */
-#define CATALEJO_FAULT_ROUTINE_SPECIFICATION                                   \
-  X(u64, uint64_t, movq, rcx, ecx)                                             \
-  X(u32, uint32_t, movl, ecx, ecx)                                             \
-  X(u16, uint16_t, movw, cx, ecx)                                              \
-  X(u8, uint8_t, movb, cl, ecx)
+#define CATALEJO_FAULT_ROUTINE_SPECIFICATION \
+    X(u64, uint64_t, movq, rcx, ecx)         \
+    X(u32, uint32_t, movl, ecx, ecx)         \
+    X(u16, uint16_t, movw, cx, ecx)          \
+    X(u8, uint8_t, movb, cl, ecx)
 
 /* NOTE: Individual protected-read routines. */
 
-#define X(target_typename, target_type, target_mnemonic, target_register,      \
-          target_register32)                                                   \
-  extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(           \
-      catalejo_read_,                                                          \
-      target_typename)(CATALEJO_UNUSED const target_type *target_source,       \
-                       CATALEJO_UNUSED target_type *target_value);
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
+    extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(                       \
+        catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source,   \
+                                         CATALEJO_UNUSED target_type *target_value);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
 /* NOTE: Individual protected-write routines. */
 
-#define X(target_typename, target_type, target_mnemonic, target_register,      \
-          target_register32)                                                   \
-  extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(           \
-      catalejo_write_,                                                         \
-      target_typename)(CATALEJO_UNUSED target_type * target_value,             \
-                       CATALEJO_UNUSED const target_type *target_source);
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
+    extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(                       \
+        catalejo_write_, target_typename)(CATALEJO_UNUSED target_type * target_value,        \
+                                          CATALEJO_UNUSED const target_type *target_source);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
@@ -74,27 +70,26 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
  * Structure to be used to report back after a stream read-write operation.
  */
 typedef struct catalejo_faultable_copy_outcome {
-  /**
+    /**
    * The status of the operation.
    *
    * NOTE(invariant): This should be contained in the `%rax` register.
    */
-  catalejo_faultable_outcome_t outcome_status;
+    catalejo_faultable_outcome_t outcome_status;
 
-  /**
+    /**
    * The count of affected bytes, depending on the operation performed.
    *
    * NOTE(invariant): This should be contained in the `%rdx` register.
    */
-  size_t byte_count;
+    size_t byte_count;
 } catalejo_faultable_copy_outcome_t;
 
 /**
  * Perform a bulk-copy that is fault-protected.
  */
 extern FAULT_ROUTINE catalejo_faultable_copy_outcome_t
-catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
-              CATALEJO_UNUSED const uint8_t *target_source,
+catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
               CATALEJO_UNUSED size_t target_count);
 
 #ifdef __cplusplus
