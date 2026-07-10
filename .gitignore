@@ -1,4 +1,14 @@
 /target
 
-!.vscode
-!.github
+# NOTE: Ignore all hidden files and directories
+.*
+
+# NOTE: Keep editor-specific, GitHub Workflows, and the `.gitignore` itself.
+!.gitignore
+!.github/
+!.vscode/
+!.zed/
+
+# NOTE: Keep `.editorconfig` and `.clang-format`.
+!.editorconfig
+!.clang-format
