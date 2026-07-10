@@ -176,6 +176,28 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(disengage);
  */
 typedef size_t virtual_address_t;
 
+/**
+ * An initialization word for peephole creation.
+ *
+ * This is used to inform of specific preferences to the kernel when it creates the peephole.
+ */
+typedef unsigned short mirilla_map_peephole_initialize_word_t;
+
+/**
+ * Populate the `struct vm_area_struct` on a `mmap`.
+ *
+ * This may increase the latency of a `mmap` system call for a `peephole` file descriptor.
+ */
+#define MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE (0x0001)
+
+/*
+ * The number of observed frames a single populate iteration pins in one remote
+ * pin. Batching amortizes the `get_user_pages_remote` page-table walk and the
+ * observed `mmap_lock` round trip over many granules rather than paying both per
+ * granule the way the demand-fault path does.
+ */
+#define MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE (64)
+
 struct mirilla_map_peephole_argument {
     /*
    * The monotonic identifier to the target observed virtual address space.
@@ -188,6 +210,15 @@ struct mirilla_map_peephole_argument {
    * The start and end addresses of the peephole.
    */
     virtual_address_t start_address, end_address;
+
+    /**
+     * The initialization word for the peephole about to be created.
+     *
+     * This is a bitset, populated by the `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*`
+     * family of flags so that a caller can request one-shot creation-time
+     * behavior without a separate command.
+     */
+    mirilla_map_peephole_initialize_word_t initialize_word;
 };
 
 struct mirilla_map_peephole_result {
@@ -274,8 +305,13 @@ MIRILLA_CONTEXT_DEFINE(
        */
         mirilla_peephole_state_t peephole_state;
 
+        /**
+         * The peephole word that dictates one-shot behavior of the peephole in specific circumstances.
+         */
+        mirilla_map_peephole_initialize_word_t peephole_word;
+
         /*
-       * The anonymous inode backed file used for the peephole.
+       * The anonymous-inode-backed file used for the peephole.
        *
        * The private data of this file is this same peephole context.
        *

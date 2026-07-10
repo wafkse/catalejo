@@ -338,6 +338,110 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     }
 }
 
+/*
+ * NOTE(populate): Prefault the whole window at `mmap` time rather than on first
+ * touch, so that a later read walks resident PTEs instead of paying a fault and
+ * a remote pin per granule. This is requested through
+ * `MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE`, because it trades a slower `mmap`
+ * for that faster steady state and an observer that never reads the whole window
+ * would not want it.
+ *
+ * This deliberately duplicates the pin-and-install of the demand-fault path
+ * rather than sharing it. The fault path resolves one racing granule under the
+ * interval-notifier sequence, whereas this pass runs under the mapper's held
+ * `mmap_lock` and pins `MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE` granules
+ * per remote pin for throughput. There is no notifier sequence here. The install
+ * is advisory, so a granule that cannot be pinned now, or that a racing
+ * invalidation zaps back out, is simply left for the demand-fault path rather
+ * than failing the `mmap`. Coherence still rides on the invalidate callback,
+ * which zaps installed PTEs through the peephole file mapping.
+ */
+static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *peephole_context,
+                                          struct vm_area_struct *vma)
+{
+    struct mm_struct *address_space = peephole_context->address_space;
+
+    unsigned long span_pages =
+        (peephole_context->end_address - peephole_context->start_address) >> PAGE_SHIFT;
+    unsigned long populated;
+
+    /*
+	 * NOTE(lock): A self-peephole observes the mapper's own mm, whose `mmap_lock`
+	 * we already hold for write from the outer `mmap`. Reuse it and pin with
+	 * `locked == NULL`, exactly as the fault path does, rather than recursively
+	 * re-acquire it.
+	 */
+    bool observing_self = address_space == current->mm;
+
+    struct page *target_pages[MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE];
+
+    /*
+	 * NOTE(refcount): The peephole pins the observed mm by `mm_count`. A remote
+	 * pin needs a live `mm_users`, so upgrade the held reference once for the
+	 * whole pass rather than reacquire it per iteration. A self-peephole already
+	 * runs on `current->mm`, whose users cannot drop under us.
+	 */
+    if (!observing_self && !mmget_not_zero(address_space))
+        return;
+
+    for (populated = 0; populated < span_pages;) {
+        unsigned long batch = min(span_pages - populated,
+                                  (unsigned long)MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE);
+        unsigned long target_address =
+            peephole_context->start_address + (populated << PAGE_SHIFT);
+
+        int pinned;
+        int index;
+        int mmap_read_locked = true;
+
+        if (atomic_read_acquire(&peephole_context->peephole_state) ==
+            MIRILLA_PEEPHOLE_STATE_DEAD)
+            break;
+
+        if (observing_self) {
+            pinned = get_user_pages_remote(current->mm, target_address, batch,
+                                           /*gup_flags=*/0, target_pages, NULL);
+        } else {
+            /*
+			 * NOTE(lock): `trylock` because the observed `mmap_lock` orders under
+			 * the mapper's held write lock. A contended observer just leaves those
+			 * granules for the demand-fault path.
+			 */
+            if (!mmap_read_trylock(address_space))
+                break;
+
+            pinned = get_user_pages_remote(address_space, target_address, batch,
+                                           /*gup_flags=*/0, target_pages, &mmap_read_locked);
+
+            if (mmap_read_locked)
+                mmap_read_unlock(address_space);
+        }
+
+        /*
+		 * NOTE(best-effort): Any pin failure ends the pass. The remaining
+		 * granules resolve on demand.
+		 */
+        if (pinned <= 0)
+            break;
+
+        for (index = 0; index < pinned; index++) {
+            unsigned long install_address = vma->vm_start + ((populated + index) << PAGE_SHIFT);
+
+            unsigned int reclaim_flags = memalloc_noreclaim_save();
+            vmf_insert_mixed(vma, install_address, page_to_pfn(target_pages[index]));
+            memalloc_noreclaim_restore(reclaim_flags);
+
+            /* NOTE(refcount): Drop the transient pin taken to read the PFN. */
+            put_page(target_pages[index]);
+        }
+
+        populated += pinned;
+    }
+
+    if (!observing_self)
+        mmput(address_space);
+}
+
 void mirilla_map_peephole_vm_open(struct vm_area_struct *vma)
 {
     struct mirilla_map_peephole_context *peephole_context = vma->vm_private_data;
@@ -423,6 +527,15 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 
     /* NOTE(invariant): Clear writable/executable mapping capability. */
     vm_flags_clear(vma, VM_MAYSHARE | VM_MAYWRITE | VM_MAYEXEC);
+
+    /*
+	 * NOTE(populate): Honor the one-shot populate word by prefaulting the whole
+	 * window before returning, so that the mapping is resident on first read.
+	 * The VMA operations and flags are already installed above, which the
+	 * install path relies on to pin and insert frames.
+	 */
+    if (peephole_context->peephole_word & MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE)
+        mirilla_map_peephole_populate(peephole_context, vma);
 
     return 0;
 }
@@ -586,6 +699,11 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 	 */
     peephole_context->start_address = argument->start_address;
     peephole_context->end_address = argument->end_address;
+
+    /**
+     * NOTE(invariant): Assign the provided initialization word to the peephole's word.
+     */
+    peephole_context->peephole_word = argument->initialize_word;
 
     /*
 	 * NOTE(coherence): A private inode gives each peephole its own
