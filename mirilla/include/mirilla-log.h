@@ -18,7 +18,7 @@
  * Log a debug log for further inspection.
  */
 #define MIRILLA_DEBUG(fmt, ...) \
-	printk(MIRILLA_LOG_LOG_LEVEL "mirilla(debug): " fmt "\n", ##__VA_ARGS__)
+    printk(MIRILLA_LOG_LOG_LEVEL "mirilla(debug): " fmt "\n", ##__VA_ARGS__)
 #else
 #define MIRILLA_DEBUG(fmt, ...) ((void)0)
 #endif
@@ -31,20 +31,20 @@
 /*
  * Log a formatted error string.
  */
-#define MIRILLA_ERROR(fmt, ...)                            \
-	printk(MIRILLA_LOG_ERROR_LEVEL "mirilla: "         \
-				       "error: " fmt "\n", \
-	       ##__VA_ARGS__)
+#define MIRILLA_ERROR(fmt, ...)                        \
+    printk(MIRILLA_LOG_ERROR_LEVEL "mirilla: "         \
+                                   "error: " fmt "\n", \
+           ##__VA_ARGS__)
 
 /*
  * Log a formatted error string and return the appropriate `ERRNO`.
  */
 #define MIRILLA_ERROR_AND_RETURN(retval, fmt, ...) \
-	do {                                       \
-		MIRILLA_ERROR(fmt, ##__VA_ARGS__); \
+    do {                                           \
+        MIRILLA_ERROR(fmt, ##__VA_ARGS__);         \
                                                    \
-		return retval;                     \
-	} while (0);
+        return retval;                             \
+    } while (0);
 
 /*
  * Lifetime-related log messages.

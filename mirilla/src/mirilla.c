@@ -11,7 +11,8 @@ static int __init mirilla_init(void)
     MIRILLA_LOG("initializing module");
 
     if (0 > (mirilla_device_register_error_code = mirilla_device_register())) {
-        MIRILLA_ERROR("%04x: primary device failed to register", mirilla_device_register_error_code);
+        MIRILLA_ERROR("%04x: primary device failed to register",
+                      mirilla_device_register_error_code);
 
         return mirilla_device_register_error_code;
     }
@@ -28,7 +29,8 @@ static void __exit mirilla_exit(void)
     MIRILLA_LOG("module exit start");
 
     if (0 > (mirilla_device_unregister_error_code = mirilla_device_unregister()))
-        MIRILLA_ERROR("error(%04x): primary device failed to be unregistered correctly", mirilla_device_unregister_error_code);
+        MIRILLA_ERROR("error(%04x): primary device failed to be unregistered correctly",
+                      mirilla_device_unregister_error_code);
 
     MIRILLA_LOG("module unloaded");
 }

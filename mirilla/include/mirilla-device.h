@@ -20,18 +20,18 @@
 #include <linux/kref.h>
 
 MIRILLA_CONTEXT_DEFINE(
-	device, struct {
-		/*
+    device, struct {
+        /*
        * The map target context list for this same device
        * session.
        */
-		mirilla_atomic_id_t map_target_count;
+        mirilla_atomic_id_t map_target_count;
 
-		/*
+        /*
        * The list of map targets.
        */
-		struct xarray map_target_list;
-	};);
+        struct xarray map_target_list;
+    };);
 
 MIRILLA_CONTEXT_CONSTRUCTOR(device);
 MIRILLA_CONTEXT_DESTRUCTOR(device);

@@ -30,23 +30,23 @@
  */
 static int test_self_engage(void)
 {
-	int mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "failed to open device");
+    int mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "failed to open device");
 
-	mirilla_map_target_id_t target_id = 0;
+    mirilla_map_target_id_t target_id = 0;
 
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed");
-	ASSERT(target_id != 0, "self-engage returned a zero target id");
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed");
+    ASSERT(target_id != 0, "self-engage returned a zero target id");
 
-	print_with_timestamp("[SELF] Engaged self (pid %d), target_id = %lu\n", getpid(),
-			     (unsigned long)target_id);
+    print_with_timestamp("[SELF] Engaged self (pid %d), target_id = %lu\n", getpid(),
+                         (unsigned long)target_id);
 
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_disengage(mirilla_fd, target_id)),
-	       "self-disengage failed");
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_disengage(mirilla_fd, target_id)), "self-disengage "
+                                                                            "failed");
 
-	close(mirilla_fd);
-	return 0;
+    close(mirilla_fd);
+    return 0;
 }
 
 /*
@@ -55,42 +55,43 @@ static int test_self_engage(void)
  */
 static int test_self_peephole_basic(void)
 {
-	int mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "failed to open device");
+    int mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "failed to open device");
 
-	void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
-	ASSERT(region != NULL, "failed to allocate test region");
+    void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
+    ASSERT(region != NULL, "failed to allocate test region");
 
-	mirilla_map_target_id_t target_id = 0;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed");
+    mirilla_map_target_id_t target_id = 0;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed");
 
-	mirilla_map_peephole_id_t peephole_id = 0;
-	int peephole_fd = -1;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
-		       mirilla_fd, target_id, (virtual_address_t)region,
-		       (virtual_address_t)region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)),
-	       "self-peephole failed");
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id, (virtual_address_t)region,
+                                                  (virtual_address_t)region + TEST_REGION_SIZE,
+                                                  &peephole_id, &peephole_fd)),
+           "self-peephole failed");
 
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	print_with_timestamp("[SELF] Region at %p mirrored at %p\n", region, view);
+    print_with_timestamp("[SELF] Region at %p mirrored at %p\n", region, view);
 
-	/*
+    /*
 	 * The read below faults through the self-peephole path: the target
 	 * address space is our own `mm`, whose `mmap_lock` the fault already
 	 * holds.
 	 */
-	ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0,
-	       "view does not mirror the observed region");
+    ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0, "view does not "
+                                                                                "mirror the "
+                                                                                "observed region");
 
-	munmap(view, TEST_REGION_SIZE);
-	close(peephole_fd);
-	munmap(region, TEST_REGION_SIZE);
-	mirilla_disengage(mirilla_fd, target_id);
-	close(mirilla_fd);
-	return 0;
+    munmap(view, TEST_REGION_SIZE);
+    close(peephole_fd);
+    munmap(region, TEST_REGION_SIZE);
+    mirilla_disengage(mirilla_fd, target_id);
+    close(mirilla_fd);
+    return 0;
 }
 
 /*
@@ -99,43 +100,44 @@ static int test_self_peephole_basic(void)
  */
 static int test_self_peephole_map_fixed(void)
 {
-	int mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "failed to open device");
+    int mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "failed to open device");
 
-	void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_2);
-	ASSERT(region != NULL, "failed to allocate test region");
+    void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_2);
+    ASSERT(region != NULL, "failed to allocate test region");
 
-	/* Reserve a scratch range to give `MAP_FIXED` a well-defined home. */
-	void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
+    /* Reserve a scratch range to give `MAP_FIXED` a well-defined home. */
+    void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
 
-	mirilla_map_target_id_t target_id = 0;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed");
+    mirilla_map_target_id_t target_id = 0;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed");
 
-	mirilla_map_peephole_id_t peephole_id = 0;
-	int peephole_fd = -1;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
-		       mirilla_fd, target_id, (virtual_address_t)region,
-		       (virtual_address_t)region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)),
-	       "self-peephole failed");
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id, (virtual_address_t)region,
+                                                  (virtual_address_t)region + TEST_REGION_SIZE,
+                                                  &peephole_id, &peephole_fd)),
+           "self-peephole failed");
 
-	void *view = mmap(scratch, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED,
-			  peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "MAP_FIXED peephole view failed");
-	ASSERT(view == scratch, "MAP_FIXED view landed at the wrong address");
+    void *view =
+        mmap(scratch, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED, peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "MAP_FIXED peephole view failed");
+    ASSERT(view == scratch, "MAP_FIXED view landed at the wrong address");
 
-	print_with_timestamp("[SELF] Region at %p mirrored at fixed address %p\n", region, view);
+    print_with_timestamp("[SELF] Region at %p mirrored at fixed address %p\n", region, view);
 
-	ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_2) == 0,
-	       "fixed view does not mirror the observed region");
+    ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_2) == 0, "fixed view does "
+                                                                                "not mirror the "
+                                                                                "observed region");
 
-	munmap(view, TEST_REGION_SIZE);
-	close(peephole_fd);
-	munmap(region, TEST_REGION_SIZE);
-	mirilla_disengage(mirilla_fd, target_id);
-	close(mirilla_fd);
-	return 0;
+    munmap(view, TEST_REGION_SIZE);
+    close(peephole_fd);
+    munmap(region, TEST_REGION_SIZE);
+    mirilla_disengage(mirilla_fd, target_id);
+    close(mirilla_fd);
+    return 0;
 }
 
 /*
@@ -147,87 +149,85 @@ static int test_self_peephole_map_fixed(void)
  */
 static int test_self_peephole_recursive_map_fixed(void)
 {
-	int mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "failed to open device");
+    int mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "failed to open device");
 
-	void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_3);
-	ASSERT(region != NULL, "failed to allocate test region");
+    void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_3);
+    ASSERT(region != NULL, "failed to allocate test region");
 
-	/*
+    /*
 	 * Reserve a scratch home for the later disjoint view up front: the
 	 * refusal below vacates the observed range, and a kernel-chosen
 	 * placement would land the view right back into that hole, only to
 	 * be refused again.
 	 */
-	void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
+    void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
 
-	mirilla_map_target_id_t target_id = 0;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed");
+    mirilla_map_target_id_t target_id = 0;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed");
 
-	mirilla_map_peephole_id_t peephole_id = 0;
-	int peephole_fd = -1;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
-		       mirilla_fd, target_id, (virtual_address_t)region,
-		       (virtual_address_t)region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)),
-	       "self-peephole failed");
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id, (virtual_address_t)region,
+                                                  (virtual_address_t)region + TEST_REGION_SIZE,
+                                                  &peephole_id, &peephole_fd)),
+           "self-peephole failed");
 
-	/*
+    /*
 	 * NOTE: `MAP_FIXED` unmaps the anonymous pages backing the range
 	 * before the module can refuse the view, so the observed range is
 	 * left vacated after the failure.
 	 */
-	errno = 0;
-	void *view = mmap(region, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED,
-			  peephole_fd, 0);
-	ASSERT(view == MAP_FAILED, "recursive view mapping unexpectedly succeeded");
-	ASSERT(errno == EINVAL, "recursive view mapping failed with the wrong errno");
+    errno = 0;
+    void *view = mmap(region, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED, peephole_fd, 0);
+    ASSERT(view == MAP_FAILED, "recursive view mapping unexpectedly succeeded");
+    ASSERT(errno == EINVAL, "recursive view mapping failed with the wrong errno");
 
-	print_with_timestamp("[SELF] Recursive view over %p refused as expected\n", region);
+    print_with_timestamp("[SELF] Recursive view over %p refused as expected\n", region);
 
-	/* The peephole survives, but the vacated range can no longer resolve. */
-	void *elsewhere_view = mmap(scratch, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED,
-				    peephole_fd, 0);
-	ASSERT(elsewhere_view != MAP_FAILED, "failed to mmap a disjoint view after the refusal");
+    /* The peephole survives, but the vacated range can no longer resolve. */
+    void *elsewhere_view =
+        mmap(scratch, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE | MAP_FIXED, peephole_fd, 0);
+    ASSERT(elsewhere_view != MAP_FAILED, "failed to mmap a disjoint view after the refusal");
 
-	unsigned int probe_value = 0;
-	ASSERT(faultable_probe_u32(elsewhere_view, &probe_value) == CATALEJO_OUTCOME_ERROR,
-	       "read of the vacated range succeeded; expected a fault");
+    unsigned int probe_value = 0;
+    ASSERT(faultable_probe_u32(elsewhere_view, &probe_value) == CATALEJO_OUTCOME_ERROR,
+           "read of the vacated range succeeded; expected a fault");
 
-	munmap(elsewhere_view, TEST_REGION_SIZE);
-	close(peephole_fd);
-	mirilla_disengage(mirilla_fd, target_id);
-	close(mirilla_fd);
+    munmap(elsewhere_view, TEST_REGION_SIZE);
+    close(peephole_fd);
+    mirilla_disengage(mirilla_fd, target_id);
+    close(mirilla_fd);
 
-	/* The module must remain healthy after the refusal. */
-	mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "device is unusable after the refusal");
+    /* The module must remain healthy after the refusal. */
+    mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "device is unusable after the refusal");
 
-	void *fresh_region = allocate_test_region(TEST_REGION_SMALL, MAGIC_VALUE_4);
-	ASSERT(fresh_region != NULL, "failed to allocate test region");
+    void *fresh_region = allocate_test_region(TEST_REGION_SMALL, MAGIC_VALUE_4);
+    ASSERT(fresh_region != NULL, "failed to allocate test region");
 
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed after the refusal");
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed after "
+                                                                                    "the refusal");
 
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id,
-						      (virtual_address_t)fresh_region,
-						      (virtual_address_t)fresh_region +
-							      TEST_REGION_SMALL,
-						      &peephole_id, &peephole_fd)),
-	       "self-peephole failed after the refusal");
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
+               mirilla_fd, target_id, (virtual_address_t)fresh_region,
+               (virtual_address_t)fresh_region + TEST_REGION_SMALL, &peephole_id, &peephole_fd)),
+           "self-peephole failed after the refusal");
 
-	void *fresh_view = mmap(NULL, TEST_REGION_SMALL, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
-	ASSERT(fresh_view != MAP_FAILED, "failed to mmap peephole view after the refusal");
-	ASSERT(verify_region_faultable(fresh_view, TEST_REGION_SMALL, MAGIC_VALUE_4) == 0,
-	       "view does not mirror the observed region after the refusal");
+    void *fresh_view = mmap(NULL, TEST_REGION_SMALL, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
+    ASSERT(fresh_view != MAP_FAILED, "failed to mmap peephole view after the refusal");
+    ASSERT(verify_region_faultable(fresh_view, TEST_REGION_SMALL, MAGIC_VALUE_4) == 0,
+           "view does not mirror the observed region after the refusal");
 
-	munmap(fresh_view, TEST_REGION_SMALL);
-	close(peephole_fd);
-	munmap(fresh_region, TEST_REGION_SMALL);
-	mirilla_disengage(mirilla_fd, target_id);
-	close(mirilla_fd);
-	return 0;
+    munmap(fresh_view, TEST_REGION_SMALL);
+    close(peephole_fd);
+    munmap(fresh_region, TEST_REGION_SMALL);
+    mirilla_disengage(mirilla_fd, target_id);
+    close(mirilla_fd);
+    return 0;
 }
 
 /*
@@ -237,73 +237,76 @@ static int test_self_peephole_recursive_map_fixed(void)
  */
 static int test_self_map_fixed_clobber_reflects_new(void)
 {
-	int mirilla_fd = mirilla_open_device();
-	ASSERT(mirilla_fd >= 0, "failed to open device");
+    int mirilla_fd = mirilla_open_device();
+    ASSERT(mirilla_fd >= 0, "failed to open device");
 
-	void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
-	ASSERT(region != NULL, "failed to allocate test region");
+    void *region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
+    ASSERT(region != NULL, "failed to allocate test region");
 
-	mirilla_map_target_id_t target_id = 0;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)),
-	       "self-engage failed");
+    mirilla_map_target_id_t target_id = 0;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_engage(mirilla_fd, getpid(), &target_id)), "self-engage "
+                                                                                    "failed");
 
-	mirilla_map_peephole_id_t peephole_id = 0;
-	int peephole_fd = -1;
-	ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
-		       mirilla_fd, target_id, (virtual_address_t)region,
-		       (virtual_address_t)region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)),
-	       "self-peephole failed");
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(mirilla_fd, target_id, (virtual_address_t)region,
+                                                  (virtual_address_t)region + TEST_REGION_SIZE,
+                                                  &peephole_id, &peephole_fd)),
+           "self-peephole failed");
 
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0,
-	       "view does not mirror the initial contents");
+    ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0, "view does not "
+                                                                                "mirror the "
+                                                                                "initial contents");
 
-	/*
+    /*
 	 * Replace the observed range wholesale. The interval notifier zaps
 	 * the installed view pages but the peephole stays alive: it tracks
 	 * the address range, not the mapping that used to back it.
 	 */
-	void *clobber = mmap(region, TEST_REGION_SIZE, PROT_READ | PROT_WRITE,
-			     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-	ASSERT(clobber != MAP_FAILED, "MAP_FIXED clobber failed");
-	ASSERT(clobber == region, "MAP_FIXED clobber landed at the wrong address");
+    void *clobber = mmap(region, TEST_REGION_SIZE, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT(clobber != MAP_FAILED, "MAP_FIXED clobber failed");
+    ASSERT(clobber == region, "MAP_FIXED clobber landed at the wrong address");
 
-	unsigned int *data = (unsigned int *)clobber;
-	for (size_t i = 0; i < TEST_REGION_SIZE / sizeof(unsigned int); i++)
-		data[i] = MAGIC_VALUE_5 + i;
+    unsigned int *data = (unsigned int *)clobber;
+    for (size_t i = 0; i < TEST_REGION_SIZE / sizeof(unsigned int); i++)
+        data[i] = MAGIC_VALUE_5 + i;
 
-	print_with_timestamp("[SELF] Observed range clobbered with a fresh pattern\n");
+    print_with_timestamp("[SELF] Observed range clobbered with a fresh pattern\n");
 
-	/* The next view faults re-resolve the range to the new memory. */
-	ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_5) == 0,
-	       "view does not reflect the clobbered contents");
+    /* The next view faults re-resolve the range to the new memory. */
+    ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_5) == 0, "view does not "
+                                                                                "reflect the "
+                                                                                "clobbered "
+                                                                                "contents");
 
-	munmap(view, TEST_REGION_SIZE);
-	close(peephole_fd);
-	munmap(region, TEST_REGION_SIZE);
-	mirilla_disengage(mirilla_fd, target_id);
-	close(mirilla_fd);
-	return 0;
+    munmap(view, TEST_REGION_SIZE);
+    close(peephole_fd);
+    munmap(region, TEST_REGION_SIZE);
+    mirilla_disengage(mirilla_fd, target_id);
+    close(mirilla_fd);
+    return 0;
 }
 
 int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 {
-	print_banner("MIRILLA SELF-OBSERVATION SUITE");
+    print_banner("MIRILLA SELF-OBSERVATION SUITE");
 
-	if (harness_fault_initialize() < 0)
-		return EXIT_FAILURE;
+    if (harness_fault_initialize() < 0)
+        return EXIT_FAILURE;
 
-	RUN_TEST("Self Engage", test_self_engage);
-	RUN_TEST("Self Peephole - Basic", test_self_peephole_basic);
-	RUN_TEST("Self Peephole - MAP_FIXED View", test_self_peephole_map_fixed);
-	RUN_TEST("Self Peephole - Recursive MAP_FIXED View - Rejected",
-		 test_self_peephole_recursive_map_fixed);
-	RUN_TEST("Self Peephole - MAP_FIXED Clobber Reflects New Contents",
-		 test_self_map_fixed_clobber_reflects_new);
+    RUN_TEST("Self Engage", test_self_engage);
+    RUN_TEST("Self Peephole - Basic", test_self_peephole_basic);
+    RUN_TEST("Self Peephole - MAP_FIXED View", test_self_peephole_map_fixed);
+    RUN_TEST("Self Peephole - Recursive MAP_FIXED View - Rejected",
+             test_self_peephole_recursive_map_fixed);
+    RUN_TEST("Self Peephole - MAP_FIXED Clobber Reflects New Contents",
+             test_self_map_fixed_clobber_reflects_new);
 
-	print_summary();
+    print_summary();
 
-	return suite_status();
+    return suite_status();
 }

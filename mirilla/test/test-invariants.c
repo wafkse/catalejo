@@ -20,75 +20,73 @@
  * Shared fixture: a live self-peephole the cases try to map badly.
  */
 typedef struct {
-	int mirilla_fd;
-	mirilla_map_target_id_t target_id;
-	int peephole_fd;
-	void *region;
+    int mirilla_fd;
+    mirilla_map_target_id_t target_id;
+    int peephole_fd;
+    void *region;
 } invariant_fixture_t;
 
 static invariant_fixture_t fixture = { -1, 0, -1, NULL };
 
 static int fixture_construct(void)
 {
-	fixture.mirilla_fd = mirilla_open_device();
-	if (fixture.mirilla_fd < 0)
-		return -1;
+    fixture.mirilla_fd = mirilla_open_device();
+    if (fixture.mirilla_fd < 0)
+        return -1;
 
-	fixture.region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
-	if (!fixture.region)
-		return -1;
+    fixture.region = allocate_test_region(TEST_REGION_SIZE, MAGIC_VALUE_1);
+    if (!fixture.region)
+        return -1;
 
-	if (!MIRILLA_COMMAND_IS_OK(
-		    mirilla_engage(fixture.mirilla_fd, getpid(), &fixture.target_id)))
-		return -1;
+    if (!MIRILLA_COMMAND_IS_OK(mirilla_engage(fixture.mirilla_fd, getpid(), &fixture.target_id)))
+        return -1;
 
-	mirilla_map_peephole_id_t peephole_id = 0;
+    mirilla_map_peephole_id_t peephole_id = 0;
 
-	if (!MIRILLA_COMMAND_IS_OK(mirilla_peephole(fixture.mirilla_fd, fixture.target_id,
-						    (virtual_address_t)fixture.region,
-						    (virtual_address_t)fixture.region +
-							    TEST_REGION_SIZE,
-						    &peephole_id, &fixture.peephole_fd)))
-		return -1;
+    if (!MIRILLA_COMMAND_IS_OK(mirilla_peephole(
+            fixture.mirilla_fd, fixture.target_id, (virtual_address_t)fixture.region,
+            (virtual_address_t)fixture.region + TEST_REGION_SIZE, &peephole_id,
+            &fixture.peephole_fd)))
+        return -1;
 
-	return 0;
+    return 0;
 }
 
 static void fixture_destruct(void)
 {
-	if (fixture.peephole_fd >= 0)
-		close(fixture.peephole_fd);
-	if (fixture.region)
-		munmap(fixture.region, TEST_REGION_SIZE);
-	if (fixture.mirilla_fd >= 0) {
-		mirilla_disengage(fixture.mirilla_fd, fixture.target_id);
-		close(fixture.mirilla_fd);
-	}
+    if (fixture.peephole_fd >= 0)
+        close(fixture.peephole_fd);
+    if (fixture.region)
+        munmap(fixture.region, TEST_REGION_SIZE);
+    if (fixture.mirilla_fd >= 0) {
+        mirilla_disengage(fixture.mirilla_fd, fixture.target_id);
+        close(fixture.mirilla_fd);
+    }
 }
 
 /*
  * Attempt a view mapping expected to be refused, asserting the errno.
  */
 static int expect_mmap_rejection(int prot, int flags, size_t length, off_t offset,
-				 int expected_errno)
+                                 int expected_errno)
 {
-	errno = 0;
+    errno = 0;
 
-	void *view = mmap(NULL, length, prot, flags, fixture.peephole_fd, offset);
+    void *view = mmap(NULL, length, prot, flags, fixture.peephole_fd, offset);
 
-	if (view != MAP_FAILED) {
-		munmap(view, length);
-		fprintf(stderr, "mmap unexpectedly succeeded\n");
-		return -1;
-	}
+    if (view != MAP_FAILED) {
+        munmap(view, length);
+        fprintf(stderr, "mmap unexpectedly succeeded\n");
+        return -1;
+    }
 
-	if (errno != expected_errno) {
-		fprintf(stderr, "mmap failed with errno %d (%s), expected %d (%s)\n", errno,
-			strerror(errno), expected_errno, strerror(expected_errno));
-		return -1;
-	}
+    if (errno != expected_errno) {
+        fprintf(stderr, "mmap failed with errno %d (%s), expected %d (%s)\n", errno,
+                strerror(errno), expected_errno, strerror(expected_errno));
+        return -1;
+    }
 
-	return 0;
+    return 0;
 }
 
 /*
@@ -99,26 +97,25 @@ static int expect_mmap_rejection(int prot, int flags, size_t length, off_t offse
  */
 static int test_reject_prot_exec(void)
 {
-	return expect_mmap_rejection(PROT_READ | PROT_EXEC, MAP_PRIVATE, TEST_REGION_SIZE, 0,
-				     EPERM);
+    return expect_mmap_rejection(PROT_READ | PROT_EXEC, MAP_PRIVATE, TEST_REGION_SIZE, 0, EPERM);
 }
 
 /* NOTE(invariant): Disallow shared mappings. */
 static int test_reject_map_shared(void)
 {
-	return expect_mmap_rejection(PROT_READ, MAP_SHARED, TEST_REGION_SIZE, 0, EINVAL);
+    return expect_mmap_rejection(PROT_READ, MAP_SHARED, TEST_REGION_SIZE, 0, EINVAL);
 }
 
 /* NOTE(invariant): Must map the entire peephole, no partial mappings. */
 static int test_reject_partial_length(void)
 {
-	return expect_mmap_rejection(PROT_READ, MAP_PRIVATE, TEST_REGION_SIZE - 4096, 0, EINVAL);
+    return expect_mmap_rejection(PROT_READ, MAP_PRIVATE, TEST_REGION_SIZE - 4096, 0, EINVAL);
 }
 
 /* NOTE(invariant): Reject a non-zero file offset. */
 static int test_reject_nonzero_offset(void)
 {
-	return expect_mmap_rejection(PROT_READ, MAP_PRIVATE, TEST_REGION_SIZE, 4096, EINVAL);
+    return expect_mmap_rejection(PROT_READ, MAP_PRIVATE, TEST_REGION_SIZE, 4096, EINVAL);
 }
 
 /*
@@ -127,55 +124,55 @@ static int test_reject_nonzero_offset(void)
  */
 static int test_reject_mremap_grow(void)
 {
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	errno = 0;
-	void *grown = mremap(view, TEST_REGION_SIZE, 2 * TEST_REGION_SIZE, 0);
+    errno = 0;
+    void *grown = mremap(view, TEST_REGION_SIZE, 2 * TEST_REGION_SIZE, 0);
 
-	int rejection_status = 0;
-	if (grown != MAP_FAILED) {
-		fprintf(stderr, "mremap grow unexpectedly succeeded\n");
-		rejection_status = -1;
-	} else if (errno != EFAULT) {
-		fprintf(stderr, "mremap grow failed with errno %d (%s), expected EFAULT\n", errno,
-			strerror(errno));
-		rejection_status = -1;
-	}
+    int rejection_status = 0;
+    if (grown != MAP_FAILED) {
+        fprintf(stderr, "mremap grow unexpectedly succeeded\n");
+        rejection_status = -1;
+    } else if (errno != EFAULT) {
+        fprintf(stderr, "mremap grow failed with errno %d (%s), expected EFAULT\n", errno,
+                strerror(errno));
+        rejection_status = -1;
+    }
 
-	munmap(view, TEST_REGION_SIZE);
-	return rejection_status;
+    munmap(view, TEST_REGION_SIZE);
+    return rejection_status;
 }
 
 /* NOTE(invariant): Disallow remapping the peephole VMA. */
 static int test_reject_mremap_move(void)
 {
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	/* Reserve a destination so the move is forced through `move_vma`. */
-	void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
+    /* Reserve a destination so the move is forced through `move_vma`. */
+    void *scratch = mmap(NULL, TEST_REGION_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(scratch != MAP_FAILED, "failed to reserve scratch range");
 
-	errno = 0;
-	void *moved = mremap(view, TEST_REGION_SIZE, TEST_REGION_SIZE,
-			     MREMAP_MAYMOVE | MREMAP_FIXED, scratch);
+    errno = 0;
+    void *moved =
+        mremap(view, TEST_REGION_SIZE, TEST_REGION_SIZE, MREMAP_MAYMOVE | MREMAP_FIXED, scratch);
 
-	int rejection_status = 0;
-	if (moved != MAP_FAILED) {
-		fprintf(stderr, "mremap move unexpectedly succeeded\n");
-		munmap(moved, TEST_REGION_SIZE);
-		rejection_status = -1;
-	} else if (errno != EPERM) {
-		fprintf(stderr, "mremap move failed with errno %d (%s), expected EPERM\n", errno,
-			strerror(errno));
-		rejection_status = -1;
-	} else {
-		munmap(scratch, TEST_REGION_SIZE);
-	}
+    int rejection_status = 0;
+    if (moved != MAP_FAILED) {
+        fprintf(stderr, "mremap move unexpectedly succeeded\n");
+        munmap(moved, TEST_REGION_SIZE);
+        rejection_status = -1;
+    } else if (errno != EPERM) {
+        fprintf(stderr, "mremap move failed with errno %d (%s), expected EPERM\n", errno,
+                strerror(errno));
+        rejection_status = -1;
+    } else {
+        munmap(scratch, TEST_REGION_SIZE);
+    }
 
-	munmap(view, TEST_REGION_SIZE);
-	return rejection_status;
+    munmap(view, TEST_REGION_SIZE);
+    return rejection_status;
 }
 
 /*
@@ -185,25 +182,26 @@ static int test_reject_mremap_move(void)
  */
 static int test_reject_mprotect_write(void)
 {
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	errno = 0;
-	int mprotect_code = mprotect(view, TEST_REGION_SIZE, PROT_READ | PROT_WRITE);
+    errno = 0;
+    int mprotect_code = mprotect(view, TEST_REGION_SIZE, PROT_READ | PROT_WRITE);
 
-	int rejection_status = 0;
-	if (mprotect_code == 0) {
-		fprintf(stderr, "mprotect to writable unexpectedly succeeded\n");
-		rejection_status = -1;
-	} else if (errno != EACCES) {
-		fprintf(stderr, "mprotect to writable failed with errno %d (%s), expected "
-				"EACCES\n",
-			errno, strerror(errno));
-		rejection_status = -1;
-	}
+    int rejection_status = 0;
+    if (mprotect_code == 0) {
+        fprintf(stderr, "mprotect to writable unexpectedly succeeded\n");
+        rejection_status = -1;
+    } else if (errno != EACCES) {
+        fprintf(stderr,
+                "mprotect to writable failed with errno %d (%s), expected "
+                "EACCES\n",
+                errno, strerror(errno));
+        rejection_status = -1;
+    }
 
-	munmap(view, TEST_REGION_SIZE);
-	return rejection_status;
+    munmap(view, TEST_REGION_SIZE);
+    return rejection_status;
 }
 
 /*
@@ -213,66 +211,68 @@ static int test_reject_mprotect_write(void)
  */
 static int test_reject_mprotect_none(void)
 {
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	errno = 0;
-	int mprotect_code = mprotect(view, TEST_REGION_SIZE, PROT_NONE);
+    errno = 0;
+    int mprotect_code = mprotect(view, TEST_REGION_SIZE, PROT_NONE);
 
-	int rejection_status = 0;
-	if (mprotect_code == 0) {
-		fprintf(stderr, "mprotect to PROT_NONE unexpectedly succeeded\n");
-		rejection_status = -1;
-	} else if (errno != EPERM) {
-		fprintf(stderr, "mprotect to PROT_NONE failed with errno %d (%s), expected "
-				"EPERM\n",
-			errno, strerror(errno));
-		rejection_status = -1;
-	}
+    int rejection_status = 0;
+    if (mprotect_code == 0) {
+        fprintf(stderr, "mprotect to PROT_NONE unexpectedly succeeded\n");
+        rejection_status = -1;
+    } else if (errno != EPERM) {
+        fprintf(stderr,
+                "mprotect to PROT_NONE failed with errno %d (%s), expected "
+                "EPERM\n",
+                errno, strerror(errno));
+        rejection_status = -1;
+    }
 
-	munmap(view, TEST_REGION_SIZE);
-	return rejection_status;
+    munmap(view, TEST_REGION_SIZE);
+    return rejection_status;
 }
 
 /* A well-formed mapping must still succeed after all the rejections. */
 static int test_wellformed_mapping_still_works(void)
 {
-	void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
-	ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ, MAP_PRIVATE, fixture.peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap peephole view");
 
-	ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0,
-	       "view does not mirror the observed region");
+    ASSERT(verify_region_faultable(view, TEST_REGION_SIZE, MAGIC_VALUE_1) == 0, "view does not "
+                                                                                "mirror the "
+                                                                                "observed region");
 
-	munmap(view, TEST_REGION_SIZE);
-	return 0;
+    munmap(view, TEST_REGION_SIZE);
+    return 0;
 }
 
 int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 {
-	print_banner("MIRILLA MAPPING INVARIANT SUITE");
+    print_banner("MIRILLA MAPPING INVARIANT SUITE");
 
-	if (harness_fault_initialize() < 0)
-		return EXIT_FAILURE;
+    if (harness_fault_initialize() < 0)
+        return EXIT_FAILURE;
 
-	if (fixture_construct() < 0) {
-		fprintf(stderr, COLOR_RED "Failed to construct the peephole fixture\n" COLOR_RESET);
-		fixture_destruct();
-		return EXIT_FAILURE;
-	}
+    if (fixture_construct() < 0) {
+        fprintf(stderr, COLOR_RED "Failed to construct the peephole fixture\n" COLOR_RESET);
+        fixture_destruct();
+        return EXIT_FAILURE;
+    }
 
-	RUN_TEST("Reject PROT_EXEC View", test_reject_prot_exec);
-	RUN_TEST("Reject MAP_SHARED View", test_reject_map_shared);
-	RUN_TEST("Reject Partial-Length View", test_reject_partial_length);
-	RUN_TEST("Reject Non-Zero Offset View", test_reject_nonzero_offset);
-	RUN_TEST("Reject mremap Growth", test_reject_mremap_grow);
-	RUN_TEST("Reject mremap Move", test_reject_mremap_move);
-	RUN_TEST("Reject mprotect to Writable", test_reject_mprotect_write);
-	RUN_TEST("Reject mprotect to PROT_NONE", test_reject_mprotect_none);
-	RUN_TEST("Well-Formed View Still Works", test_wellformed_mapping_still_works);
+    RUN_TEST("Reject PROT_EXEC View", test_reject_prot_exec);
+    RUN_TEST("Reject MAP_SHARED View", test_reject_map_shared);
+    RUN_TEST("Reject Partial-Length View", test_reject_partial_length);
+    RUN_TEST("Reject Non-Zero Offset View", test_reject_nonzero_offset);
+    RUN_TEST("Reject mremap Growth", test_reject_mremap_grow);
+    RUN_TEST("Reject mremap Move", test_reject_mremap_move);
+    RUN_TEST("Reject mprotect to Writable", test_reject_mprotect_write);
+    RUN_TEST("Reject mprotect to PROT_NONE", test_reject_mprotect_none);
+    RUN_TEST("Well-Formed View Still Works", test_wellformed_mapping_still_works);
 
-	fixture_destruct();
+    fixture_destruct();
 
-	print_summary();
+    print_summary();
 
-	return suite_status();
+    return suite_status();
 }
