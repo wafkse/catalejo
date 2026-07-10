@@ -6,7 +6,14 @@
 
 use alloc::sync::Arc;
 
-use core::{alloc::Layout, borrow::Borrow, marker, mem, num::NonZero, ops::Deref, ptr::NonNull};
+use core::{
+    alloc::Layout,
+    borrow::Borrow,
+    marker, mem,
+    num::NonZero,
+    ops::Deref,
+    ptr::{self, NonNull},
+};
 
 use std::{
     io,
@@ -18,7 +25,7 @@ use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
 
 use catalejo_fault::{
     behavior::Faultable,
-    ffi::Subsystem,
+    ffi::{self as fault, Subsystem},
     maybe::{MaybeFault, Opaque},
 };
 
@@ -379,6 +386,71 @@ where
         L: Lift<Value = F>,
     {
         L::construct(self)
+    }
+
+    /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
+    ///
+    /// Where [`read`](Self::read) is restricted to a single machine-word-coherent [`Faultable`]
+    /// primitive, this streams the entire byte span of `F` through the fault-protected copy, so it
+    /// serves the composite structures that exceed a machine word and therefore carry no snapshot
+    /// coherence. The bytes are assembled ascending and byte-granular, so a foreign mutation in
+    /// flight tears the observed value, yet `F` being [`Unassociated`] guarantees every resulting
+    /// bit-pattern remains a valid inhabitant.
+    ///
+    /// The caller owns the destination through `target_buffer`, so a large aggregate lands directly
+    /// in its final home rather than being returned by value and copied a second time. A full mirror
+    /// initializes the buffer in whole and hands back an exclusive reference to the now-live `F`. A
+    /// fault yields an [`Err`] carrying the count of bytes left uncopied at the faulting byte, and no
+    /// reference is produced, because the buffer holds only the copied prefix and its tail stays
+    /// uninitialized.
+    #[inline]
+    pub fn copy<'buffer>(
+        &self,
+        target_buffer: &'buffer mut mem::MaybeUninit<F>,
+    ) -> Result<&'buffer mut F, usize> {
+        let Self(target_peephole, target_displacement, ..) = self;
+
+        let PeepholeContext {
+            peephole_subsystem,
+            ref peephole_window,
+            ..
+        } = **target_peephole;
+
+        let target_count = mem::size_of::<F>();
+
+        // NOTE(invariant): `Self` keeps the displacement in-bounds and aligned for `F`, so the
+        // window base plus the displacement names the live foreign span and never overflows. Treat
+        // an overflow defensively as a total fault, with the whole span left uncopied.
+        let Some(target_source) =
+            Window::address(peephole_window).checked_add(target_displacement.value())
+        else {
+            return Err(target_count);
+        };
+
+        let target_address = target_buffer.as_mut_ptr().cast::<u8>();
+
+        let target_source = ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_source));
+
+        // SAFETY:
+        //
+        // * The source names the foreign peephole window, memory outside the abstract machine
+        //   reached under exposed provenance and kept mapped for the borrow by the `Arc` behind the
+        //   peephole. It is ordinary RAM rather than side-effecting MMIO, and a dead peephole faults
+        //   and is reported as `Err` rather than being undefined behavior.
+        //
+        // * The destination is the caller's `MaybeUninit<F>`, ordinary abstract-machine memory
+        //   valid and writable for `target_count` bytes, exclusively borrowed for `'buffer`, and
+        //   aligned for `F` by construction, so it never overlaps the disjoint foreign source.
+        let target_outcome =
+            unsafe { fault::copy(peephole_subsystem, target_address, target_source, target_count) };
+
+        match target_outcome {
+            // SAFETY: The copy wrote every one of the `target_count` bytes, so the buffer is
+            // initialized in whole, and `F` is `Unassociated`, so the assembled bit-pattern is a
+            // valid inhabitant of `F` regardless of any tearing.
+            Ok(()) => Ok(unsafe { target_buffer.assume_init_mut() }),
+            Err(target_remaining) => Err(target_remaining),
+        }
     }
 }
 

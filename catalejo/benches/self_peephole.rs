@@ -8,12 +8,17 @@
 //! * The lazy `ioctl` plus `mmap` that opens a fresh window the first time a granule is touched.
 //! * The lazy fault-in of a window page the first time that page is read through the mapping.
 //!
+//! A final suite measures `Foreign::copy`, the whole-structure mirror that streams an aggregate
+//! wider than a machine word out of the window byte-granular, so its figures carry a mirror-speed
+//! throughput across several payload sizes rather than the single-word latency of the read suite.
+//!
 //! They require the `mirilla` kernel module to be loaded and its device present, and they engage
 //! the current process as their own target so no second process is needed. When the environment is
 //! unavailable the suite prints a skip notice and returns rather than failing, so it stays runnable
 //! everywhere.
 
 use std::hint::black_box;
+use std::mem::MaybeUninit;
 
 use catalejo::{
     address::ViAddr,
@@ -24,7 +29,10 @@ use catalejo::{
 
 use catalejo_fault::ffi::Subsystem;
 
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+    measurement::WallTime,
+};
 
 /// The size of the default peephole granule (a `Hugepage`), the span of a single window.
 const GRANULE_BYTES: usize = 2 * 1024 * 1024;
@@ -111,6 +119,45 @@ fn warm_foreign(manager: &Rebased, target_address: ViAddr) -> Foreign<u64> {
     );
 
     target_foreign
+}
+
+/// Time the whole-structure mirror of a `[u64; N]` payload out of an already-open granule window.
+///
+/// The window is open over the warm granule, so the handle is materialized once and the mapping
+/// pages the payload spans are faulted in by a priming copy. The timed loop then measures the
+/// steady-state byte-granular stream into a caller-owned buffer, so its figure is a mirror speed
+/// rather than the one-off open and fault-in cost. The payload byte span is declared as the group
+/// throughput, and the size names the benchmark so a run reports one mirror speed per payload width.
+fn bench_copy<const N: usize>(
+    copy_group: &mut BenchmarkGroup<'_, WallTime>,
+    manager: &Rebased,
+    warm_address: ViAddr,
+) {
+    let target_foreign = manager
+        .absolute::<[u64; N]>(warm_address)
+        .expect("window is open")
+        .foreign()
+        .expect("handle validates");
+
+    let mut target_buffer = MaybeUninit::<[u64; N]>::uninit();
+
+    // NOTE: Prime the mapping so every page the payload spans is resident before it is timed.
+    assert!(
+        black_box(target_foreign.copy(&mut target_buffer)).is_ok(),
+        "self-peephole copy should mirror resident memory",
+    );
+
+    let payload_bytes = size_of::<[u64; N]>() as u64;
+
+    copy_group.throughput(Throughput::Bytes(payload_bytes));
+
+    copy_group.bench_with_input(
+        BenchmarkId::from_parameter(payload_bytes),
+        &payload_bytes,
+        |bencher, _| {
+            bencher.iter(|| black_box(target_foreign.copy(&mut target_buffer).is_ok()));
+        },
+    );
 }
 
 fn self_peephole(criterion: &mut Criterion) {
@@ -241,6 +288,25 @@ fn self_peephole(criterion: &mut Criterion) {
         });
 
         read_group.finish();
+    }
+
+    // The whole-structure mirror costs, every benchmark streams an aggregate wider than a machine
+    // word out of the warm window, so the group carries a per-payload throughput and criterion
+    // reports each figure as a mirror speed. The sizes span from a single page to many, so the
+    // series exposes how the byte-granular copy amortizes across page boundaries.
+    {
+        let mut copy_group = criterion.benchmark_group("self-peephole-copy");
+
+        // A `4 KiB` payload, a single page mirrored in whole.
+        bench_copy::<512>(&mut copy_group, &manager, warm_address);
+
+        // A `64 KiB` payload, spanning many pages within the warm granule.
+        bench_copy::<8192>(&mut copy_group, &manager, warm_address);
+
+        // A `512 KiB` payload, the widest mirror the half-granule structure bound admits.
+        bench_copy::<65536>(&mut copy_group, &manager, warm_address);
+
+        copy_group.finish();
     }
 }
 
