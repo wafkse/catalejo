@@ -39,6 +39,46 @@ use crate::{
     target::Target,
 };
 
+/// The creation-time initialization word for a [`Peephole`].
+///
+/// This is a bitset of the kernel's `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*` preferences, applied when
+/// the peephole is created, so that a caller can request one-shot behavior without a follow-up
+/// command. Combine flags with [`InitializeWord::with`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitializeWord(ffi::binding::mirilla_map_peephole_initialize_word_t);
+
+impl InitializeWord {
+    /// An empty word, requesting no creation-time behavior.
+    pub const EMPTY: Self = Self(0);
+
+    /// Populate the mapping during `mmap` rather than on first touch, so that a later read walks
+    /// resident PTEs instead of paying a fault and a remote pin per granule. This trades a slower
+    /// `mmap` for that faster steady state, so it suits an observer that reads the whole window.
+    pub const POPULATE: Self = Self(
+        ffi::binding::MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE
+            as ffi::binding::mirilla_map_peephole_initialize_word_t,
+    );
+
+    /// Return the word with the bits of `other` also set.
+    #[inline]
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        let Self(target_value) = self;
+        let Self(target_other) = other;
+
+        Self(target_value | target_other)
+    }
+
+    /// The raw word for the foreign-function boundary.
+    #[inline]
+    #[must_use]
+    pub const fn bits(self) -> ffi::binding::mirilla_map_peephole_initialize_word_t {
+        let Self(target_value) = self;
+
+        target_value
+    }
+}
+
 /// The context backing a peephole into a foreign memory address space.
 #[derive(Debug)]
 pub struct PeepholeContext {
@@ -66,6 +106,20 @@ impl PeepholeContext {
     /// This may fail if the underlying peephole could not be created or memory-mapped.
     #[inline]
     pub fn view(target_context: &Target, address_range: ViRange) -> io::Result<Self> {
+        Self::view_with(target_context, address_range, InitializeWord::EMPTY)
+    }
+
+    /// Open a [`Peephole`] into the target, applying the given creation-time [`InitializeWord`].
+    ///
+    /// # Failure
+    ///
+    /// This may fail if the underlying peephole could not be created or memory-mapped.
+    #[inline]
+    pub fn view_with(
+        target_context: &Target,
+        address_range: ViRange,
+        initialize_word: InitializeWord,
+    ) -> io::Result<Self> {
         let ViRange {
             start_address: ViAddr(start_address),
             end_address: ViAddr(end_address),
@@ -78,6 +132,7 @@ impl PeepholeContext {
                 target_context.id(),
                 start_address,
                 end_address,
+                initialize_word.bits(),
             )?
         };
 
@@ -187,7 +242,21 @@ impl Peephole {
     /// This may fail if the underlying peephole could not be created or memory-mapped.
     #[inline]
     pub fn view(target_context: &Target, address_range: ViRange) -> io::Result<Self> {
-        PeepholeContext::view(target_context, address_range)
+        Self::view_with(target_context, address_range, InitializeWord::EMPTY)
+    }
+
+    /// Open a [`Peephole`] into the target, applying the given creation-time [`InitializeWord`].
+    ///
+    /// # Failure
+    ///
+    /// This may fail if the underlying peephole could not be created or memory-mapped.
+    #[inline]
+    pub fn view_with(
+        target_context: &Target,
+        address_range: ViRange,
+        initialize_word: InitializeWord,
+    ) -> io::Result<Self> {
+        PeepholeContext::view_with(target_context, address_range, initialize_word)
             .map(Arc::new)
             .map(Self)
     }
@@ -458,6 +527,108 @@ where
             Ok(()) => Ok(unsafe { target_buffer.assume_init_mut() }),
             Err(target_remaining) => Err(target_remaining),
         }
+    }
+
+    /// Mirror `F` out of the foreign window one page run at a time, recording which pages survived.
+    ///
+    /// Where [`copy`](Self::copy) stops at the first dead page and reports the uncopied remainder,
+    /// this resumes past each dead page and keeps filling the buffer at the faulting byte's true
+    /// offset, so the destination stays a one-to-one spatial image of the foreign window rather than
+    /// a compacted one. Compaction would slide live bytes together and forge an adjacency the target
+    /// never had, which a byte scanner would then report as a false match. The spatial image avoids
+    /// that, because a match offset maps back to its foreign address by plain addition.
+    ///
+    /// `target_pages` receives one bit per host page of `F`, set when that page copied whole and left
+    /// clear when it was dead at copy time. Unmapping is page-granular, so a fault always lands on a
+    /// page boundary, and a page that copies is a page fully present. The cleared bits double as the
+    /// initialized-memory mask, because a hole is never written and must not be read back as `F`. The
+    /// returned count is the number of live pages, so a caller can gauge remaining work against it.
+    #[inline]
+    pub fn copy_sparse(
+        &self,
+        target_buffer: &mut mem::MaybeUninit<F>,
+        target_pages: &mut [usize],
+    ) -> usize {
+        // NOTE: Host base page size. The foreign window base is page-aligned and a tile spans whole
+        // pages, so page indices divide the span exactly and a fault falls on a page boundary.
+        const TARGET_PAGE: usize = 4096;
+
+        // NOTE: Width of a bitset word, so the page index splits into word and bit without a magic
+        // constant that would silently disagree with the word type.
+        const TARGET_WORD_BITS: usize = usize::BITS as usize;
+
+        let Self(target_peephole, target_displacement, ..) = self;
+
+        let PeepholeContext {
+            peephole_subsystem,
+            ref peephole_window,
+            ..
+        } = **target_peephole;
+
+        let target_span = mem::size_of::<F>();
+
+        let Some(target_source_base) =
+            Window::address(peephole_window).checked_add(target_displacement.value())
+        else {
+            // NOTE: A degenerate base names no live span, so no page is live.
+            return 0;
+        };
+
+        let target_destination = target_buffer.as_mut_ptr().cast::<u8>();
+
+        let target_source =
+            ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_source_base));
+
+        let mut target_offset = 0usize;
+        let mut target_live = 0usize;
+
+        while target_offset < target_span {
+            let target_remaining = target_span - target_offset;
+
+            // SAFETY:
+            //
+            // * The foreign side names the peephole window under exposed provenance kept mapped for
+            //   the borrow by the `Arc` behind the peephole, so a dead page faults and is caught by
+            //   the subsystem rather than being undefined behavior.
+            //
+            // * The local side is the caller's `MaybeUninit<F>`, valid for the whole span and
+            //   disjoint from the foreign source, so the resumed writes never overlap the reads.
+            let target_outcome = unsafe {
+                fault::copy(
+                    peephole_subsystem,
+                    target_destination.add(target_offset),
+                    target_source.add(target_offset),
+                    target_remaining,
+                )
+            };
+
+            let target_copied = match target_outcome {
+                Ok(()) => target_remaining,
+                Err(target_left) => target_remaining - target_left,
+            };
+
+            // NOTE: Mark every whole page the copy just filled as live. A trailing partial page is
+            // only ever the final page of the span, and it still counts as covered.
+            let target_page_start = target_offset / TARGET_PAGE;
+            let target_page_end = (target_offset + target_copied).div_ceil(TARGET_PAGE);
+
+            for target_page in target_page_start..target_page_end {
+                target_pages[target_page / TARGET_WORD_BITS] |=
+                    1usize << (target_page % TARGET_WORD_BITS);
+
+                target_live += 1;
+            }
+
+            // NOTE: On success the span is exhausted. On a fault the copy halted at the first byte of
+            // a dead page, so step past exactly that one page and resume, leaving its bit clear.
+            if target_outcome.is_err() {
+                target_offset = target_offset + target_copied + TARGET_PAGE;
+            } else {
+                break;
+            }
+        }
+
+        target_live
     }
 }
 
