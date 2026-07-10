@@ -429,7 +429,8 @@ where
 
         let target_address = target_buffer.as_mut_ptr().cast::<u8>();
 
-        let target_source = ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_source));
+        let target_source =
+            ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_source));
 
         // SAFETY:
         //
@@ -441,8 +442,14 @@ where
         // * The destination is the caller's `MaybeUninit<F>`, ordinary abstract-machine memory
         //   valid and writable for `target_count` bytes, exclusively borrowed for `'buffer`, and
         //   aligned for `F` by construction, so it never overlaps the disjoint foreign source.
-        let target_outcome =
-            unsafe { fault::copy(peephole_subsystem, target_address, target_source, target_count) };
+        let target_outcome = unsafe {
+            fault::copy(
+                peephole_subsystem,
+                target_address,
+                target_source,
+                target_count,
+            )
+        };
 
         match target_outcome {
             // SAFETY: The copy wrote every one of the `target_count` bytes, so the buffer is
