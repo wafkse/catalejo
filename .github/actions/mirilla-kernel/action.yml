@@ -32,7 +32,7 @@ runs:
 
         - name: Restore kernel build
           id: kernel-cache
-          uses: actions/cache@v4
+          uses: actions/cache@v6
           with:
               path: linux
               # The cache key follows the tag, the vng release, and the config.
