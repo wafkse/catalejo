@@ -14,12 +14,16 @@ pub mod binding {
 
 pub mod command {
     //! Commands for userspace-kernel device ioctls.
+    #![allow(
+        clippy::std_instead_of_core,
+        reason = "imports are false-flagged by clippy where the fix would be nightly-only"
+    )]
 
     use core::ffi::CStr;
 
-    use core::io::{self, ErrorKind};
-
     use std::{
+        io,
+        io::ErrorKind,
         os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
         path::PathBuf,
         sync::LazyLock,

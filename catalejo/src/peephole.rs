@@ -1,11 +1,16 @@
 //! In-memory peephole module.
+#![allow(
+    clippy::std_instead_of_core,
+    reason = "imports are false-flagged by clippy where the fix would be nightly-only"
+)]
 
 use alloc::sync::Arc;
 
 use core::{alloc::Layout, borrow::Borrow, marker, mem, num::NonZero, ops::Deref, ptr::NonNull};
 
 use std::{
-    io::{self, ErrorKind},
+    io,
+    io::ErrorKind,
     os::fd::{AsFd, OwnedFd},
 };
 
