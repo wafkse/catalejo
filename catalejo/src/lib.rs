@@ -32,7 +32,7 @@ pub mod prelude {
     pub use crate::{
         address::{ViAddr, ViRange},
         offset::{AddressSpace, Field, Offset, Retrievable, Retrieve, Unassociated},
-        peephole::{Foreign, Lift, Peephole, Window},
+        peephole::{Foreign, InitializeWord, Lift, Peephole, Window},
         target::Target,
     };
 }
