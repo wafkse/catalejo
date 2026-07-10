@@ -11,20 +11,40 @@
 # as root inside a `virtme-ng` VM that boots a mirilla-powered kernel. The
 # matching `*-vm` recipes are host-side, building what the guest needs before
 # launching the VM against it.
-
 # Run each recipe line under a strict shell so a failing command aborts the recipe.
+
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 # The kernel tree the module is built against and the VM boots. Defaults to the
 # running kernel's build directory, and CI points it at the matrix kernel checkout.
-kdir := env_var_or_default("KDIR", "/lib/modules/" + `uname -r` + "/build")
+
+kdir := env("KDIR", "/lib/modules/" + `uname -r` + "/build")
 
 # The built module object the guest loads.
+
 module := justfile_directory() / "mirilla" / "mirilla.ko"
 
 # VM sizing for the guest-side runs. Two gigabytes and four CPUs mirror CI.
-vm_memory := env_var_or_default("CATALEJO_VM_MEMORY", "2G")
-vm_cpus := env_var_or_default("CATALEJO_VM_CPUS", "4")
+
+vm_memory := env("CATALEJO_VM_MEMORY", "2G")
+vm_cpus := env("CATALEJO_VM_CPUS", "4")
+
+# The environment handed to the guest. virtme-ng runs the guest command as root
+# with a reset environment, so the host toolchain has to be threaded back in by
+# hand. The shared filesystem makes every host path resolve unchanged inside the
+# guest, so forwarding the caller's home and cargo locations lets the guest find
+# cargo, its rustup toolchain, and the registry cache. The PATH also restores the
+# sbin directories a reset root PATH can omit, where insmod and rmmod live.
+
+home := env("HOME")
+cargo_home := env("CARGO_HOME", home + "/.cargo")
+rustup_home := env("RUSTUP_HOME", home + "/.rustup")
+guest_path := cargo_home + "/bin:" + home + "/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# The env prefix that carries that environment across the guest boundary. just is
+# invoked by absolute path so it does not depend on the forwarded PATH itself.
+
+guest_env := "env 'HOME=" + home + "' 'CARGO_HOME=" + cargo_home + "' 'RUSTUP_HOME=" + rustup_home + "' 'PATH=" + guest_path + "' '" + just_executable() + "'"
 
 # List the available recipes.
 default:
@@ -89,7 +109,7 @@ lint: lint-rust lint-c
 # Build the mirilla kernel module against the kernel tree at {{kdir}}.
 [group('mirilla')]
 mirilla-module:
-    make -C mirilla KDIR='{{kdir}}' module
+    make -C mirilla KDIR='{{ kdir }}' module
 
 # Build the C test suites. Userspace only, so no kernel tree is needed.
 [group('mirilla')]
@@ -128,8 +148,8 @@ mirilla-test: _mirilla-load
 # Build the module and run the C suites inside a mirilla-powered VM. Host-side.
 [group('mirilla')]
 mirilla-test-vm: mirilla-module mirilla-suite
-    cd '{{kdir}}' && vng --user root --memory '{{vm_memory}}' --cpu '{{vm_cpus}}' -- \
-        just --justfile '{{justfile()}}' mirilla-test
+    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+        {{ guest_env }} --justfile '{{ justfile() }}' mirilla-test
 
 # --- catalejo: the Rust integration tests and benchmarks ---
 
@@ -184,14 +204,14 @@ catalejo-bench: _mirilla-load
 # Build the module and run the integration tests inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-test-vm: mirilla-module catalejo-build
-    cd '{{kdir}}' && vng --user root --memory '{{vm_memory}}' --cpu '{{vm_cpus}}' -- \
-        just --justfile '{{justfile()}}' catalejo-test
+    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+        {{ guest_env }} --justfile '{{ justfile() }}' catalejo-test
 
 # Build the module and run the benchmarks inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-bench-vm: mirilla-module catalejo-build
-    cd '{{kdir}}' && vng --user root --memory '{{vm_memory}}' --cpu '{{vm_cpus}}' -- \
-        just --justfile '{{justfile()}}' catalejo-bench
+    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+        {{ guest_env }} --justfile '{{ justfile() }}' catalejo-bench
 
 # Publish the latest read-group violin plot into docs for the README embed.
 [group('catalejo')]
@@ -220,7 +240,7 @@ _mirilla-load:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if ! insmod '{{module}}'; then
+    if ! insmod '{{ module }}'; then
         echo "error: failed to load mirilla.ko" >&2
         dmesg | tail -n 50 >&2
         exit 1
