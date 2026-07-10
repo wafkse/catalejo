@@ -32,7 +32,7 @@ pub mod command {
     use core::ptr;
 
     use crate::{
-        ffi::binding::{self, virtual_address_t},
+        ffi::binding::{self, mirilla_map_peephole_initialize_word_t, virtual_address_t},
         id::{PeepholeId, TargetId},
     };
 
@@ -122,6 +122,10 @@ pub mod command {
 
     /// For an engaged target process, create a peephole over the specified virtual memory range.
     ///
+    /// `initialize_word` is a bitset of `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*` preferences the kernel
+    /// applies at creation, so that a caller can request one-shot behavior such as populating the
+    /// mapping without a follow-up command.
+    ///
     /// # Failure
     ///
     /// This can fail if the:
@@ -140,6 +144,7 @@ pub mod command {
         target_id: TargetId,
         start_address: virtual_address_t,
         end_address: virtual_address_t,
+        initialize_word: mirilla_map_peephole_initialize_word_t,
     ) -> io::Result<(PeepholeId, OwnedFd)> {
         let mut peephole_id = None::<PeepholeId>;
         let mut peephole_fd = None::<OwnedFd>;
@@ -150,7 +155,7 @@ pub mod command {
             // * The caller has asserted that the provided file descriptor comes from `mirilla`.
             // * `mirilla_map_peephole_id_t` is identical ABI-wise to `Option<PeepholeId>`.
             // * `OwnedFd/RawFd` is identical ABI-wise to a host file descriptor.
-            unsafe { binding::catalejo_mirilla_peephole(fd.as_raw_fd(), target_id.get(), start_address, end_address, ptr::from_mut(&mut peephole_id).cast::<binding::mirilla_map_target_id_t>(), ptr::from_mut(&mut peephole_fd).cast::<RawFd>()) };
+            unsafe { binding::catalejo_mirilla_peephole(fd.as_raw_fd(), target_id.get(), start_address, end_address, initialize_word, ptr::from_mut(&mut peephole_id).cast::<binding::mirilla_map_target_id_t>(), ptr::from_mut(&mut peephole_fd).cast::<RawFd>()) };
 
         match (target_outcome, (peephole_id, peephole_fd)) {
             (binding::MIRILLA_COMMAND_OK, (Some(target_left), Some(target_right))) => {

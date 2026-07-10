@@ -64,13 +64,18 @@ mirilla_command_status_t catalejo_mirilla_disengage(
  * The provided file descriptor must be of the `mirilla` kernel module.
  */
 mirilla_command_status_t catalejo_mirilla_peephole(
-    int fd, mirilla_map_target_id_t target_id, uint64_t start_address, uint64_t end_address, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
+    int fd, mirilla_map_target_id_t target_id, uint64_t start_address, uint64_t end_address, mirilla_map_peephole_initialize_word_t initialize_word, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
 ) {
     mirilla_command_status_t command_code = MIRILLA_COMMAND_OK;
 
     union mirilla_map_peephole_io io;
 
-    io.argument = (struct mirilla_map_peephole_argument){ target_id, start_address, end_address };
+    io.argument = (struct mirilla_map_peephole_argument){
+        .target_id = target_id,
+        .start_address = start_address,
+        .end_address = end_address,
+        .initialize_word = initialize_word,
+    };
 
     command_code = ioctl(fd, MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_MAP, MIRILLA_COMMAND_MAP_PEEPHOLE), &io);
 

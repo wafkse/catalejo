@@ -36,8 +36,9 @@ catalejo_mirilla_disengage(const int fd, mirilla_map_target_id_t target_id);
  */
 mirilla_command_status_t catalejo_mirilla_peephole(
     int fd, mirilla_map_target_id_t target_id, virtual_address_t start_address,
-    virtual_address_t end_address, mirilla_map_peephole_id_t *peephole_id,
-    int *peephole_fd);
+    virtual_address_t end_address,
+    mirilla_map_peephole_initialize_word_t initialize_word,
+    mirilla_map_peephole_id_t *peephole_id, int *peephole_fd);
 
 #ifdef __cplusplus
 }
