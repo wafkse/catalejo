@@ -24,6 +24,12 @@ kdir := env("KDIR", "/lib/modules/" + `uname -r` + "/build")
 
 module := justfile_directory() / "mirilla" / "mirilla.ko"
 
+# Where criterion writes its report. This is the cargo target dir at the workspace
+# root, so it tracks a default (unset) CARGO_TARGET_DIR. The benchmark VM recipe
+# shares this path back to the host, because criterion produces it guest-side.
+
+criterion_dir := justfile_directory() / "target" / "criterion"
+
 # VM sizing for the guest-side runs. Two gigabytes and four CPUs mirror CI.
 
 vm_memory := env("CATALEJO_VM_MEMORY", "2G")
@@ -210,7 +216,16 @@ catalejo-test-vm: mirilla-module catalejo-build
 # Build the module and run the benchmarks inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-bench-vm: mirilla-module catalejo-build
-    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+    # virtme-ng boots the guest as a copy-on-write snapshot of the host, so any
+    # write the benchmark makes is discarded when the VM shuts down. Criterion
+    # writes its report guest-side, so without help it never reaches the host and
+    # the artifact upload finds nothing. Share the report directory read-write so
+    # criterion's output lands on the host filesystem directly rather than in the
+    # throwaway overlay. --rwdir refuses a host path that does not yet exist, so
+    # create it before booting.
+    mkdir -p '{{ criterion_dir }}'
+    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' \
+        --rwdir='{{ criterion_dir }}' -- \
         {{ guest_env }} --justfile '{{ justfile() }}' catalejo-bench
 
 # Publish the latest read-group violin plot into docs for the README embed.
