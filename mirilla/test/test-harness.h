@@ -38,6 +38,7 @@
 #include "../include/mirilla-map.h"
 
 #include "catalejo-fault.h"
+#include "catalejo-mirilla.h"
 
 /* Configuration */
 #define MIRILLA_DEVICE "/dev/mirilla"
@@ -248,10 +249,8 @@ static inline long mirilla_peephole(int mirilla_fd, mirilla_map_target_id_t targ
  * Retrieve the address space layout, auxiliary vector, and metadata for an
  * engaged target.
  *
- * Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the
- * backing buffer address, capacity and element size, and the kernel populates
- * up to the capacity and reports the full kernel-resident count through the
- * matching outcome.
+ * This delegates to the `catalejo-sys` C wrapper, which recovers `-errno`
+ * from the raw ioctl so the caller receives the full kernel status directly.
  */
 static inline long
 mirilla_address_space_layout(int mirilla_fd, mirilla_map_target_id_t target_id,
@@ -261,25 +260,9 @@ mirilla_address_space_layout(int mirilla_fd, mirilla_map_target_id_t target_id,
                              struct mirilla_outside_list_outcome *layout_outcome,
                              struct mirilla_outside_list_outcome *auxiliary_vector_outcome)
 {
-    union mirilla_map_address_space_layout_io layout_io = { 0 };
-    layout_io.argument.target_id = target_id;
-    layout_io.argument.layout_list = *layout_list;
-    layout_io.argument.auxiliary_vector_list = *auxiliary_vector_list;
-
-    unsigned int cmd = MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_MAP,
-                                              MIRILLA_COMMAND_MAP_ADDRESS_SPACE_LAYOUT);
-    long ret = ioctl(mirilla_fd, cmd, &layout_io);
-
-    if (MIRILLA_COMMAND_IS_OK(ret)) {
-        if (metadata)
-            *metadata = layout_io.result.metadata;
-        if (layout_outcome)
-            *layout_outcome = layout_io.result.layout_outcome;
-        if (auxiliary_vector_outcome)
-            *auxiliary_vector_outcome = layout_io.result.auxiliary_vector_outcome;
-    }
-
-    return ret;
+    return catalejo_mirilla_address_space_layout(mirilla_fd, target_id, layout_list,
+                                                 auxiliary_vector_list, metadata, layout_outcome,
+                                                 auxiliary_vector_outcome);
 }
 
 /* A target id no engagement ever produced. */

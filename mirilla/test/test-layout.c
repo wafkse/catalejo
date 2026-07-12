@@ -158,14 +158,18 @@ static int test_layout_full_population(void)
     /*
      * The test's own anonymous read-write region must appear in the layout with
      * at least `READ|WRITE|ANONYMOUS`.
+     *
+     * The kernel may coalesce adjacent anonymous VMAs, so the VMA containing
+     * the test region can be larger than the allocation itself. Search for a
+     * containing entry rather than an exact boundary match.
      */
     int found_region = 0;
     virtual_address_t region_start = (virtual_address_t)region;
     virtual_address_t region_end = region_start + TEST_REGION_SIZE;
 
     for (uint32_t i = 0; i < layout_outcome.total_count; i++) {
-        if (layout_buffer[i].start_address == region_start &&
-            layout_buffer[i].end_address == region_end) {
+        if (layout_buffer[i].start_address <= region_start &&
+            layout_buffer[i].end_address >= region_end) {
             ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_READ) != 0,
                    "test region is missing the READ attribute");
             ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_WRITE) != 0,
@@ -341,6 +345,9 @@ static int test_layout_auxiliary_vector(void)
 /*
  * A negative pass: bad `element_size`, a null list address without
  * `DO_NOT_POPULATE`, and a nonexistent target must all be refused.
+ *
+ * The `catalejo-sys` C wrapper recovers `-errno` from the raw ioctl, so the
+ * returned status is checked directly rather than through `errno`.
  */
 static int test_layout_negative(void)
 {
@@ -363,12 +370,10 @@ static int test_layout_negative(void)
             make_outside_list(NULL, 0, sizeof(struct mirilla_auxiliary_vector_entry),
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
-        errno = 0;
-        ASSERT(expect_ioctl_rejection(mirilla_address_space_layout(
-                                          mirilla_fd, target_id, &bad_layout, &dnp_aux, &metadata,
-                                          &layout_outcome, &auxiliary_vector_outcome),
-                                      EINVAL, "bad layout element size"),
-               "bad layout element size was not rejected");
+        long ret = mirilla_address_space_layout(mirilla_fd, target_id, &bad_layout, &dnp_aux,
+                                                 &metadata, &layout_outcome,
+                                                 &auxiliary_vector_outcome);
+        ASSERT(ret == -EINVAL, "bad layout element size was not rejected");
     }
 
     /* Bad `element_size` on the auxiliary vector list. */
@@ -379,12 +384,10 @@ static int test_layout_negative(void)
         struct mirilla_outside_list bad_aux =
             make_outside_list(NULL, 0, 0, MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
-        errno = 0;
-        ASSERT(expect_ioctl_rejection(mirilla_address_space_layout(
-                                          mirilla_fd, target_id, &dnp_layout, &bad_aux, &metadata,
-                                          &layout_outcome, &auxiliary_vector_outcome),
-                                      EINVAL, "bad auxiliary vector element size"),
-               "bad auxiliary vector element size was not rejected");
+        long ret = mirilla_address_space_layout(mirilla_fd, target_id, &dnp_layout, &bad_aux,
+                                                 &metadata, &layout_outcome,
+                                                 &auxiliary_vector_outcome);
+        ASSERT(ret == -EINVAL, "bad auxiliary vector element size was not rejected");
     }
 
     /* Null list address without `DO_NOT_POPULATE`. */
@@ -395,12 +398,10 @@ static int test_layout_negative(void)
             make_outside_list(NULL, 0, sizeof(struct mirilla_auxiliary_vector_entry),
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
-        errno = 0;
-        ASSERT(expect_ioctl_rejection(mirilla_address_space_layout(
-                                          mirilla_fd, target_id, &null_layout, &dnp_aux, &metadata,
-                                          &layout_outcome, &auxiliary_vector_outcome),
-                                      EFAULT, "null layout list address"),
-               "null layout list address was not rejected");
+        long ret = mirilla_address_space_layout(mirilla_fd, target_id, &null_layout, &dnp_aux,
+                                                 &metadata, &layout_outcome,
+                                                 &auxiliary_vector_outcome);
+        ASSERT(ret == -EFAULT, "null layout list address was not rejected");
     }
 
     mirilla_disengage(mirilla_fd, target_id);
@@ -414,12 +415,10 @@ static int test_layout_negative(void)
             make_outside_list(NULL, 0, sizeof(struct mirilla_auxiliary_vector_entry),
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
-        errno = 0;
-        ASSERT(expect_ioctl_rejection(mirilla_address_space_layout(
-                                          mirilla_fd, BOGUS_TARGET_ID, &dnp_layout, &dnp_aux,
-                                          &metadata, &layout_outcome, &auxiliary_vector_outcome),
-                                      ENOENT, "layout against a bogus target id"),
-               "layout against a bogus target id was not rejected");
+        long ret = mirilla_address_space_layout(mirilla_fd, BOGUS_TARGET_ID, &dnp_layout, &dnp_aux,
+                                                 &metadata, &layout_outcome,
+                                                 &auxiliary_vector_outcome);
+        ASSERT(ret == -ENOENT, "layout against a bogus target id was not rejected");
     }
 
     close(mirilla_fd);

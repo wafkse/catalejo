@@ -16,7 +16,12 @@ PWD := $(CURDIR)
 CATALEJO_FAULT_DIR := ../catalejo-fault/c
 CATALEJO_FAULT_SRCS := $(wildcard $(CATALEJO_FAULT_DIR)/src/*.c)
 
-TEST_CFLAGS := -I. -I$(CATALEJO_FAULT_DIR)/include -Wall -Wextra -std=c11
+# The layout suite uses the catalejo-sys C wrappers, which recover `-errno`
+# from the raw ioctl so negative tests can assert the returned status directly.
+CATALEJO_SYS_DIR := ../catalejo-sys/c
+CATALEJO_SYS_SRCS := $(wildcard $(CATALEJO_SYS_DIR)/src/*.c)
+
+TEST_CFLAGS := -I. -I$(CATALEJO_FAULT_DIR)/include -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
 
 TEST_SUITES := test/test-suite test/test-self test/test-concurrency \
            test/test-invariants test/test-ioctl test/test-layout
@@ -35,8 +40,8 @@ module:
 
 test/test-concurrency: TEST_CFLAGS += -pthread
 
-test/%: test/%.c test/test-harness.h $(wildcard include/*.h) $(CATALEJO_FAULT_SRCS)
-	gcc -o $@ $< $(CATALEJO_FAULT_SRCS) $(TEST_CFLAGS)
+test/%: test/%.c test/test-harness.h $(wildcard include/*.h) $(CATALEJO_FAULT_SRCS) $(CATALEJO_SYS_SRCS)
+	gcc -o $@ $< $(CATALEJO_FAULT_SRCS) $(CATALEJO_SYS_SRCS) $(TEST_CFLAGS)
 
 tests: $(TEST_SUITES)
 	@echo "Test suites built successfully!"
@@ -45,6 +50,7 @@ tests: $(TEST_SUITES)
 	@echo "  - test/test-concurrency    : Concurrency and race tests"
 	@echo "  - test/test-invariants     : Mapping invariant tests"
 	@echo "  - test/test-ioctl          : Ioctl error-path tests"
+	@echo "  - test/test-layout         : Address space observation tests"
 	@echo ""
 	@echo "Make sure the mirilla module is loaded first."
 
