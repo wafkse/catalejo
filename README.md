@@ -46,42 +46,152 @@ Teardown runs from the same notifier. When the target unmaps, remaps, or frees t
 
 ## Speed
 
-The layered costs are arranged so that the expensive ones are rare and the common one is trivial. Resolution is a memoized frame lookup with no system call. Opening is one `ioctl` and one `mmap` amortized across a whole granule. A fault-in is a single minor page fault that installs a shared frame. A hot read is then a load through a resident entry that aliases the target's frame, so it runs at memory speed rather than syscall speed.
+The layered costs are arranged so that the expensive ones are rare and the common one is trivial. Resolution is a memoized frame lookup with no system call. Opening is one ioctl and one mmap amortized across a whole granule. A fault-in is a single minor page fault that installs a shared frame. A hot read is then a load through a resident entry that aliases the target's frame, so it runs at memory speed rather than syscall speed.
 
-The default granule is a two-megabyte huge frame. A large granule keeps the window table small and amortizes the open across the many pages it covers, and the granule size is a power of two, so quantizing an address to its frame is a single shift. The `self_peephole` benchmark suite isolates each of these costs by engaging the benchmarking process as its own target, so no second process is needed. It reads a machine word out of a peephole that points back into the reader.
+The default granule is a two-megabyte huge frame. A large granule keeps the window table small and amortizes the open across the many pages it covers, and the granule size is a power of two, so quantizing an address to its frame is a single shift. The self_peephole benchmark suite isolates each of these costs by engaging the benchmarking process as its own target, so no second process is needed. It reads a machine word out of a peephole that points back into the reader. A foreign_peephole benchmark exists, but such requires a proper setup to run.
 
 | Benchmark          | Group     | Isolates                                                          |
-| ------------------ | --------- | ---------------------------------------------------------------- |
-| `resolve-only`     | resolve   | The memoized window lookup, no read.                             |
-| `open-cold`        | resolve   | A fresh window's `ioctl` and `mmap`, no read.                    |
-| `read-hot`         | read      | The fault-protected read alone, over a resident page.            |
-| `resolve-read-hot` | read      | The whole hot path, a memoized lookup then a resident read.      |
-| `source-read-warm` | read      | The find-or-open path over an already-open, resident window.     |
-| `open-read-cold`   | read      | A cold open plus the first read that faults the new page in.     |
+| ------------------ | --------- | ----------------------------------------------------------------- |
+| resolve-only       | resolve   | The memoized window lookup, no read.                              |
+| open-cold          | resolve   | A fresh window's ioctl and mmap, no read.                         |
+| read-hot           | read      | The fault-protected read alone, over a resident page.             |
+| resolve-read-hot   | read      | The whole hot path, a memoized lookup then a resident read.       |
+| source-read-warm   | read      | The find-or-open path over an already-open, resident window.      |
+| open-read-cold     | read      | A cold open plus the first read that faults the new page in.      |
 
-The `read` group declares a per-iteration throughput of one machine word, so criterion reports its figures as read speeds in GiB/s alongside the latencies.
+The read group declares a per-iteration throughput of one machine word, so criterion reports its figures as read speeds in GiB/s alongside the latencies.
 
-![self-peephole read speeds](docs/benchmarks/self-peephole-read.svg)
+Benchmarks were executed on a Ryzen 7 7700X with PBO and EXPO II enabled, utilizing DDR5 6000 MT/s CL30 32 GB RAM (2x16 GB Dual Channel) running 7.1.3-arch2. The performance analysis prioritizes small reads and bulk copies across both self and foreign targets. Note that no measurable difference in speed exists between self and foreign operations.
 
-The plot above is criterion's violin of the read group. It is refreshed from `target/criterion` by `just catalejo-bench-plot` after a benchmark run, and the benchmark CI job uploads the full HTML report as an artifact per kernel.
+### Read Performance
 
-## Architecture
+![foreign-peephole read speeds](docs/benchmarks/foreign-peephole-read/report/violin.svg)
+![self-peephole read speeds](docs/benchmarks/self-peephole-read/report/violin.svg)
 
-The kernel module lives in `mirilla`. The userspace side is a Rust workspace of five crates.
+### Copy Throughput
 
-| Crate             | Responsibility                                                                                     |
-| ----------------- | -------------------------------------------------------------------------------------------------- |
-| `catalejo`        | The high-level API of `Target`, `Peephole`, `Foreign`, and the memoizing `Manage` window table.    |
-| `catalejo-memory` | The hardware coherence model, machine-word, snapshot, and mixed coherence, and the `Unassociated` contract. |
-| `catalejo-fault`  | Fault-protected reads, on a naked assembly routine and a chaining `SIGSEGV`/`SIGBUS` handler.       |
-| `catalejo-sys`    | The bindings to the `mirilla` ioctl ABI.                                                            |
-| `catalejo-macro`  | Derive macros that reify a type's fields for offset resolution and emit its `Unassociated` proof.   |
+![foreign-peephole copy throughput](docs/benchmarks/foreign-peephole-copy/report/lines_throughput.svg)
+![self-peephole copy throughput](docs/benchmarks/self-peephole-copy/report/lines_throughput.svg)
 
-## Requirements
+### Raw Benchmark Output
 
-- Linux on `x86_64`, with the `mirilla` module loaded.
-- `CAP_SYS_PTRACE` to engage a target. This is the same capability that already grants `process_vm_readv` over arbitrary processes, so it grants no new access scope.
-- A Rust toolchain for the workspace, and kernel headers plus `clang`/`libclang` for the `catalejo-sys` bindgen build.
+```text
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Gnuplot not found, using plotters backend
+foreign-peephole-resolve/resolve-only
+                        time:   [12.959 ns 12.974 ns 12.990 ns]
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+foreign-peephole-resolve/open-cold
+                        time:   [3.9171 µs 4.0112 µs 4.0937 µs]
+
+foreign-peephole-read/read-hot
+                        time:   [4.1060 ns 4.1161 ns 4.1286 ns]
+                        thrpt:  [1.8046 GiB/s 1.8101 GiB/s 1.8146 GiB/s]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+foreign-peephole-read/resolve-read-hot
+                        time:   [15.310 ns 15.344 ns 15.388 ns]
+                        thrpt:  [495.82 MiB/s 497.22 MiB/s 498.33 MiB/s]
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low severe
+  1 (1.00%) low mild
+  6 (6.00%) high severe
+foreign-peephole-read/source-read-warm
+                        time:   [17.526 ns 17.549 ns 17.571 ns]
+                        thrpt:  [434.20 MiB/s 434.76 MiB/s 435.31 MiB/s]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+foreign-peephole-read/open-read-cold
+                        time:   [8.2127 µs 8.2795 µs 8.3570 µs]
+                        thrpt:  [934.84 KiB/s 943.60 KiB/s 951.27 KiB/s]
+
+foreign-peephole-copy/copy-hot/4096
+                        time:   [29.717 ns 29.747 ns 29.778 ns]
+                        thrpt:  [128.10 GiB/s 128.24 GiB/s 128.37 GiB/s]
+Found 17 outliers among 100 measurements (17.00%)
+  7 (7.00%) low severe
+  4 (4.00%) low mild
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+foreign-peephole-copy/copy-hot/65536
+                        time:   [811.40 ns 812.60 ns 814.10 ns]
+                        thrpt:  [74.972 GiB/s 75.111 GiB/s 75.222 GiB/s]
+Found 20 outliers among 100 measurements (20.00%)
+  1 (1.00%) low mild
+  9 (9.00%) high mild
+  10 (10.00%) high severe
+foreign-peephole-copy/copy-hot/524288
+                        time:   [8.0915 µs 8.1165 µs 8.1409 µs]
+                        thrpt:  [59.979 GiB/s 60.159 GiB/s 60.345 GiB/s]
+foreign-peephole-copy/copy-warm
+                        time:   [836.31 ns 837.57 ns 839.16 ns]
+                        thrpt:  [72.733 GiB/s 72.872 GiB/s 72.982 GiB/s]
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+foreign-peephole-copy/open-copy-cold
+                        time:   [22.364 µs 22.489 µs 22.623 µs]
+                        thrpt:  [2.6979 GiB/s 2.7140 GiB/s 2.7292 GiB/s]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high severe
+
+Gnuplot not found, using plotters backend
+self-peephole-resolve/resolve-only
+                        time:   [12.958 ns 12.981 ns 13.004 ns]
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) low mild
+  1 (1.00%) high mild
+self-peephole-resolve/open-cold
+                        time:   [3.4887 µs 3.5514 µs 3.6194 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+self-peephole-read/read-hot
+                        time:   [4.1164 ns 4.1228 ns 4.1306 ns]
+                        thrpt:  [1.8038 GiB/s 1.8072 GiB/s 1.8100 GiB/s]
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+self-peephole-read/resolve-read-hot
+                        time:   [15.360 ns 15.394 ns 15.430 ns]
+                        thrpt:  [494.45 MiB/s 495.62 MiB/s 496.71 MiB/s]
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+self-peephole-read/source-read-warm
+                        time:   [17.357 ns 17.378 ns 17.400 ns]
+                        thrpt:  [438.47 MiB/s 439.02 MiB/s 439.56 MiB/s]
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) low mild
+  1 (1.00%) high mild
+self-peephole-read/open-read-cold
+                        time:   [8.2991 µs 8.3738 µs 8.4517 µs]
+                        thrpt:  [924.38 KiB/s 932.97 KiB/s 941.37 KiB/s]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+self-peephole-copy/4096 time:   [30.185 ns 30.289 ns 30.402 ns]
+                        thrpt:  [125.47 GiB/s 125.94 GiB/s 126.38 GiB/s]
+Found 5 outliers among 100 measurements (5.00%)
+  3 (3.00%) high mild
+  2 (2.00%) high severe
+self-peephole-copy/65536
+                        time:   [816.23 ns 817.83 ns 819.87 ns]
+                        thrpt:  [74.445 GiB/s 74.631 GiB/s 74.777 GiB/s]
+Found 8 outliers among 100 measurements (8.00%)
+  2 (2.00%) high mild
+  6 (6.00%) high severe
+self-peephole-copy/524288
+                        time:   [8.3507 µs 8.3866 µs 8.4308 µs]
+                        thrpt:  [57.916 GiB/s 58.221 GiB/s 58.472 GiB/s]
+```
 
 ## Building
 
@@ -100,7 +210,6 @@ The suites read a live `/dev/mirilla`, so they run inside a [`virtme-ng`](https:
 just lint              # rustfmt + clippy, and clang-format + clangd
 just mirilla-test-vm   # build the module and run the C test suite in a VM
 just catalejo-test-vm  # build the module and run the Rust test suite in a VM
-just catalejo-bench-vm # build the module and run the benchmarks in a VM
 ```
 
 The `*-vm` recipes are host-side, and build what the guest needs before launching the VM against the kernel tree named by `KDIR` (defaulting to the running kernel's build directory). The plain `mirilla-test`, `catalejo-test`, and `catalejo-bench` recipes are the guest-side halves, run as root inside the VM against a loaded module.
@@ -113,7 +222,6 @@ Five jobs run on every push and pull request.
 - **Automated Linting (C)** runs `clang-format` and `clangd`.
 - **Mirilla-powered Kernel Test Suite** runs the C suite, once per kernel series.
 - **Mirilla-powered Kernel Integration Tests** runs the Rust test suite, once per kernel series.
-- **Mirilla-powered Kernel Benchmark** runs the self-peephole benchmarks, once per kernel series.
 
 The mirilla-powered jobs run against the latest longterm and latest stable kernel series.
 
