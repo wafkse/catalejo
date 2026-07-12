@@ -5,7 +5,7 @@
  * exercises its scenarios through the helpers below, and exits nonzero
  * when any case failed so a runner can aggregate results.
  *
- * Faulting accesses ride the `catalejo-fault` subsystem end to end: reads
+ * Faulting accesses ride the `catalejo-fault` subsystem end to end, as reads
  * against peephole views go through the fault-protected routines, so an
  * access the module refuses (SIGSEGV on an unresolvable range, SIGBUS on a
  * dead peephole) surfaces as `CATALEJO_OUTCOME_ERROR` instead of taking the
@@ -242,6 +242,66 @@ static inline long mirilla_peephole(int mirilla_fd, mirilla_map_target_id_t targ
     }
 
     return ret;
+}
+
+/*
+ * Retrieve the address space layout, auxiliary vector, and metadata for an
+ * engaged target.
+ *
+ * Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the
+ * backing buffer address, capacity and element size, and the kernel populates
+ * up to the capacity and reports the full kernel-resident count through the
+ * matching outcome.
+ */
+static inline long
+mirilla_address_space_layout(int mirilla_fd, mirilla_map_target_id_t target_id,
+                             struct mirilla_outside_list *layout_list,
+                             struct mirilla_outside_list *auxiliary_vector_list,
+                             struct mirilla_map_address_space_metadata *metadata,
+                             struct mirilla_outside_list_outcome *layout_outcome,
+                             struct mirilla_outside_list_outcome *auxiliary_vector_outcome)
+{
+    union mirilla_map_address_space_layout_io layout_io = { 0 };
+    layout_io.argument.target_id = target_id;
+    layout_io.argument.layout_list = *layout_list;
+    layout_io.argument.auxiliary_vector_list = *auxiliary_vector_list;
+
+    unsigned int cmd = MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_MAP,
+                                              MIRILLA_COMMAND_MAP_ADDRESS_SPACE_LAYOUT);
+    long ret = ioctl(mirilla_fd, cmd, &layout_io);
+
+    if (MIRILLA_COMMAND_IS_OK(ret)) {
+        if (metadata)
+            *metadata = layout_io.result.metadata;
+        if (layout_outcome)
+            *layout_outcome = layout_io.result.layout_outcome;
+        if (auxiliary_vector_outcome)
+            *auxiliary_vector_outcome = layout_io.result.auxiliary_vector_outcome;
+    }
+
+    return ret;
+}
+
+/* A target id no engagement ever produced. */
+#define BOGUS_TARGET_ID 0xdeadbeef
+
+/*
+ * Expect an ioctl result to be a refusal with the given errno.
+ */
+static inline int expect_ioctl_rejection(long ioctl_code, int expected_errno, const char *what)
+{
+    if (MIRILLA_COMMAND_IS_OK(ioctl_code)) {
+        fprintf(stderr, "%s unexpectedly succeeded\n", what);
+        return -1;
+    }
+
+    if (errno != expected_errno) {
+        fprintf(stderr, "%s failed with errno %d (%s), expected %d\n", what, errno, strerror(errno),
+                expected_errno);
+        return -1;
+    }
+
+    return 0;
 }
 
 /* Allocate and initialize a test memory region */

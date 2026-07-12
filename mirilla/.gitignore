@@ -28,3 +28,4 @@ test/test-self
 test/test-concurrency
 test/test-invariants
 test/test-ioctl
+test/test-layout

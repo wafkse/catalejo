@@ -19,7 +19,7 @@ CATALEJO_FAULT_SRCS := $(wildcard $(CATALEJO_FAULT_DIR)/src/*.c)
 TEST_CFLAGS := -I. -I$(CATALEJO_FAULT_DIR)/include -Wall -Wextra -std=c11
 
 TEST_SUITES := test/test-suite test/test-self test/test-concurrency \
-	       test/test-invariants test/test-ioctl
+           test/test-invariants test/test-ioctl test/test-layout
 
 all: module tests
 
@@ -55,8 +55,12 @@ test: tests
 
 # --- Developer Experience (DX) Targets ---
 
+# Formats C sources and headers using clang-format
+format:
+	clang-format -style=file -i $(wildcard src/*.c include/*.h test/*.c test/*.h)
+
 # Generates compile_commands.json for Clangd
 language-server: clean
 	bear -- $(MAKE) all
 
-.PHONY: all clean install test tests module language-server
+.PHONY: all clean install test tests module format language-server

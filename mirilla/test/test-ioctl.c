@@ -22,28 +22,6 @@
 /* A pid outside any real pid range (`pid_max` caps at 1 << 22). */
 #define NONEXISTENT_PID 0x7fffffff
 
-/* A target id no engagement ever produced. */
-#define BOGUS_TARGET_ID 0xdeadbeef
-
-/*
- * Expect an ioctl result to be a refusal with the given errno.
- */
-static int expect_ioctl_rejection(long ioctl_code, int expected_errno, const char *what)
-{
-    if (MIRILLA_COMMAND_IS_OK(ioctl_code)) {
-        fprintf(stderr, "%s unexpectedly succeeded\n", what);
-        return -1;
-    }
-
-    if (errno != expected_errno) {
-        fprintf(stderr, "%s failed with errno %d (%s), expected %d\n", what, errno, strerror(errno),
-                expected_errno);
-        return -1;
-    }
-
-    return 0;
-}
-
 /* Foreign magic must bounce off the dispatcher. */
 static int test_bad_magic(void)
 {
