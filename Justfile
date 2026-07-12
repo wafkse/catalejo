@@ -157,7 +157,7 @@ mirilla-test-vm: mirilla-module mirilla-suite
 [group('catalejo')]
 catalejo-build:
     cargo test --workspace --no-run
-    cargo bench -p catalejo --bench self_peephole --no-run
+    cargo bench --all --no-run
 
 # Run the whole Rust test suite against a loaded module. Guest-side, root.
 [group('catalejo')]
@@ -173,64 +173,11 @@ catalejo-test: _mirilla-load
     # host skips. Serialize so the self-targeting suites do not contend for the device.
     cargo test --workspace --offline -- --include-ignored --test-threads=1
 
-# Run the self-peephole benchmarks against a loaded module. Guest-side, root.
-[group('catalejo')]
-catalejo-bench: _mirilla-load
-    #!/usr/bin/env bash
-    set -uo pipefail
-    trap 'code=$?; [ "$code" -eq 0 ] || dmesg | tail -n 100 >&2; rmmod mirilla || true; exit "$code"' EXIT
-
-    echo "Running the catalejo self-peephole benchmarks under $(uname -r)"
-
-    # Keep the CI cost bounded. Fewer, shorter samples still surface the phase
-    # costs and the read-speed figures. The plotters backend needs no gnuplot,
-    # so criterion writes its reports, plots, and machine-readable estimates
-    # under target/criterion on any runner.
-    output=$(cargo bench -p catalejo --bench self_peephole --offline -- \
-        --plotting-backend plotters --warm-up-time 1 --measurement-time 3 --sample-size 50 2>&1)
-    status=$?
-
-    printf '%s\n' "$output"
-
-    # A green run that silently skipped is a false positive. The module is
-    # loaded, so a skip means self-targeting failed rather than a missing device.
-    if printf '%s' "$output" | grep -q 'skipping self-peephole benchmarks'; then
-        echo "error: benchmarks skipped despite a loaded mirilla module" >&2
-        status=1
-    fi
-
-    exit "$status"
-
 # Build the module and run the integration tests inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-test-vm: mirilla-module catalejo-build
     cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
         {{ guest_env }} --justfile '{{ justfile() }}' catalejo-test
-
-# Build the module and run the benchmarks inside a mirilla-powered VM. Host-side.
-[group('catalejo')]
-catalejo-bench-vm: mirilla-module catalejo-build
-    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
-        {{ guest_env }} --justfile '{{ justfile() }}' catalejo-bench
-
-# Publish the latest read-group violin plot into docs for the README embed.
-[group('catalejo')]
-catalejo-bench-plot:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    # A benchmark run leaves the plot under target/criterion, so run this after
-    # one of the bench recipes has populated it.
-    plot='target/criterion/self-peephole-read/report/violin.svg'
-
-    if [ ! -f "$plot" ]; then
-        echo "error: $plot is absent, run 'just catalejo-bench-vm' first" >&2
-        exit 1
-    fi
-
-    mkdir -p docs/benchmarks
-    cp "$plot" docs/benchmarks/self-peephole-read.svg
-    echo "wrote docs/benchmarks/self-peephole-read.svg"
 
 # --- Shared internals ---
 
