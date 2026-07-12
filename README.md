@@ -212,7 +212,7 @@ just mirilla-test-vm   # build the module and run the C test suite in a VM
 just catalejo-test-vm  # build the module and run the Rust test suite in a VM
 ```
 
-The `*-vm` recipes are host-side, and build what the guest needs before launching the VM against the kernel tree named by `KDIR` (defaulting to the running kernel's build directory). The plain `mirilla-test`, `catalejo-test`, and `catalejo-bench` recipes are the guest-side halves, run as root inside the VM against a loaded module.
+The `*-vm` recipes are host-side, and build what the guest needs before launching the VM against the kernel tree named by `KDIR` (defaulting to the running kernel's build directory). The plain `mirilla-test`, `catalejo-test` recipes are the guest-side halves, run as root inside the VM against a loaded module.
 
 ## Continuous integration
 
