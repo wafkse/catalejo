@@ -614,8 +614,6 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
         MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to construct map target context");
     }
 
-
-
     mirilla_map_target_id_t map_target_id = atomic_inc_return(&device_context->map_target_count);
 
     target_context->id = result->target_id = map_target_id;
