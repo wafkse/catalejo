@@ -371,8 +371,8 @@ static int test_layout_negative(void)
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
         long ret = mirilla_address_space_layout(mirilla_fd, target_id, &bad_layout, &dnp_aux,
-                                                 &metadata, &layout_outcome,
-                                                 &auxiliary_vector_outcome);
+                                                &metadata, &layout_outcome,
+                                                &auxiliary_vector_outcome);
         ASSERT(ret == -EINVAL, "bad layout element size was not rejected");
     }
 
@@ -385,8 +385,8 @@ static int test_layout_negative(void)
             make_outside_list(NULL, 0, 0, MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
         long ret = mirilla_address_space_layout(mirilla_fd, target_id, &dnp_layout, &bad_aux,
-                                                 &metadata, &layout_outcome,
-                                                 &auxiliary_vector_outcome);
+                                                &metadata, &layout_outcome,
+                                                &auxiliary_vector_outcome);
         ASSERT(ret == -EINVAL, "bad auxiliary vector element size was not rejected");
     }
 
@@ -399,8 +399,8 @@ static int test_layout_negative(void)
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
         long ret = mirilla_address_space_layout(mirilla_fd, target_id, &null_layout, &dnp_aux,
-                                                 &metadata, &layout_outcome,
-                                                 &auxiliary_vector_outcome);
+                                                &metadata, &layout_outcome,
+                                                &auxiliary_vector_outcome);
         ASSERT(ret == -EFAULT, "null layout list address was not rejected");
     }
 
@@ -416,8 +416,8 @@ static int test_layout_negative(void)
                               MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE);
 
         long ret = mirilla_address_space_layout(mirilla_fd, BOGUS_TARGET_ID, &dnp_layout, &dnp_aux,
-                                                 &metadata, &layout_outcome,
-                                                 &auxiliary_vector_outcome);
+                                                &metadata, &layout_outcome,
+                                                &auxiliary_vector_outcome);
         ASSERT(ret == -ENOENT, "layout against a bogus target id was not rejected");
     }
 
