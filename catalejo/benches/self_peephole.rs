@@ -29,6 +29,7 @@ use catalejo::{
 
 use catalejo_fault::ffi::Subsystem;
 
+use catalejo_sys::ffi;
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
     measurement::WallTime,
@@ -90,7 +91,10 @@ impl Region {
 
     /// Determine the target address of the first word of the granule at the specified index.
     fn granule_address(&self, granule_index: usize) -> ViAddr {
-        ViAddr::new(self.base_address + (granule_index % GRANULE_COUNT) * GRANULE_BYTES)
+        ViAddr::new(
+            (self.base_address + (granule_index % GRANULE_COUNT) * GRANULE_BYTES)
+                as ffi::binding::virtual_address_t,
+        )
     }
 }
 

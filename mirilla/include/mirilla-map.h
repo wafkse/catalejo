@@ -119,30 +119,12 @@ __attribute((
 MIRILLA_MAP_CONTEXT_LIST
 #undef X
 
-#ifdef __KERNEL__
-
-/*
- * NOTE(invariant): Avoid multi-page `copy_{to,from}_user` for input-output
- * intermediate structures.
- */
-#define MIRILLA_ASSERT_IO_SIZE(name) \
-    static_assert(sizeof(union mirilla_map_##name##_io) <= PAGE_SIZE, "IO too large: " #name)
-
-#else
-
-/*
- * NOTE(workaround): Bindgen dislikes `static_assert`.
- */
-#define MIRILLA_ASSERT_IO_SIZE(name)
-
-#endif /* __KERNEL__ */
-
 #define MIRILLA_MAP_DEFINE_COMMAND_IO(name)            \
     union mirilla_map_##name##_io {                    \
         struct mirilla_map_##name##_argument argument; \
         struct mirilla_map_##name##_result result;     \
     };                                                 \
-    MIRILLA_ASSERT_IO_SIZE(name)
+    MIRILLA_ASSERT_IO_SIZE(map_##name)
 
 struct mirilla_map_engage_argument {
     /*
@@ -172,18 +154,13 @@ struct mirilla_map_disengage_result {};
 MIRILLA_MAP_DEFINE_COMMAND_IO(disengage);
 
 /**
- * An integer primitive capable of representing a virtual address.
- */
-typedef size_t virtual_address_t;
-
-/**
  * An initialization word for peephole creation.
  *
  * This is used to inform of specific preferences to the kernel when it creates the peephole.
  */
-typedef unsigned short mirilla_map_peephole_initialize_word_t;
+typedef uint32_t mirilla_map_peephole_initialize_word_t;
 
-/**
+/*
  * Populate the `struct vm_area_struct` on a `mmap`.
  *
  * This may increase the latency of a `mmap` system call for a `peephole` file descriptor.
@@ -195,6 +172,8 @@ typedef unsigned short mirilla_map_peephole_initialize_word_t;
  * pin. Batching amortizes the `get_user_pages_remote` page-table walk and the
  * observed `mmap_lock` round trip over many granules rather than paying both per
  * granule the way the demand-fault path does.
+ *
+ * WARNING: This is used to hold an array on the stack, keep the size small.
  */
 #define MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE (64)
 

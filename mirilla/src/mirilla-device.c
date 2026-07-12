@@ -33,7 +33,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(device)
 
     mirilla_context_initialize(target_context);
 
-    atomic64_set(&target_context->map_target_count, 0);
+    atomic_set(&target_context->map_target_count, 0);
     xa_init(&target_context->map_target_list);
 
     return error_code;
@@ -41,7 +41,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(device)
 
 MIRILLA_CONTEXT_DESTRUCTOR(device)
 {
-    mirilla_map_target_id_t target_id = MIRILLA_ID_NONE;
+    unsigned long target_id = MIRILLA_ID_NONE;
     struct mirilla_map_target_context *map_target_context = NULL;
 
     xa_for_each(&target_context->map_target_list, target_id, map_target_context)

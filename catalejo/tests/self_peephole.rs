@@ -17,6 +17,7 @@ use catalejo::{
 };
 
 use catalejo_fault::ffi::Subsystem;
+use catalejo_sys::ffi;
 
 /// Engage the current process as a target, panicking with a clear message on failure.
 fn engage_self() -> Target {
@@ -31,7 +32,7 @@ fn engage_self() -> Target {
 
 /// Compute the target address of a value in this process' own address space.
 fn address_of<T>(target_value: &T) -> ViAddr {
-    ViAddr::new(core::ptr::from_ref(target_value) as usize)
+    ViAddr::new(core::ptr::from_ref(target_value) as ffi::binding::virtual_address_t)
 }
 
 #[test]
@@ -96,12 +97,12 @@ fn memoizes_a_peephole_by_page() {
 
     // Span two pages and align the base up to a page, so `here` and `near` share a page while `far`
     // lands in the next one. Over-allocating by a word keeps every probe inside resident memory.
-    let region: Vec<u64> = vec![0; (2 * page) / size_of::<u64>() + 2];
-    let base_address = core::ptr::from_ref(&region[0]) as usize;
+    let region: Vec<u64> = vec![0; (2 * page as usize) / size_of::<u64>() + 2];
+    let base_address = core::ptr::from_ref(&region[0]) as ffi::binding::virtual_address_t;
     let aligned_base = (base_address + (page - 1)) & !(page - 1);
 
     let here = ViAddr::new(aligned_base);
-    let near = ViAddr::new(aligned_base + size_of::<u64>());
+    let near = ViAddr::new(aligned_base + size_of::<u64>() as ffi::binding::virtual_address_t);
     let far = ViAddr::new(aligned_base + page);
 
     let peephole_id = |target_address| {

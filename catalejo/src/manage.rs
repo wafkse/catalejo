@@ -17,7 +17,7 @@ use crate::{
     target::Target,
 };
 
-/// A new-type over an [`usize`] that determines the frame indice of a [`Peephole`] in relative to its respective level.
+/// A new-type over an [`u64`] that determines the frame indice of a [`Peephole`] in relative to its respective level.
 ///
 /// A frame is a virtual address divided by a granule size, analogous to a page frame number. It is
 /// a logical cell index rather than an address, so it can be neither dereferenced nor mistaken for
@@ -25,18 +25,18 @@ use crate::{
 /// produced it.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
 #[repr(transparent)]
-pub struct Frame(pub usize);
+pub struct Frame(pub u64);
 
 impl Frame {
     /// Construct a [`Frame`] from the target logical frame index.
     #[inline]
-    pub const fn new(target_index: usize) -> Self {
+    pub const fn new(target_index: u64) -> Self {
         Self(target_index)
     }
 
     /// Determine the encapsulated logical frame index.
     #[inline]
-    pub const fn value(self) -> usize {
+    pub const fn value(self) -> u64 {
         let Self(target_index) = self;
 
         target_index
@@ -47,10 +47,9 @@ impl Frame {
 ///
 /// # Representation
 ///
-/// This is represented as an [`prim@u64`] or [`prim@u32`], matching the platform's pointer width for implementation simplicity, and
-/// each variant corresponds to the bitwise mask that would be applied to an address to map it to a peephole of the specified bounds.
+/// This is represented as an [`prim@u64`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(usize)]
+#[repr(u64)]
 pub enum Granule {
     /// A `4 KiB` peephole range.
     ///
@@ -96,7 +95,7 @@ impl Granule {
 
     /// Determine the size of the target granularity.
     #[inline]
-    pub const fn size(self) -> usize {
+    pub const fn size(self) -> u64 {
         // NOTE: The discriminant is stored as the bitwise mask of the intra-peephole offset.
         // Its a power of two, so it can be added 1 to determine the size.
         self as ffi::binding::virtual_address_t + 1
@@ -189,6 +188,16 @@ pub trait Manage {
     fn source<U>(&self, target_address: ViAddr) -> io::Result<Option<Access<U>>>
     where
         U: Unassociated;
+
+    /// Determine the [`Granule`] at which this manager tiles the address space into windows.
+    ///
+    /// The granule is the span and alignment a window is quantized to, so a bulk consumer such as a
+    /// scanner sizes and aligns its tiles to the window grid rather than rediscovering it.
+    ///
+    /// The granule is assumed to be static for the lifetime of a manager instance, because a manager
+    /// is constructed at one granularity and never re-tiles, so a caller may read it once and cache
+    /// it rather than re-querying per resolution.
+    fn granule(&self) -> Granule;
 }
 
 /// A structure that indicates the intent of access of foreign-address-space memory for an `U` at the contained offset for a peephole.
@@ -370,7 +379,7 @@ impl Manage for Rebased {
     {
         // NOTE: A structure larger than a half-granule cannot be guaranteed to fit either grid.
         debug_assert!(
-            mem::size_of::<U>() <= self.capacity(),
+            mem::size_of::<U>() as u64 <= self.capacity(),
             "structure exceeds the half-granule peephole cap",
         );
 
@@ -386,6 +395,11 @@ impl Manage for Rebased {
             Some(l1) => l1.acquire::<U>(self.engaged(), target_address),
             None => Ok(None),
         }
+    }
+
+    #[inline]
+    fn granule(&self) -> Granule {
+        Rebased::granule(self)
     }
 }
 
@@ -507,7 +521,7 @@ impl<const O: usize> Rebase<O> {
     /// the level below it.
     #[inline]
     pub const fn shift(&self) -> ffi::binding::virtual_address_t {
-        O.wrapping_mul(self.granule().half())
+        (O as ffi::binding::virtual_address_t).wrapping_mul(self.granule().half())
     }
 
     /// Determine the [`Frame`] index that a virtual address falls into within this grid.
@@ -572,11 +586,14 @@ impl<const O: usize> Rebase<O> {
             .granule()
             .size()
             .checked_sub(displacement_value)
-            .is_some_and(|window_remainder| window_remainder >= target_layout.size());
+            .is_some_and(|window_remainder| {
+                window_remainder >= target_layout.size() as ffi::binding::virtual_size_t
+            });
 
         // NOTE: The window base is granule-aligned (thus page-aligned), so an offset-only alignment
         // check against the local displacement suffices to establish alignment for `U`.
-        let is_aligned = displacement_value.is_multiple_of(target_layout.align());
+        let is_aligned = displacement_value
+            .is_multiple_of(target_layout.align() as ffi::binding::virtual_align_t);
 
         in_bounds && is_aligned
     }
@@ -641,7 +658,7 @@ pub struct Memoize {
     target_engaged: Target,
 
     /// The open windows, keyed by base address, forming an interval tree over the observed space.
-    window_tree: RwLock<BTreeMap<usize, Peephole>>,
+    window_tree: RwLock<BTreeMap<ffi::binding::virtual_address_t, Peephole>>,
 }
 
 impl Memoize {
@@ -666,7 +683,7 @@ impl Memoize {
     ///
     /// Yields [`None`] when the structure would wrap the end of the address space.
     #[inline]
-    fn window_range(target_address: ViAddr, target_span: usize) -> Option<ViRange> {
+    fn window_range(target_address: ViAddr, target_span: u64) -> Option<ViRange> {
         let page_size = Granule::Page.size();
         let page_mask = page_size - 1;
 
@@ -696,9 +713,9 @@ impl Memoize {
     /// Find an open window that already covers the whole structure at an address, if any.
     #[inline]
     fn covering(
-        window_tree: &BTreeMap<usize, Peephole>,
+        window_tree: &BTreeMap<ffi::binding::virtual_address_t, Peephole>,
         target_address: ViAddr,
-        target_span: usize,
+        target_span: u64,
     ) -> Option<Peephole> {
         let ViAddr(address) = target_address;
 
@@ -745,7 +762,11 @@ impl Manage for Memoize {
         let target_peephole = {
             let window_tree = self.window_tree.read().unwrap();
 
-            Self::covering(&window_tree, target_address, target_layout.size())?
+            Self::covering(
+                &window_tree,
+                target_address,
+                target_layout.size() as ffi::binding::virtual_size_t,
+            )?
         };
 
         // NOTE: Mirror the grid managers and award an access only when `U` is aligned at its offset,
@@ -758,7 +779,7 @@ impl Manage for Memoize {
         let ViAddr(address) = target_address;
 
         (address - window_start)
-            .is_multiple_of(target_layout.align())
+            .is_multiple_of(target_layout.align() as ffi::binding::virtual_align_t)
             .then(|| Self::access(target_peephole, target_address))
     }
 
@@ -773,14 +794,21 @@ impl Manage for Memoize {
         if let Some(target_peephole) = {
             let window_tree = self.window_tree.read().unwrap();
 
-            Self::covering(&window_tree, target_address, target_layout.size())
+            Self::covering(
+                &window_tree,
+                target_address,
+                target_layout.size() as ffi::binding::virtual_size_t,
+            )
         } {
             return Ok(Some(Self::access(target_peephole, target_address)));
         }
 
         // NOTE: Open the window outside the lock. The mapping is the expensive step, and holding the
         // tree across it would serialize every unrelated resolution.
-        let Some(target_range) = Self::window_range(target_address, target_layout.size()) else {
+        let Some(target_range) = Self::window_range(
+            target_address,
+            target_layout.size() as ffi::binding::virtual_size_t,
+        ) else {
             return Ok(None);
         };
 
@@ -791,7 +819,11 @@ impl Manage for Memoize {
 
             // NOTE: A racing open may have covered this span already. Yield to it and let the freshly
             // opened window drop, both map the identical foreign range.
-            match Self::covering(&window_tree, target_address, target_layout.size()) {
+            match Self::covering(
+                &window_tree,
+                target_address,
+                target_layout.size() as ffi::binding::virtual_size_t,
+            ) {
                 Some(existing_peephole) => existing_peephole,
                 None => {
                     let ViRange {
@@ -807,5 +839,12 @@ impl Manage for Memoize {
         };
 
         Ok(Some(Self::access(target_peephole, target_address)))
+    }
+
+    #[inline]
+    fn granule(&self) -> Granule {
+        // NOTE: Memoize sizes every window to its structure and page-aligns it, so the finest
+        // granularity it statically guarantees is a single page rather than a fixed larger window.
+        Granule::Page
     }
 }

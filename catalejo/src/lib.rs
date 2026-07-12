@@ -26,6 +26,9 @@ pub mod manage;
 
 pub mod offset;
 
+// NOTE: Re-export the `ffi` module from `catalejo-sys` as it includes vital primitive aliases for cross-crate consistency.
+pub use catalejo_sys::ffi;
+
 pub mod prelude {
     //! The prelude of the `catalejo` crate.
 

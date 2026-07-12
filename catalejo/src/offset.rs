@@ -4,6 +4,8 @@ use core::{borrow::Borrow, marker, mem};
 
 use catalejo_memory::behavior::Immortal;
 
+use catalejo_sys::ffi;
+
 // NOTE: Re-export so downstream crates can consume both `Field` as a trait and a derive macro.
 pub use catalejo_macro::Field;
 
@@ -14,12 +16,12 @@ pub use catalejo_memory::behavior::Unassociated;
 /// A local offset applied to a virtual base.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
 #[repr(transparent)]
-pub struct Offset(usize);
+pub struct Offset(ffi::binding::virtual_offset_t);
 
 impl Offset {
     /// Construct a byte-level offset from the target value.
     #[inline]
-    pub const fn byte(target_value: usize) -> Self {
+    pub const fn byte(target_value: ffi::binding::virtual_offset_t) -> Self {
         Self(target_value)
     }
 
@@ -27,8 +29,10 @@ impl Offset {
     ///
     /// This determines the offset using the size of the parametric type.
     #[inline]
-    pub const fn typed<T>(target_value: usize) -> Self {
-        Self::byte(mem::size_of::<T>().wrapping_mul(target_value))
+    pub const fn typed<T>(target_value: ffi::binding::virtual_offset_t) -> Self {
+        let target_size = mem::size_of::<T>() as ffi::binding::virtual_offset_t;
+
+        Self::byte(target_size.wrapping_mul(target_value))
     }
 
     /// Stack two disjoint offsets onto a singular one.
@@ -46,7 +50,7 @@ impl Offset {
 impl Offset {
     /// Determine the encapsulated offset value.
     #[inline]
-    pub const fn value(self) -> usize {
+    pub const fn value(self) -> ffi::binding::virtual_offset_t {
         let Self(target_value) = self;
 
         target_value
@@ -54,10 +58,18 @@ impl Offset {
 
     /// Borrow the encapsulated offset value.
     #[inline]
-    pub const fn value_mut(&mut self) -> &mut usize {
+    pub const fn value_mut(&mut self) -> &mut ffi::binding::virtual_offset_t {
         let Self(target_value) = self;
 
         target_value
+    }
+
+    /// Determine the encapsulated offset value as a native pointer-width integer.
+    #[inline]
+    pub const fn native(self) -> usize {
+        let Self(target_value) = self;
+
+        target_value as usize
     }
 }
 

@@ -58,7 +58,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(map_target)
 
     target_context->process_id = NULL;
 
-    atomic64_set(&target_context->peephole_count, 0);
+    atomic_set(&target_context->peephole_count, 0);
 
     return error_code;
 }
@@ -179,7 +179,8 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
 
     MIRILLA_DEBUG("invalidate: range: [0x%lx, 0x%lx) local range: [0x%lx, 0x%lx "
                   "+ 0x%lx)",
-                  range_start, range_end, region_start, region_start, region_start + region_length - 1);
+                  range_start, range_end, region_start, region_start,
+                  region_start + region_length - 1);
 
     /*
 	 * NOTE(coherence): The invalidate callback runs before the page is uninstalled, therefore, we
@@ -361,9 +362,9 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
 {
     struct mm_struct *address_space = peephole_context->address_space;
 
-    unsigned long span_pages =
-        (peephole_context->end_address - peephole_context->start_address) >> PAGE_SHIFT;
-    unsigned long populated;
+    unsigned long page_span = (peephole_context->end_address - peephole_context->start_address) >>
+                              PAGE_SHIFT;
+    unsigned long populated_count;
 
     /*
 	 * NOTE(lock): A self-peephole observes the mapper's own mm, whose `mmap_lock`
@@ -371,9 +372,9 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
 	 * `locked == NULL`, exactly as the fault path does, rather than recursively
 	 * re-acquire it.
 	 */
-    bool observing_self = address_space == current->mm;
+    bool self_observer = address_space == current->mm;
 
-    struct page *target_pages[MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE];
+    struct page *page_list[MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE];
 
     /*
 	 * NOTE(refcount): The peephole pins the observed mm by `mm_count`. A remote
@@ -381,26 +382,29 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
 	 * whole pass rather than reacquire it per iteration. A self-peephole already
 	 * runs on `current->mm`, whose users cannot drop under us.
 	 */
-    if (!observing_self && !mmget_not_zero(address_space))
+    if (!self_observer && !mmget_not_zero(address_space))
         return;
 
-    for (populated = 0; populated < span_pages;) {
-        unsigned long batch = min(span_pages - populated,
+    for (populated_count = 0; populated_count < page_span;) {
+        unsigned long batch = min(page_span - populated_count,
                                   (unsigned long)MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE);
         unsigned long target_address =
-            peephole_context->start_address + (populated << PAGE_SHIFT);
+            peephole_context->start_address + (populated_count << PAGE_SHIFT);
+
+        int pinned_count;
+
+        int page_index;
 
         int pinned;
         int index;
         int mmap_read_locked = true;
 
-        if (atomic_read_acquire(&peephole_context->peephole_state) ==
-            MIRILLA_PEEPHOLE_STATE_DEAD)
+        if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
             break;
 
-        if (observing_self) {
-            pinned = get_user_pages_remote(current->mm, target_address, batch,
-                                           /*gup_flags=*/0, target_pages, NULL);
+        if (self_observer) {
+            pinned_count = get_user_pages_remote(current->mm, target_address, batch,
+                                                 /*gup_flags=*/0, page_list, NULL);
         } else {
             /*
 			 * NOTE(lock): `trylock` because the observed `mmap_lock` orders under
@@ -410,8 +414,8 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
             if (!mmap_read_trylock(address_space))
                 break;
 
-            pinned = get_user_pages_remote(address_space, target_address, batch,
-                                           /*gup_flags=*/0, target_pages, &mmap_read_locked);
+            pinned_count = get_user_pages_remote(address_space, target_address, batch,
+                                                 /*gup_flags=*/0, page_list, &mmap_read_locked);
 
             if (mmap_read_locked)
                 mmap_read_unlock(address_space);
@@ -421,24 +425,25 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
 		 * NOTE(best-effort): Any pin failure ends the pass. The remaining
 		 * granules resolve on demand.
 		 */
-        if (pinned <= 0)
+        if (pinned_count <= 0)
             break;
 
-        for (index = 0; index < pinned; index++) {
-            unsigned long install_address = vma->vm_start + ((populated + index) << PAGE_SHIFT);
+        for (page_index = 0; page_index < pinned_count; page_index++) {
+            unsigned long install_address =
+                vma->vm_start + ((populated_count + page_index) << PAGE_SHIFT);
 
             unsigned int reclaim_flags = memalloc_noreclaim_save();
-            vmf_insert_mixed(vma, install_address, page_to_pfn(target_pages[index]));
+            vmf_insert_mixed(vma, install_address, page_to_pfn(page_list[page_index]));
             memalloc_noreclaim_restore(reclaim_flags);
 
             /* NOTE(refcount): Drop the transient pin taken to read the PFN. */
-            put_page(target_pages[index]);
+            put_page(page_list[page_index]);
         }
 
-        populated += pinned;
+        populated_count += pinned_count;
     }
 
-    if (!observing_self)
+    if (!self_observer)
         mmput(address_space);
 }
 
@@ -548,6 +553,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 
     struct pid *target_pid = NULL;
 
+    struct task_struct *target_task = NULL;
     if (!(target_pid = find_get_pid(argument->process_id)))
         MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find process with pid %d",
                                  argument->process_id);
@@ -560,15 +566,32 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
         if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
             MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
 
+    if (!(target_task = get_pid_task(target_pid, PIDTYPE_PID))) {
+        put_pid(target_pid);
+        MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find respective task");
+    if (mirilla_task_is_legacy(target_task)) {
+        put_pid(target_pid);
+
+        put_task_struct(target_task);
+
+        MIRILLA_ERROR_AND_RETURN(-ENOTSUPP, "legacy foreign address spaces are not supported");
+    }
+
+    /* NOTE(refcount): Release transient ref to `struct task_struct` for legacy process gating. */
+    put_task_struct(target_task);
+
     struct mirilla_map_target_context *target_context = NULL;
 
     if (mirilla_context_map_target_construct(&target_context)) {
         put_pid(target_pid);
 
+        put_task_struct(target_task);
         MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to construct map target context");
     }
 
-    mirilla_map_target_id_t map_target_id = atomic64_inc_return(&device_context->map_target_count);
+
+
+    mirilla_map_target_id_t map_target_id = atomic_inc_return(&device_context->map_target_count);
 
     target_context->id = result->target_id = map_target_id;
 

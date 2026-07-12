@@ -22,7 +22,7 @@ mirilla_command_status_t catalejo_mirilla_engage(
     command_code = ioctl(fd, MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_MAP, MIRILLA_COMMAND_MAP_ENGAGE), &io);
 
     // NOTE: glibc collapsed the kernel's negative `-errno` status into -1 and
-    // left the real code in the thread-local `errno`; recover it so the caller
+    // left the real code in the thread-local `errno`, we recover it so the caller
     // receives the full status without having to read `errno` itself.
     if (command_code < 0)
         return -errno;
@@ -64,7 +64,7 @@ mirilla_command_status_t catalejo_mirilla_disengage(
  * The provided file descriptor must be of the `mirilla` kernel module.
  */
 mirilla_command_status_t catalejo_mirilla_peephole(
-    int fd, mirilla_map_target_id_t target_id, uint64_t start_address, uint64_t end_address, mirilla_map_peephole_initialize_word_t initialize_word, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
+    int fd, mirilla_map_target_id_t target_id, virtual_address_t start_address, virtual_address_t end_address, mirilla_map_peephole_initialize_word_t initialize_word, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
 ) {
     mirilla_command_status_t command_code = MIRILLA_COMMAND_OK;
 

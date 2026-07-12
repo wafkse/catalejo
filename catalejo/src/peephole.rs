@@ -275,7 +275,7 @@ impl Peephole {
 
         let target_layout = Layout::new::<F>();
 
-        let displacement_value = target_displacement.value();
+        let displacement_value = target_displacement.native();
 
         let in_bounds = NonZero::<usize>::get(peephole_window.size())
             .checked_sub(displacement_value)?
@@ -491,7 +491,7 @@ where
         // window base plus the displacement names the live foreign span and never overflows. Treat
         // an overflow defensively as a total fault, with the whole span left uncopied.
         let Some(target_source) =
-            Window::address(peephole_window).checked_add(target_displacement.value())
+            Window::address(peephole_window).checked_add(target_displacement.native())
         else {
             return Err(target_count);
         };
@@ -568,7 +568,7 @@ where
         let target_span = mem::size_of::<F>();
 
         let Some(target_source_base) =
-            Window::address(peephole_window).checked_add(target_displacement.value())
+            Window::address(peephole_window).checked_add(target_displacement.native())
         else {
             // NOTE: A degenerate base names no live span, so no page is live.
             return 0;
@@ -652,7 +652,7 @@ where
         } = **target_peephole;
 
         let target_address =
-            Window::address(peephole_window).checked_add(target_displacement.value())?;
+            Window::address(peephole_window).checked_add(target_displacement.native())?;
 
         // SAFETY:
         //
