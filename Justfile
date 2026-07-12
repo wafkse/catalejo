@@ -128,7 +128,7 @@ mirilla-test: _mirilla-load
 
     echo "Running the mirilla C suites under $(uname -r)"
 
-    suites=(test-suite test-self test-concurrency test-invariants test-ioctl)
+    suites=(test-suite test-self test-concurrency test-invariants test-ioctl test-layout)
     failed=()
 
     for suite in "${suites[@]}"; do
