@@ -13,7 +13,7 @@
 #define MIRILLA_LOG_LOG_LEVEL KERN_INFO
 #define MIRILLA_LOG_ERROR_LEVEL KERN_ERR
 
-#if defined(MIRILLA_DEBUG)
+#if defined(MIRILLA_VERBOSE)
 /*
  * Log a debug log for further inspection.
  */
