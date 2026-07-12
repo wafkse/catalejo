@@ -69,48 +69,48 @@ impl ViRange {
 /// presented in a canonical form. A [`ViSparse`] holds that form as an invariant. The contained
 /// ranges are sorted ascending by start address, each range is non-empty, and no range overlaps or
 /// abuts another, so consecutive ranges are separated by a real gap of unmapped or excluded space.
-///
-/// The invariant matters because the sweeper carries a straddle overlap across contiguous mapped
-/// bytes but must reset it at every range boundary, and it can only trust a boundary to be a genuine
-/// discontinuity when the container guarantees the ranges never touch. Constructing through
-/// [`ViSparse::new`] validates the invariant so downstream code relies on it without re-checking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ViSparse {
-    /// The contained ranges, held sorted ascending, non-empty, and strictly disjoint.
-    ranges: alloc::boxed::Box<[ViRange]>,
-}
+pub struct ViSparse(alloc::boxed::Box<[ViRange]>);
 
 impl ViSparse {
-    /// Construct a [`ViSparse`] from `target_ranges`, validating the ordering and disjointness invariant.
+    /// Construct a [`ViSparse`] from an iterator of individual [`ViRange`], validating the ordering and disjointness invariant.
     ///
     /// The ranges are sorted by start address first, so the caller need not pre-sort. Validation then
     /// rejects the set when any range is empty or when two ranges overlap or abut, because an abutting
     /// pair is really one contiguous range and would defeat the boundary-is-a-gap guarantee callers
     /// depend on. A rejected set yields [`None`] rather than a silently repaired container.
     #[inline]
-    pub fn new(target_ranges: impl IntoIterator<Item = ViRange>) -> Option<Self> {
-        let mut target_ranges = target_ranges.into_iter().collect::<alloc::vec::Vec<_>>();
+    pub fn new(range_iter: impl IntoIterator<Item = ViRange>) -> Option<Self> {
+        let mut range_list = range_iter.into_iter().collect::<alloc::vec::Vec<_>>();
 
-        target_ranges.sort_unstable();
+        range_list.sort_unstable();
 
-        let target_disjoint = target_ranges.windows(2).all(|target_window| {
-            let [target_left, target_right] = target_window else {
-                return true;
-            };
-
-            // NOTE: A gap is mandatory, so the left end must land strictly below the right start.
-            target_left.start_address < target_left.end_address
-                && target_left.end_address < target_right.start_address
+        let are_disjoint = range_list.windows(2).all(|range_window| {
+            if let [
+                ViRange {
+                    start_address: left_start,
+                    end_address: left_end,
+                },
+                ViRange {
+                    start_address: right_start,
+                    end_address: _,
+                },
+            ] = range_window
+            {
+                // NOTE: A gap is mandatory, so the left end must land strictly below the right start.
+                left_start < left_end && left_end < right_start
+            } else {
+                // NOTE: Uneven windows, this is always true.
+                true
+            }
         });
 
-        let target_nonempty = target_ranges
+        let is_non_empty = range_list
             .last()
             .is_none_or(|target_last| target_last.start_address < target_last.end_address);
 
-        if target_disjoint && target_nonempty {
-            Some(Self {
-                ranges: target_ranges.into_boxed_slice(),
-            })
+        if are_disjoint && is_non_empty {
+            Some(Self(range_list.into_boxed_slice()))
         } else {
             None
         }
@@ -118,9 +118,9 @@ impl ViSparse {
 
     /// Borrow the contained ranges in ascending, disjoint order.
     #[inline]
-    pub const fn ranges(&self) -> &[ViRange] {
-        let Self { ranges } = self;
+    pub const fn range_list(&self) -> &[ViRange] {
+        let Self(target_list) = self;
 
-        ranges
+        target_list
     }
 }
