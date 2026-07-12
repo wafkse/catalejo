@@ -8,6 +8,7 @@
 #include "mirilla-command.h" // IWYU pragma: export
 #include "mirilla-context.h" // IWYU pragma: export
 #include "mirilla-id.h"
+#include "mirilla-list.h"
 
 /* These are required for userspace bindings. */
 #ifndef __KERNEL__
@@ -20,8 +21,7 @@
 
 #ifdef __KERNEL__
 
-#include "mirilla-device.h"
-
+#include <linux/mm_types.h>
 #include <linux/kref.h>
 #include <linux/mm.h>
 #include <linux/mmu_notifier.h>
@@ -30,6 +30,8 @@
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
+
+#include "mirilla-device.h"
 
 /*
  * Required forward-declarations for MMU notifier operations.
@@ -88,7 +90,8 @@ static const struct file_operations mirilla_map_peephole_file_operations = {
 #define MIRILLA_MAP_COMMANDS      \
     X(ENGAGE, 0x00, engage)       \
     X(DISENGAGE, 0x01, disengage) \
-    X(PEEPHOLE, 0x02, peephole)
+    X(PEEPHOLE, 0x02, peephole)   \
+    X(ADDRESS_SPACE_LAYOUT, 0x03, address_space_layout)
 
 #define X(name, val, io) MIRILLA_COMMAND_MAP_##name = val,
 enum { MIRILLA_MAP_COMMANDS MIRILLA_MAP_NR_COMMANDS };
@@ -217,6 +220,147 @@ struct mirilla_map_peephole_result {
 
 MIRILLA_MAP_DEFINE_COMMAND_IO(peephole);
 
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_READ (1U << 0)
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_WRITE (1U << 1)
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_EXEC (1U << 2)
+
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_ANONYMOUS (1U << 3)
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_SHARED (1U << 4)
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_STACK (1U << 5)
+
+/*
+ * The attributes to a layout component.
+ *
+ * Described by the `MIRILLA_MAP_LAYOUT_ATTRIBUTE_*` macro family.
+ *
+ * Each bit corresponds to a kernel VMA flag or predicate as follows:
+ *
+ * * `READ`:      `vm_flags & VM_READ`.
+ * * `WRITE`:     `vm_flags & VM_WRITE`.
+ * * `EXEC`:      `vm_flags & VM_EXEC`.
+ * * `ANONYMOUS`: `vma_is_anonymous(area)`, as the VMA has no `vm_ops`. This
+ *   covers private anonymous mappings (`MAP_PRIVATE | MAP_ANONYMOUS`).
+ *   Shared anonymous mappings (`MAP_SHARED | MAP_ANONYMOUS`) are backed by
+ *   anonymous shmem and carry `vm_ops`, so they are reported as `SHARED`
+ *   but not `ANONYMOUS`.
+ * * `SHARED`:    `vm_flags & VM_SHARED`.
+ * * `STACK`:     `vm_flags & VM_GROWSDOWN`. The VMA grows downward, which
+ *   is the kernel's marker for stack (and guard) mappings.
+ */
+typedef uint32_t mirilla_map_layout_attributes_t;
+
+/**
+ * A structure that describes a portion of the address space.
+ */
+struct mirilla_map_address_space_layout {
+    /**
+     * The start and end virtual address pair.
+     */
+    virtual_address_t start_address, end_address;
+
+    /**
+     * The attribute list for this portion of the address space.
+     */
+    mirilla_map_layout_attributes_t attribute_list;
+};
+
+/*
+ * The type of an auxiliary vector entry.
+ */
+typedef uint64_t mirilla_auxiliary_vector_type_t;
+
+/*
+ * The value of an auxiliary vector entry.
+ */
+typedef uint64_t mirilla_auxiliary_vector_value_t;
+
+/**
+ * A mirilla-provided auxiliary vector entry.
+ *
+ * NOTE(bitness): On an observed `32-bit` target, the respective type-entry auxiliary entry pair
+ * are widened to 64-bit integers.
+ */
+struct mirilla_auxiliary_vector_entry {
+    /**
+     * The auxiliary vector type.
+     */
+    mirilla_auxiliary_vector_type_t entry_type;
+
+    /**
+     * The auxiliary vector value.
+     */
+    mirilla_auxiliary_vector_value_t entry_value;
+};
+
+#if defined(__KERNEL__) && (defined(CONFIG_X86_64) || defined(CONFIG_ARM64))
+
+/**
+ * NOTE: Must match the size of two `saved auxv` entries.
+ *
+ * Only asserted on `x86_64` for the time being.
+ */
+static_assert(sizeof(struct mirilla_auxiliary_vector_entry) ==
+              2 * sizeof(typeof(((struct mm_struct *)NULL)->saved_auxv[AT_VECTOR_SIZE])));
+
+#endif
+
+/**
+ * Useful metadata used for an initial explore of the foreign address space.
+ */
+struct mirilla_map_address_space_metadata {
+    /**
+     * The virtual address range of the process environment.
+     */
+    virtual_address_t environment_start, environment_end;
+
+    /**
+     * The virtual address range of the process argument list.
+     */
+    virtual_address_t argument_start, argument_end;
+};
+
+struct mirilla_map_address_space_layout_argument {
+    /**
+     * The monotonic identifier of the engaged target whose address space is to
+     * be described.
+     *
+     * This must have been acquired via a `MAP` `ENGAGE` command on the same
+     * device session.
+     */
+    mirilla_map_target_id_t target_id;
+
+    /**
+     * The outside-pointer to populate with the address space layout information.
+     */
+    MIRILLA_OUTSIDE_LIST_TYPE(struct mirilla_map_address_space_layout)
+    struct mirilla_outside_list layout_list;
+
+    /**
+     * The outside-pointer to populate with the kernel-resident auxiliary vector.
+     */
+    MIRILLA_OUTSIDE_LIST_TYPE(struct mirilla_map_auxiliary_vector_entry)
+    struct mirilla_outside_list auxiliary_vector_list;
+};
+
+struct mirilla_map_address_space_layout_result {
+    /**
+     * Kernel-resident metadata of the address space whose layout was requested.
+     */
+    struct mirilla_map_address_space_metadata metadata;
+
+    /*
+     * The outcome of the provided `layout-list`.
+     */
+    struct mirilla_outside_list_outcome layout_outcome;
+
+    /*
+     * The outcome of the provided `auxiliary-vector-list`.
+     */
+    struct mirilla_outside_list_outcome auxiliary_vector_outcome;
+};
+
+MIRILLA_MAP_DEFINE_COMMAND_IO(address_space_layout);
+
 #ifdef __KERNEL__
 
 /*
@@ -339,7 +483,6 @@ MIRILLA_CONTEXT_DEFINE(
 #define X(context_name) extern MIRILLA_CONTEXT_REFERENCE_GET_DEFINE(map_##context_name);
 MIRILLA_MAP_CONTEXT_LIST
 #undef X
-
 #define X(context_name) extern MIRILLA_CONTEXT_REFERENCE_SET_DEFINE(map_##context_name);
 MIRILLA_MAP_CONTEXT_LIST
 #undef X

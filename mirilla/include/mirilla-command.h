@@ -55,4 +55,22 @@ typedef int mirilla_command_status_t;
 
 typedef unsigned long mirilla_command_argument_t;
 
+#ifdef __KERNEL__
+
+/*
+ * NOTE(invariant): Avoid multi-page `copy_{to,from}_user` for input-output
+ * intermediate structures.
+ */
+#define MIRILLA_ASSERT_IO_SIZE(name) \
+    static_assert(sizeof(union mirilla_##name##_io) <= PAGE_SIZE, "IO too large: " #name)
+
+#else
+
+/*
+ * NOTE(workaround): Bindgen dislikes `static_assert`.
+ */
+#define MIRILLA_ASSERT_IO_SIZE(name)
+
+#endif /* __KERNEL__ */
+
 #endif

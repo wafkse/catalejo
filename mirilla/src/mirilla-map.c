@@ -4,17 +4,16 @@
 
 #include "asm-generic/errno-base.h"
 #include "linux/compiler_attributes.h"
+#include "linux/errno.h"
+#include "linux/gfp_types.h"
 #include "linux/pid.h"
 #include "linux/pid_types.h"
 #include "linux/sched.h"
 #include "linux/sched/signal.h"
 #include "linux/sched/task.h"
 
-#include "mirilla-id.h"
-#include "mirilla-log.h"
-#include "mirilla-map.h"
-#include "mirilla-device.h"
-#include "mirilla-command.h"
+#include "linux/slab.h"
+#include "linux/uaccess.h"
 
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
@@ -23,6 +22,12 @@
 #include <linux/mmu_notifier.h>
 #include <linux/sched/mm.h>
 #include <linux/rcupdate.h>
+
+#include "mirilla-id.h"
+#include "mirilla-log.h"
+#include "mirilla-map.h"
+#include "mirilla-device.h"
+#include "mirilla-command.h"
 
 /*
  * Declare context-specific reference-counting helper functions.
@@ -395,8 +400,6 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
 
         int page_index;
 
-        int pinned;
-        int index;
         int mmap_read_locked = true;
 
         if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
@@ -544,6 +547,23 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 
     return 0;
 }
+
+/**
+ * Determine whether the task is considered legacy.
+ *
+ * This is largely due to the associated ABI limitations and the ioctl interface.
+ */
+static inline bool mirilla_task_is_legacy(struct task_struct *task)
+{
+#ifdef CONFIG_X86_64
+    return test_tsk_thread_flag(task, TIF_ADDR32);
+#elif defined(CONFIG_ARM64)
+    return test_tsk_thread_flag(task, TIF_32BIT);
+#else
+#error "unsupported architecture"
+#endif
+}
+
 mirilla_command_status_t
 mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
                                   union mirilla_map_engage_io *io)
@@ -554,6 +574,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
     struct pid *target_pid = NULL;
 
     struct task_struct *target_task = NULL;
+
     if (!(target_pid = find_get_pid(argument->process_id)))
         MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find process with pid %d",
                                  argument->process_id);
@@ -568,7 +589,10 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 
     if (!(target_task = get_pid_task(target_pid, PIDTYPE_PID))) {
         put_pid(target_pid);
+
         MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find respective task");
+    }
+
     if (mirilla_task_is_legacy(target_task)) {
         put_pid(target_pid);
 
@@ -586,6 +610,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
         put_pid(target_pid);
 
         put_task_struct(target_task);
+
         MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to construct map target context");
     }
 
@@ -800,7 +825,7 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 
     MIRILLA_DEBUG("created peephole context");
 
-    mirilla_id_t peephole_id = atomic64_inc_return(&target_context->peephole_count);
+    mirilla_id_t peephole_id = atomic_inc_return(&target_context->peephole_count);
 
     peephole_context->id = result->id = peephole_id;
 
@@ -809,6 +834,258 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
     mirilla_context_map_target_reference_set(target_context);
 
     return MIRILLA_COMMAND_OK;
+}
+
+mirilla_command_status_t
+mirilla_map_handle_command_address_space_layout(struct mirilla_device_context *device_context,
+                                                union mirilla_map_address_space_layout_io *io)
+{
+    struct mirilla_map_address_space_layout_argument *argument = &io->argument;
+    struct mirilla_map_address_space_layout_result *result = &io->result;
+
+    mirilla_map_target_id_t target_id = argument->target_id;
+    struct mirilla_outside_list layout_outside_list = argument->layout_list;
+    struct mirilla_outside_list auxiliary_vector_outside_list = argument->auxiliary_vector_list;
+
+    struct mirilla_map_target_context *target_context = NULL;
+
+    struct task_struct *target_task = NULL;
+    struct mm_struct *target_space = NULL;
+    bool target_is_legacy = false;
+
+    struct mirilla_map_address_space_layout *layout_list = NULL;
+    struct mirilla_auxiliary_vector_entry *auxiliary_vector_list = NULL;
+
+    uint32_t layout_count = 0, layout_population_count = 0;
+    uint32_t auxiliary_vector_count = 0, auxiliary_vector_population_count = 0;
+
+    mirilla_command_status_t command_status = MIRILLA_COMMAND_OK;
+
+    if (layout_outside_list.element_size != sizeof(struct mirilla_map_address_space_layout))
+        MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad address space layout element size");
+
+    if (auxiliary_vector_outside_list.element_size != sizeof(struct mirilla_auxiliary_vector_entry))
+        MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad auxiliary vector element size");
+
+    if (layout_outside_list.list_attribute & ~MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE)
+        MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad address space layout list attributes");
+
+    if (auxiliary_vector_outside_list.list_attribute &
+        ~MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE)
+        MIRILLA_ERROR_AND_RETURN(-EINVAL, "bad auxiliary vector list attributes");
+
+    if (!(layout_outside_list.list_attribute & MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE) &&
+        !layout_outside_list.list_address)
+        MIRILLA_ERROR_AND_RETURN(-EFAULT, "bad address space layout list address");
+
+    if (!(auxiliary_vector_outside_list.list_attribute &
+          MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE) &&
+        !auxiliary_vector_outside_list.list_address)
+        MIRILLA_ERROR_AND_RETURN(-EFAULT, "bad auxiliary vector list address");
+
+    MIRILLA_DEBUG("address_space_layout: target_id=%lu layout=%s auxv=%s", (unsigned long)target_id,
+                  (layout_outside_list.list_attribute &
+                   MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE) ?
+                      "dnp" :
+                      "populate",
+                  (auxiliary_vector_outside_list.list_attribute &
+                   MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE) ?
+                      "dnp" :
+                      "populate");
+
+    rcu_read_lock();
+    if (!(target_context = xa_load(&device_context->map_target_list, target_id))) {
+        rcu_read_unlock();
+
+        MIRILLA_ERROR_AND_RETURN(-ENOENT, "map target id is nonexistent");
+    }
+
+    if (!mirilla_context_map_target_reference_get(target_context))
+        target_context = NULL;
+    rcu_read_unlock();
+
+    if (!target_context)
+        MIRILLA_ERROR_AND_RETURN(-ENOENT, "map target id is no longer available");
+
+    target_task = get_pid_task(target_context->process_id, PIDTYPE_PID);
+    if (!target_task) {
+        command_status = -ESRCH;
+        MIRILLA_ERROR("map target id has no associated task");
+
+        goto release_target;
+    }
+
+    down_read(&target_task->signal->exec_update_lock);
+    target_space = get_task_mm(target_task);
+    target_is_legacy = mirilla_task_is_legacy(target_task);
+    up_read(&target_task->signal->exec_update_lock);
+
+    if (!target_space) {
+        command_status = -ESRCH;
+        MIRILLA_ERROR("map target id task has no associated address space");
+
+        goto release_task;
+    }
+
+    MIRILLA_DEBUG("address_space_layout: engaged target_id=%lu legacy=%d", (unsigned long)target_id,
+                  target_is_legacy);
+
+    virtual_address_t argument_start, argument_end;
+    virtual_address_t environment_start, environment_end;
+
+    spin_lock(&target_space->arg_lock);
+    argument_start = target_space->arg_start, argument_end = target_space->arg_end;
+    environment_start = target_space->env_start, environment_end = target_space->env_end;
+    spin_unlock(&target_space->arg_lock);
+
+    auxiliary_vector_count = 0;
+    do {
+        auxiliary_vector_count++;
+    } while (auxiliary_vector_count < AT_VECTOR_SIZE / 2 &&
+             (target_is_legacy ?
+                  ((uint32_t *)target_space->saved_auxv)[(auxiliary_vector_count - 1) * 2] :
+                  target_space->saved_auxv[(auxiliary_vector_count - 1) * 2]) != AT_NULL);
+
+    if (!(auxiliary_vector_outside_list.list_attribute &
+          MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE)) {
+        auxiliary_vector_population_count =
+            min(auxiliary_vector_outside_list.list_size, auxiliary_vector_count);
+
+        if (auxiliary_vector_population_count &&
+            !(auxiliary_vector_list = kcalloc(auxiliary_vector_population_count,
+                                              sizeof(struct mirilla_auxiliary_vector_entry),
+                                              GFP_KERNEL))) {
+            command_status = -ENOMEM;
+            MIRILLA_ERROR("failed to allocate auxiliary vector list");
+
+            goto release_space;
+        }
+
+        for (uint32_t index = 0; index < auxiliary_vector_population_count; index++) {
+            if (target_is_legacy) {
+                auxiliary_vector_list[index].entry_type =
+                    ((uint32_t *)target_space->saved_auxv)[index * 2];
+                auxiliary_vector_list[index].entry_value =
+                    ((uint32_t *)target_space->saved_auxv)[index * 2 + 1];
+            } else {
+                auxiliary_vector_list[index].entry_type = target_space->saved_auxv[index * 2];
+                auxiliary_vector_list[index].entry_value = target_space->saved_auxv[index * 2 + 1];
+            }
+        }
+
+        MIRILLA_DEBUG("address_space_layout: auxv count=%u populated=%u", auxiliary_vector_count,
+                      auxiliary_vector_population_count);
+    }
+
+    mmap_read_lock(target_space);
+
+    layout_count = target_space->map_count;
+
+    if (!(layout_outside_list.list_attribute & MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE)) {
+        layout_population_count = min(layout_outside_list.list_size, layout_count);
+
+        if (layout_population_count &&
+            !(layout_list = kvcalloc(layout_population_count,
+                                     sizeof(struct mirilla_map_address_space_layout),
+                                     GFP_KERNEL))) {
+            command_status = -ENOMEM;
+            MIRILLA_ERROR("failed to allocate address space layout list");
+
+            goto release_map_lock;
+        }
+    }
+
+    VMA_ITERATOR(iterator, target_space, 0);
+    struct vm_area_struct *area;
+    uint32_t layout_index = 0;
+
+    for_each_vma(iterator, area)
+    {
+        if (layout_index < layout_population_count) {
+            mirilla_map_layout_attributes_t attribute_list = 0;
+
+            if (area->vm_flags & VM_READ)
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_READ;
+            if (area->vm_flags & VM_WRITE)
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_WRITE;
+            if (area->vm_flags & VM_EXEC)
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_EXEC;
+            if (vma_is_anonymous(area))
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_ANONYMOUS;
+            if (area->vm_flags & VM_SHARED)
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_SHARED;
+            if (area->vm_flags & VM_GROWSDOWN)
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_STACK;
+
+            layout_list[layout_index] = (struct mirilla_map_address_space_layout){ area->vm_start,
+                                                                                   area->vm_end,
+                                                                                   attribute_list };
+        }
+
+        layout_index++;
+    }
+
+    layout_count = layout_index;
+
+    MIRILLA_DEBUG("address_space_layout: vma count=%u populated=%u", layout_count,
+                  layout_population_count);
+
+release_map_lock:
+    mmap_read_unlock(target_space);
+
+    if (!MIRILLA_COMMAND_IS_OK(command_status))
+        goto release_lists;
+
+    result->metadata = (struct mirilla_map_address_space_metadata){ environment_start,
+                                                                    environment_end, argument_start,
+                                                                    argument_end };
+    result->layout_outcome.total_count = layout_count;
+    result->auxiliary_vector_outcome.total_count = auxiliary_vector_count;
+
+    MIRILLA_DEBUG("address_space_layout: metadata env=[0x%lx, 0x%lx) arg=[0x%lx, 0x%lx)",
+                  (unsigned long)environment_start, (unsigned long)environment_end,
+                  (unsigned long)argument_start, (unsigned long)argument_end);
+
+    if (layout_population_count &&
+        copy_to_user((__user void *)layout_outside_list.list_address, layout_list,
+                     layout_population_count * sizeof(struct mirilla_map_address_space_layout))) {
+        command_status = -EFAULT;
+        MIRILLA_ERROR("failed to copy address space layout list");
+
+        goto release_lists;
+    }
+
+    if (auxiliary_vector_population_count &&
+        copy_to_user(
+            (__user void *)auxiliary_vector_outside_list.list_address, auxiliary_vector_list,
+            auxiliary_vector_population_count * sizeof(struct mirilla_auxiliary_vector_entry))) {
+        command_status = -EFAULT;
+        MIRILLA_ERROR("failed to copy auxiliary vector list");
+    }
+
+release_lists:
+    kfree(auxiliary_vector_list);
+    kvfree(layout_list);
+
+release_space:
+    /*
+     * NOTE(refcount): Drop acquired transient ref for the engaged address space.
+     */
+    mmput(target_space);
+
+release_task:
+    /*
+     * NOTE(refcount): Drop acquired transient ref for the task itself.
+     */
+    put_task_struct(target_task);
+
+release_target:
+    /*
+     * NOTE(refcount): Drop acquired transient ref for the target context.
+     */
+    mirilla_context_map_target_reference_set(target_context);
+
+    return command_status;
 }
 
 mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_context *device_context,
@@ -826,6 +1103,9 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
         break;
     case MIRILLA_COMMAND_MAP_PEEPHOLE:
         io_size = sizeof(union mirilla_map_peephole_io);
+        break;
+    case MIRILLA_COMMAND_MAP_ADDRESS_SPACE_LAYOUT:
+        io_size = sizeof(union mirilla_map_address_space_layout_io);
         break;
     default:
         return -ENOTTY;
@@ -869,6 +1149,11 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
                                        mirilla_map_handle_command_peephole(device_context, io)))
             MIRILLA_ERROR("failed to peephole");
 
+        break;
+    case MIRILLA_COMMAND_MAP_ADDRESS_SPACE_LAYOUT:
+        if (!MIRILLA_COMMAND_IS_OK(command_status = mirilla_map_handle_command_address_space_layout(
+                                       device_context, io)))
+            MIRILLA_ERROR("failed to retrieve address space layout information");
         break;
     default:
         unreachable();
