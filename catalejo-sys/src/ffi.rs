@@ -170,4 +170,235 @@ pub mod command {
             _ => unreachable!(),
         }
     }
+
+    /// For an engaged target process, retrieve the full address space layout, the kernel-resident
+    /// auxiliary vector, and the argument/environment metadata.
+    ///
+    /// The retry mechanism against the racy kernel-resident count
+    /// is handled internally, so the caller receives owned vectors holding every kernel-resident
+    /// entry. If the VMA count or auxiliary vector changes between the sizing pass and the
+    /// population pass, the population is retried with a buffer sized to the new count, a count that
+    /// shrinks yields a truncated prefix, a count that grows triggers another retry. The number of
+    /// retries is bounded to avoid an unbounded loop under adversarial churn.
+    ///
+    /// # Failure
+    ///
+    /// This can fail if the:
+    ///
+    /// * Target was not previously engaged.
+    /// * The kernel reports a count too large to allocate.
+    /// * The population pass cannot converge within the retry bound.
+    ///
+    /// # Safety
+    ///
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The provided file descriptor must be a valid `mirilla`-created one.
+    #[inline]
+    pub unsafe fn address_space_layout(
+        fd: BorrowedFd,
+        target_id: TargetId,
+    ) -> io::Result<(
+        crate::ffi::lower::AddressSpaceMetadata,
+        Vec<crate::ffi::lower::AddressSpaceLayout>,
+        Vec<crate::ffi::lower::AuxiliaryVectorEntry>,
+    )> {
+        const RETRY_BOUND: u32 = 8;
+
+        let mut retry_count = 0;
+
+        loop {
+            // Sizing pass: ask for no population so the kernel only reports the counts.
+            let mut layout_descriptor = binding::mirilla_outside_list {
+                list_address: 0,
+                list_size: 0,
+                element_size: core::mem::size_of::<crate::ffi::lower::AddressSpaceLayout>() as u32,
+                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE as u32,
+            };
+            let mut auxiliary_vector_descriptor = binding::mirilla_outside_list {
+                list_address: 0,
+                list_size: 0,
+                element_size: core::mem::size_of::<crate::ffi::lower::AuxiliaryVectorEntry>()
+                    as u32,
+                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE as u32,
+            };
+
+            let sizing_outcome =
+                // SAFETY: The caller has asserted that the provided file descriptor comes from `mirilla`.
+                // Both lists carry `DO_NOT_POPULATE`, so no backing buffer is dereferenced.
+                unsafe {
+                    crate::ffi::lower::address_space_layout(
+                        fd,
+                        target_id,
+                        &mut layout_descriptor,
+                        &mut auxiliary_vector_descriptor,
+                    )
+                }?;
+
+            let layout_capacity = sizing_outcome.layout_total_count;
+            let auxiliary_vector_capacity = sizing_outcome.auxiliary_vector_total_count;
+
+            let mut layout_buffer: Vec<crate::ffi::lower::AddressSpaceLayout> =
+                Vec::with_capacity(usize::try_from(layout_capacity).unwrap_or(0));
+            let mut auxiliary_vector_buffer: Vec<crate::ffi::lower::AuxiliaryVectorEntry> =
+                Vec::with_capacity(usize::try_from(auxiliary_vector_capacity).unwrap_or(0));
+
+            // Population pass: supply the buffers and let the kernel fill them.
+            let mut layout_descriptor = binding::mirilla_outside_list {
+                list_address: if layout_capacity != 0 {
+                    layout_buffer.as_mut_ptr().expose_provenance() as u64
+                } else {
+                    0
+                },
+                list_size: layout_capacity,
+                element_size: core::mem::size_of::<crate::ffi::lower::AddressSpaceLayout>() as u32,
+                list_attribute: 0,
+            };
+            let mut auxiliary_vector_descriptor = binding::mirilla_outside_list {
+                list_address: if auxiliary_vector_capacity != 0 {
+                    auxiliary_vector_buffer.as_mut_ptr().expose_provenance() as u64
+                } else {
+                    0
+                },
+                list_size: auxiliary_vector_capacity,
+                element_size: core::mem::size_of::<crate::ffi::lower::AuxiliaryVectorEntry>()
+                    as u32,
+                list_attribute: 0,
+            };
+
+            let population_outcome =
+                // SAFETY:
+                //
+                // * The caller has asserted that the provided file descriptor comes from `mirilla`.
+                // * Each backing buffer is a valid `Vec` allocation of the matching element type
+                //   and capacity, held for the duration of the call.
+                unsafe {
+                    crate::ffi::lower::address_space_layout(
+                        fd,
+                        target_id,
+                        &mut layout_descriptor,
+                        &mut auxiliary_vector_descriptor,
+                    )
+                }?;
+
+            // Convergence: the counts must not have grown beyond the allocated capacity. A shrink
+            // is safe: the populated prefix is valid and the trailing slots are uninitialized. A
+            // grow means the kernel reported more entries than the buffer can hold, so retry with
+            // the new count.
+            if population_outcome.layout_total_count <= layout_capacity
+                && population_outcome.auxiliary_vector_total_count <= auxiliary_vector_capacity
+            {
+                // SAFETY: The kernel populated exactly `population_outcome.*_total_count` entries,
+                // each of the matching element type, into the buffer.
+                unsafe {
+                    layout_buffer.set_len(population_outcome.layout_total_count as usize);
+                    auxiliary_vector_buffer
+                        .set_len(population_outcome.auxiliary_vector_total_count as usize);
+                }
+
+                return Ok((
+                    population_outcome.metadata,
+                    layout_buffer,
+                    auxiliary_vector_buffer,
+                ));
+            }
+
+            retry_count += 1;
+            if retry_count >= RETRY_BOUND {
+                return Err(io::Error::new(
+                    ErrorKind::ResourceBusy,
+                    "address space layout count did not converge within the retry bound",
+                ));
+            }
+        }
+    }
+}
+
+pub mod lower {
+    //! Low-level and plumbing structures and functions towards the Foreign-Function-Interface boundary.
+
+    use std::{io, os::fd::AsRawFd, os::fd::BorrowedFd};
+
+    use crate::{ffi::binding, id::TargetId};
+
+    /// The metadata of an address space, as returned by a layout query.
+    pub type AddressSpaceMetadata = binding::mirilla_map_address_space_metadata;
+
+    /// A single address space layout entry, as returned by a layout query.
+    pub type AddressSpaceLayout = binding::mirilla_map_address_space_layout;
+
+    /// A single auxiliary vector entry, as returned by a layout query.
+    pub type AuxiliaryVectorEntry = binding::mirilla_auxiliary_vector_entry;
+
+    /// The outcome of a layout query: the metadata plus the full kernel-resident
+    /// counts for each outside list.
+    #[derive(Debug)]
+    pub struct AddressSpaceLayoutOutcome {
+        /// Kernel-resident metadata of the address space whose layout was requested.
+        pub metadata: AddressSpaceMetadata,
+
+        /// The full kernel-resident count of address space layout entries.
+        pub layout_total_count: u32,
+
+        /// The full kernel-resident count of auxiliary vector entries.
+        pub auxiliary_vector_total_count: u32,
+    }
+
+    /// Perform a bare-bones address space layout query via the C-implemented shim.
+    ///
+    /// Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the backing
+    /// buffer address, capacity and element size, and the kernel populates up to the capacity
+    /// and reports the full kernel-resident count through the matching outcome. The caller is
+    /// responsible for allocating, sizing and reading back the populated prefix.
+    ///
+    /// # Safety
+    ///
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The provided file descriptor must be a valid `mirilla`-created one.
+    /// * Each `mirilla_outside_list::list_address` must either be null (only valid with
+    ///   `MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE`) or name a writable buffer of at
+    ///   least `list_size * element_size` bytes for the duration of the call.
+    #[inline]
+    pub unsafe fn address_space_layout(
+        fd: BorrowedFd,
+        target_id: TargetId,
+        layout_list: &mut binding::mirilla_outside_list,
+        auxiliary_vector_list: &mut binding::mirilla_outside_list,
+    ) -> io::Result<AddressSpaceLayoutOutcome> {
+        let mut metadata = core::mem::MaybeUninit::<AddressSpaceMetadata>::uninit();
+        let mut layout_outcome =
+            core::mem::MaybeUninit::<binding::mirilla_outside_list_outcome>::uninit();
+        let mut auxiliary_vector_outcome =
+            core::mem::MaybeUninit::<binding::mirilla_outside_list_outcome>::uninit();
+
+        let target_outcome =
+            // SAFETY: The safety concerns of the foreign call have been satisfied by the caller.
+            unsafe {
+                binding::catalejo_mirilla_address_space_layout(
+                    fd.as_raw_fd(),
+                    target_id.get(),
+                    layout_list,
+                    auxiliary_vector_list,
+                    metadata.as_mut_ptr(),
+                    layout_outcome.as_mut_ptr(),
+                    auxiliary_vector_outcome.as_mut_ptr(),
+                )
+            };
+
+        match target_outcome {
+            binding::MIRILLA_COMMAND_OK => Ok(AddressSpaceLayoutOutcome {
+                // SAFETY: The kernel wrote the metadata on success.
+                metadata: unsafe { metadata.assume_init() },
+                layout_total_count: unsafe { layout_outcome.assume_init() }.total_count,
+                auxiliary_vector_total_count: unsafe { auxiliary_vector_outcome.assume_init() }
+                    .total_count,
+            }),
+            target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
+                Err(io::Error::from_raw_os_error(target_errno.abs()))
+            }
+            // NOTE: This is impossible, hence unreachable.
+            _ => unreachable!(),
+        }
+    }
 }
