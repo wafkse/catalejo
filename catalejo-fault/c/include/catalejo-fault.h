@@ -67,7 +67,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
 /**
- * Structure to be used to report back after a stream read-write operation.
+ * Structure to be used to report back after a bulk read-write operation.
  */
 typedef struct catalejo_faultable_copy_outcome {
     /**

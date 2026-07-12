@@ -13,6 +13,9 @@
 #include "catalejo-fault.h"
 #include "catalejo-signal.h"
 
+/**
+ * The atomic word initialization state for the fault-catching subsystem.
+ */
 static atomic_int catalejo_initialize_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
 
 /**
@@ -52,7 +55,7 @@ catalejo_faultable_outcome_t catalejo_fault_initialize()
             //   it. The chaining path re-`raise()`s the signal against the
             //   default disposition, and a nested fault must still be deliverable.
             //
-            // * SA_ONSTACK: the fault path itself needs no alternate stack -- the
+            // * SA_ONSTACK: the fault path itself needs no alternate stack, as the
             //   naked routines touch no stack, so the faulting `%rsp` points
             //   straight at the return address and the kernel builds the signal
             //   frame harmlessly below it. We deliberately install no altstack of
