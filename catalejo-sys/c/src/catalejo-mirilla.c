@@ -90,3 +90,42 @@ mirilla_command_status_t catalejo_mirilla_peephole(
 
     return command_code;
 }
+
+/**
+ * For an engaged target process, retrieve the address space layout, the
+ * kernel-resident auxiliary vector, and the argument/environment metadata.
+ *
+ * The provided file descriptor must be of the `mirilla` kernel module.
+ */
+mirilla_command_status_t catalejo_mirilla_address_space_layout(
+    int fd, mirilla_map_target_id_t target_id,
+    struct mirilla_outside_list *layout_list,
+    struct mirilla_outside_list *auxiliary_vector_list,
+    struct mirilla_map_address_space_metadata *metadata,
+    struct mirilla_outside_list_outcome *layout_outcome,
+    struct mirilla_outside_list_outcome *auxiliary_vector_outcome
+) {
+    mirilla_command_status_t command_code = MIRILLA_COMMAND_OK;
+
+    union mirilla_map_address_space_layout_io io;
+
+    io.argument = (struct mirilla_map_address_space_layout_argument){
+        .target_id = target_id,
+        .layout_list = *layout_list,
+        .auxiliary_vector_list = *auxiliary_vector_list,
+    };
+
+    command_code = ioctl(fd, MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_MAP, MIRILLA_COMMAND_MAP_ADDRESS_SPACE_LAYOUT), &io);
+
+    if (command_code < 0)
+        return -errno;
+
+    if (!MIRILLA_COMMAND_IS_OK(command_code))
+        return command_code;
+
+    *metadata = io.result.metadata;
+    *layout_outcome = io.result.layout_outcome;
+    *auxiliary_vector_outcome = io.result.auxiliary_vector_outcome;
+
+    return command_code;
+}

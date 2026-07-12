@@ -39,6 +39,24 @@ catalejo_mirilla_peephole(int fd, mirilla_map_target_id_t target_id,
                           mirilla_map_peephole_initialize_word_t initialize_word,
                           mirilla_map_peephole_id_t *peephole_id, int *peephole_fd);
 
+/**
+ * For an engaged target process, retrieve the address space layout, the
+ * kernel-resident auxiliary vector, and the argument/environment metadata.
+ *
+ * Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the
+ * backing buffer address, capacity and element size, and the kernel populates
+ * up to the capacity and reports the full kernel-resident count through the
+ * matching `mirilla_outside_list_outcome`.
+ *
+ * The provided file descriptor must be of the `mirilla` kernel module.
+ */
+mirilla_command_status_t catalejo_mirilla_address_space_layout(
+    int fd, mirilla_map_target_id_t target_id, struct mirilla_outside_list *layout_list,
+    struct mirilla_outside_list *auxiliary_vector_list,
+    struct mirilla_map_address_space_metadata *metadata,
+    struct mirilla_outside_list_outcome *layout_outcome,
+    struct mirilla_outside_list_outcome *auxiliary_vector_outcome);
+
 #ifdef __cplusplus
 }
 #endif
