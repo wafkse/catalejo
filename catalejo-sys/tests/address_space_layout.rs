@@ -53,15 +53,13 @@ fn layout_count_only_reports_nonzero_counts() {
         list_address: 0,
         list_size: 0,
         element_size: std::mem::size_of::<lower::AddressSpaceLayout>() as u32,
-        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE
-            as u32,
+        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
     };
     let mut auxiliary_vector_list = catalejo_sys::ffi::binding::mirilla_outside_list {
         list_address: 0,
         list_size: 0,
         element_size: std::mem::size_of::<lower::AuxiliaryVectorEntry>() as u32,
-        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE
-            as u32,
+        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
     };
 
     let outcome =
@@ -158,15 +156,13 @@ fn layout_against_bogus_target_is_rejected() {
         list_address: 0,
         list_size: 0,
         element_size: std::mem::size_of::<lower::AddressSpaceLayout>() as u32,
-        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE
-            as u32,
+        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
     };
     let mut auxiliary_vector_list = catalejo_sys::ffi::binding::mirilla_outside_list {
         list_address: 0,
         list_size: 0,
         element_size: std::mem::size_of::<lower::AuxiliaryVectorEntry>() as u32,
-        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE
-            as u32,
+        list_attribute: catalejo_sys::ffi::binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
     };
 
     let outcome =

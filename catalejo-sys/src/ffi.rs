@@ -213,14 +213,14 @@ pub mod command {
                 list_address: 0,
                 list_size: 0,
                 element_size: core::mem::size_of::<crate::ffi::lower::AddressSpaceLayout>() as u32,
-                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE as u32,
+                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
             };
             let mut auxiliary_vector_descriptor = binding::mirilla_outside_list {
                 list_address: 0,
                 list_size: 0,
                 element_size: core::mem::size_of::<crate::ffi::lower::AuxiliaryVectorEntry>()
                     as u32,
-                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE as u32,
+                list_attribute: binding::MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE,
             };
 
             let sizing_outcome =
@@ -292,6 +292,7 @@ pub mod command {
                 // each of the matching element type, into the buffer.
                 unsafe {
                     layout_buffer.set_len(population_outcome.layout_total_count as usize);
+
                     auxiliary_vector_buffer
                         .set_len(population_outcome.auxiliary_vector_total_count as usize);
                 }

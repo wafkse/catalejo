@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use bindgen::MacroTypeVariation;
+use bindgen::callbacks::ParseCallbacks;
 use walkdir::WalkDir;
 
 const C_INCLUDE_RELATIVE_DIRECTORY: &str = "c/include";
@@ -59,6 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     bind_context
         .prepend_enum_name(false)
         .default_macro_constant_type(MacroTypeVariation::Signed)
+        .parse_callbacks(Box::new(MirillaCallbacks))
         // NOTE: Pass a `__BINDGEN__` preprocessor flag to be able to work around `bindgen` limitations.
         .clang_arg("-D__BINDGEN__")
         .use_core()
@@ -66,4 +68,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .write_to_file(PathBuf::from(env::var("OUT_DIR")?).join("catalejo-binding.rs"))?;
 
     Ok(())
+}
+
+/// A [`ParseCallbacks`] for directing specific bindgen behavior.
+#[derive(Debug, Copy, Clone)]
+pub struct MirillaCallbacks;
+
+impl ParseCallbacks for MirillaCallbacks {
+    fn int_macro(&self, name: &str, _: i64) -> Option<bindgen::callbacks::IntKind> {
+        // NOTE: The `outside_list` attribute integer macros should be all unsigned to match
+        // the actual type alias of a full attribute set.
+        if name.starts_with("MIRILLA_OUTSIDE_LIST_ATTRIBUTE_") {
+            Some(bindgen::callbacks::IntKind::U32)
+        } else {
+            None
+        }
+    }
 }
