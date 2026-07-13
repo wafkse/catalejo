@@ -7,7 +7,7 @@
 
 #include "mirilla-miscellaneous.h" // IWYU pragma: export
 
-#define MIRILLA_ID_TYPE_FORMAT_STRING "id(%lu)"
+#define MIRILLA_ID_TYPE_FORMAT_STRING "id(%u)"
 
 #define MIRILLA_ID_TYPE_NAME uint32_t
 
