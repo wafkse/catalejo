@@ -117,14 +117,14 @@ pub trait Source {
         Self: Source<Packet = O::Packet>;
 }
 
-/// A marker type to represent an address space.
+/// A marker type to represent an address space marker for non-relative virtual addresses.
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
-pub struct AddressSpace(marker::PhantomData<Self>);
+pub struct Absolute(marker::PhantomData<Self>);
 
 // SAFETY: `AddressSpace` is a fieldless zero-sized type with exactly one
 // inhabitant (`PhantomData` contributes no bytes and has a single valid
 // representation). Its sole bit-pattern is the empty one, always valid, so it
 // round-trips through a byte representation and cannot tear. Reading one is a
 // no-op yielding the sole inhabitant.
-unsafe impl Unassociated for AddressSpace {}
+unsafe impl Unassociated for Absolute {}
