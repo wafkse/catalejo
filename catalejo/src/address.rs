@@ -1,8 +1,6 @@
 //! Virtual addresses and ranges.
 
-// FIXME(arch): This assumes 64-bit canonical virtual addresses. Will need to
-
-use core::num::NonZero;
+use core::{fmt, num::NonZero};
 
 use catalejo_sys::ffi;
 
@@ -27,8 +25,8 @@ impl ViAddr {
     }
 }
 
-impl std::fmt::Debug for ViAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ViAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(target_value) = self;
 
         write!(f, "#{target_value:p}")
