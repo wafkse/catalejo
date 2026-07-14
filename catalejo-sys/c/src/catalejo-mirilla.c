@@ -64,7 +64,7 @@ mirilla_command_status_t catalejo_mirilla_disengage(
  * The provided file descriptor must be of the `mirilla` kernel module.
  */
 mirilla_command_status_t catalejo_mirilla_peephole(
-    int fd, mirilla_map_target_id_t target_id, virtual_address_t start_address, virtual_address_t end_address, mirilla_map_peephole_initialize_word_t initialize_word, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
+    const int fd, mirilla_map_target_id_t target_id, virtual_address_t start_address, virtual_address_t end_address, mirilla_map_peephole_initialize_word_t initialize_word, mirilla_map_peephole_id_t *peephole_id, int *peephole_fd
 ) {
     mirilla_command_status_t command_code = MIRILLA_COMMAND_OK;
 
@@ -98,7 +98,7 @@ mirilla_command_status_t catalejo_mirilla_peephole(
  * The provided file descriptor must be of the `mirilla` kernel module.
  */
 mirilla_command_status_t catalejo_mirilla_address_space_layout(
-    int fd, mirilla_map_target_id_t target_id,
+    const int fd, mirilla_map_target_id_t target_id,
     struct mirilla_outside_list *layout_list,
     struct mirilla_outside_list *auxiliary_vector_list,
     struct mirilla_map_address_space_metadata *metadata,
