@@ -2,8 +2,12 @@
 //!
 //! This is used to bind the with the *C* side of the crate, which implements signal guarding.
 
-use core::mem;
-use core::{marker, mem::MaybeUninit, ptr};
+use core::{
+    marker,
+    mem::{self, MaybeUninit},
+    ptr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use catalejo_memory::primitive::PrimitiveUnion;
 
@@ -104,6 +108,9 @@ pub mod lower {
     }
 }
 
+/// Whether a [`Subsystem`] was ever properly constructed as result of proper initialization.
+static SUBSYSTEM_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 /// A token that guarantees that the *catalejo* C-based subsystem has been initialized properly.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone)]
@@ -131,10 +138,32 @@ impl Subsystem {
             unsafe { binding::catalejo_fault_initialize() };
 
         match target_outcome {
-            binding::CATALEJO_OUTCOME_SUCCESS => Some(Self(marker::PhantomData::<Self>)),
+            binding::CATALEJO_OUTCOME_SUCCESS => {
+                // NOTE: Mark the subsystem as initialized on the Rust side.
+                SUBSYSTEM_INITIALIZED.store(true, Ordering::Release);
+
+                Some(Self(marker::PhantomData::<Self>))
+            }
             binding::CATALEJO_OUTCOME_ERROR => None::<Self>,
             // NOTE: Any other value is impossible.
             _ => unreachable!(),
+        }
+    }
+
+    /// Attempt to retrieve a memoized [`Subsystem`] instance if the underlying fault-catching subsystem has been already initialized.
+    ///
+    /// This is used to sidestep the cascading [`Subsystem`] pass-by-value requirement in many structures dependant on the fault-catching susbsystem.
+    ///
+    /// # Panics
+    ///
+    /// This will panic if the underlying subsystem has not been initialized.
+    #[inline]
+    pub fn memoize() -> Subsystem {
+        // NOTE: If the subsystem is noted as initialized, fabricate the token.
+        if SUBSYSTEM_INITIALIZED.load(Ordering::Acquire) {
+            Self(marker::PhantomData::<Self>)
+        } else {
+            panic!("catalejo-fault subsystem is not initialized")
         }
     }
 }

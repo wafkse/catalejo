@@ -23,10 +23,9 @@ use catalejo_sys::ffi;
 fn engage_self() -> Target {
     // SAFETY: This test binary installs no competing `SIGSEGV`/`SIGBUS` handlers, and no other
     // thread registers one while this runs, so the subsystem may claim them.
-    let target_subsystem =
-        unsafe { Subsystem::initialize() }.expect("the fault subsystem should initialize");
+    let _ = unsafe { Subsystem::initialize() }.expect("the fault subsystem should initialize");
 
-    Target::engage(target_subsystem, std::process::id() as libc::pid_t)
+    Target::engage(std::process::id() as libc::pid_t)
         .expect("engaging the current process should succeed")
 }
 

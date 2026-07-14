@@ -25,7 +25,7 @@ use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
 
 use catalejo_fault::{
     behavior::Faultable,
-    ffi::{self as fault, Subsystem},
+    ffi::{self as fault},
     maybe::{MaybeFault, Opaque},
 };
 
@@ -38,6 +38,9 @@ use crate::{
     offset::{Field, Offset},
     target::Target,
 };
+
+// NOTE: Re-export the `Subsystem` item for easy access from upstream crates without having to depend on `catalejo-fault` directly.
+pub use catalejo_fault::ffi::Subsystem;
 
 /// The creation-time initialization word for a [`Peephole`].
 ///

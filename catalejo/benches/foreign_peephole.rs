@@ -179,9 +179,9 @@ impl Drop for ForeignTarget {
 fn engage_foreign(target_child: &ForeignTarget) -> Option<Target> {
     // SAFETY: The benchmark binary installs no competing `SIGSEGV`/`SIGBUS` handlers, and no other
     // thread registers one while this runs, so the subsystem may claim them.
-    let target_subsystem = unsafe { Subsystem::initialize() }?;
+    let _ = unsafe { Subsystem::initialize() }?;
 
-    Target::engage(target_subsystem, target_child.pid()).ok()
+    Target::engage(target_child.pid()).ok()
 }
 
 /// Materialize a warmed [`Foreign`] handle, opening the window and faulting its page in once.

@@ -15,8 +15,14 @@ pub struct Target(OwnedFd, TargetId, Subsystem);
 
 impl Target {
     /// Engage a target process, creating a new `mirilla` session.
+    ///
+    /// # Panics
+    ///
+    /// This will panic if the respective [`Subsystem`] has not been initialized.
     #[inline]
-    pub fn engage(target_subsystem: Subsystem, process_id: libc::pid_t) -> io::Result<Self> {
+    pub fn engage(process_id: libc::pid_t) -> io::Result<Self> {
+        let target_subsystem = Subsystem::memoize();
+
         let target_device = OwnedFd::from(
             OpenOptions::new()
                 .read(true)
@@ -32,15 +38,20 @@ impl Target {
 
     /// Engage a target process using the specified device file descriptor.
     ///
+    /// # Panics
+    ///
+    /// This will panic if the respective [`Subsystem`] has not been initialized.
+    ///
     /// # Safety
     ///
     /// The provided device file descriptor must be `mirilla`-created.
     #[inline]
     pub unsafe fn engage_with(
-        target_subsystem: Subsystem,
         target_device: BorrowedFd,
         process_id: libc::pid_t,
     ) -> io::Result<Self> {
+        let target_subsystem = Subsystem::memoize();
+
         let target_clone = target_device.try_clone_to_owned()?;
 
         // SAFETY: The provided file descriptor was created by "mirilla".
@@ -52,10 +63,10 @@ impl Target {
     /// Engage a target process within the sesion context of an existing [`Target`] acquisition.
     #[inline]
     pub fn engage_within(&self, process_id: libc::pid_t) -> io::Result<Self> {
-        let Self(target_device, _, target_subsystem) = self;
+        let Self(target_device, ..) = self;
 
         // SAFETY: The file descriptor was created by the appropriate kernel module.
-        unsafe { Self::engage_with(*target_subsystem, target_device.as_fd(), process_id) }
+        unsafe { Self::engage_with(target_device.as_fd(), process_id) }
     }
 }
 

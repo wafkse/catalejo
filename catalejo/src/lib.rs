@@ -34,8 +34,8 @@ pub mod prelude {
 
     pub use crate::{
         address::{ViAddr, ViRange},
-        offset::{AddressSpace, Field, Offset, Retrievable, Retrieve, Unassociated},
-        peephole::{Foreign, InitializeWord, Lift, Peephole, Window},
+        offset::{Absolute, Field, Offset, Retrievable, Retrieve, Unassociated},
+        peephole::{Foreign, InitializeWord, Lift, Peephole, Subsystem, Window},
         target::Target,
     };
 }
