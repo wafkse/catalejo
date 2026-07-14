@@ -132,7 +132,7 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
 
                 #[inline]
                 fn offset(_: impl ::core::borrow::Borrow<Self>) -> ::catalejo::prelude::Offset {
-                    ::catalejo::prelude::Offset::byte(::core::mem::offset_of!(super::#ident, #field_ident))
+                    ::catalejo::prelude::Offset::byte(::core::mem::offset_of!(super::#ident, #field_ident) as ::catalejo::ffi::binding::virtual_size_t)
                 }
             }
         }
