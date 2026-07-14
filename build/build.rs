@@ -78,7 +78,9 @@ impl ParseCallbacks for MirillaCallbacks {
     fn int_macro(&self, name: &str, _: i64) -> Option<bindgen::callbacks::IntKind> {
         // NOTE: The `outside_list` attribute integer macros should be all unsigned to match
         // the actual type alias of a full attribute set.
-        if name.starts_with("MIRILLA_OUTSIDE_LIST_ATTRIBUTE_") {
+        if name.starts_with("MIRILLA_OUTSIDE_LIST_ATTRIBUTE_")
+            || name.starts_with("MIRILLA_MAP_LAYOUT_ATTRIBUTE_")
+        {
             Some(bindgen::callbacks::IntKind::U32)
         } else {
             None
