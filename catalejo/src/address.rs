@@ -7,7 +7,7 @@ use core::num::NonZero;
 use catalejo_sys::ffi;
 
 /// A virtual address.
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
+#[derive(Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
 #[repr(transparent)]
 pub struct ViAddr(pub ffi::binding::virtual_address_t);
 
@@ -24,6 +24,14 @@ impl ViAddr {
         let Self(target_value) = self;
 
         target_value
+    }
+}
+
+impl std::fmt::Debug for ViAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self(target_value) = self;
+
+        write!(f, "#{target_value:p}")
     }
 }
 
