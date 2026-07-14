@@ -391,7 +391,9 @@ pub mod lower {
             binding::MIRILLA_COMMAND_OK => Ok(AddressSpaceLayoutOutcome {
                 // SAFETY: The kernel wrote the metadata on success.
                 metadata: unsafe { metadata.assume_init() },
+                // SAFETY: The kernel wrote the address space layout on success.
                 layout_total_count: unsafe { layout_outcome.assume_init() }.total_count,
+                // SAFETY: The kernel wrote the auxiliary vector outcome on success.
                 auxiliary_vector_total_count: unsafe { auxiliary_vector_outcome.assume_init() }
                     .total_count,
             }),
