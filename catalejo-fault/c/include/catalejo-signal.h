@@ -13,6 +13,7 @@ extern "C" {
  */
 extern struct sigaction saved_segmentation_violation_signal_actor;
 extern struct sigaction saved_bus_signal_actor;
+extern struct sigaction saved_illegal_instruction_signal_actor;
 
 #define CATALEJO_FAULTABLE_TYPES_X \
     X(u64, movq, rcx)              \
@@ -24,6 +25,12 @@ extern struct sigaction saved_bus_signal_actor;
  * The primary signal handler for catalejo.
  */
 void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *target_context);
+
+/*
+ * The instruction range where the copy counter must be preserved.
+ */
+extern char catalejo_copy_instruction_start[];
+extern char catalejo_copy_instruction_stop[];
 
 #ifdef __cplusplus
 }

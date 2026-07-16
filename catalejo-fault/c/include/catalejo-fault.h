@@ -32,6 +32,41 @@ typedef enum catalejo_initialize_state {
 extern catalejo_faultable_outcome_t catalejo_fault_initialize();
 
 /**
+ * The available hardware monitor implementations.
+ */
+typedef enum catalejo_monitor_backend {
+    CATALEJO_MONITOR_BACKEND_UNSUPPORTED,
+    CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR,
+    CATALEJO_MONITOR_BACKEND_AMD_MONITORX,
+} catalejo_monitor_backend_t;
+
+/**
+ * The result of arming a hardware monitor.
+ */
+typedef enum catalejo_monitor_arm_outcome {
+    CATALEJO_MONITOR_ARM_FAULT = -1,
+    CATALEJO_MONITOR_ARM_UNSUPPORTED,
+    CATALEJO_MONITOR_ARM_INTEL_UMONITOR,
+    CATALEJO_MONITOR_ARM_AMD_MONITORX,
+} catalejo_monitor_arm_outcome_t;
+
+/**
+ * Select a hardware monitor implementation with runtime CPUID checks.
+ */
+extern catalejo_monitor_backend_t catalejo_monitor_select();
+
+/**
+ * Arm monitoring for a local downstream address.
+ */
+extern catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address);
+
+/**
+ * Wait for one bounded hardware interval.
+ */
+extern catalejo_faultable_outcome_t
+catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
+
+/**
  * X-macro for the fault routines.
  *
  * NOTE: The "up-size" (the 32-bit register window) register is used to
@@ -67,21 +102,59 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
 /**
+ * Structure used to report a protected instruction result.
+ */
+typedef struct catalejo_faultable_instruction_outcome {
+    /**
+     * The status of the instruction.
+     *
+     */
+    // NOTE(invariant): This should be contained in the `%rax` register.
+    catalejo_faultable_outcome_t outcome_status;
+
+    /**
+     * The signal raised by a faulting instruction.
+     */
+    // NOTE(invariant): This should be contained in the `%rax` register.
+    size_t fault_signal;
+} catalejo_faultable_instruction_outcome_t;
+
+/**
+ * Arm an Intel user monitor with fault protection.
+ */
+extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address);
+
+/**
+ * Wait with Intel user wait support for a bounded interval.
+ */
+extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
+
+/**
+ * Arm an AMD extended monitor with fault protection.
+ */
+extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address);
+
+/**
+ * Wait with AMD extended wait support for a bounded interval.
+ */
+extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
+
+/**
  * Structure to be used to report back after a bulk read-write operation.
  */
 typedef struct catalejo_faultable_copy_outcome {
     /**
-   * The status of the operation.
-   *
-   * NOTE(invariant): This should be contained in the `%rax` register.
-   */
+    * The status of the operation.
+    */
+    // NOTE(invariant): This should be contained in the `%rax` register.
     catalejo_faultable_outcome_t outcome_status;
 
     /**
    * The count of affected bytes, depending on the operation performed.
-   *
-   * NOTE(invariant): This should be contained in the `%rdx` register.
    */
+    // NOTE(invariant): This should be contained in the `%rdx` register.
     size_t byte_count;
 } catalejo_faultable_copy_outcome_t;
 

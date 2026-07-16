@@ -128,7 +128,7 @@ impl Subsystem {
     ///
     /// To guarantee the safety of all posterior `catalejo` operations, the following must be guaranteed.
     ///
-    /// * No other thread may register a signal handler for `SIGBUS` and `SIGSEGV` simultaneously while this function is executed.
+    /// * No other thread may register a signal handler for `SIGBUS`, `SIGSEGV`, or `SIGILL` while this function executes.
     ///
     /// * Any posterior signal handler must chain the behavior of the existing `catalejo`-installed signal handlers, preserving exact behavior.
     #[inline]
@@ -165,6 +165,113 @@ impl Subsystem {
         } else {
             panic!("catalejo-fault subsystem is not initialized")
         }
+    }
+}
+
+/// A hardware implementation for monitoring an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorBackend {
+    /// Intel user monitor and user wait instructions.
+    IntelUmonitor,
+
+    /// AMD extended monitor and extended wait instructions.
+    AmdMonitorx,
+}
+
+/// A failure while arming or waiting with a hardware monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorError {
+    /// The monitored local address faulted while it was being armed.
+    Fault,
+
+    /// The selected optional instruction is unavailable at runtime.
+    Unsupported,
+}
+
+/// Determine the runtime selected hardware monitor implementation.
+///
+/// A [`None`] result requests a polling fallback from the caller.
+#[inline]
+pub fn monitor_backend(_: Subsystem) -> Option<MonitorBackend> {
+    // SAFETY
+    //
+    // The subsystem token proves that optional instruction faults can be caught.
+    let target_backend = unsafe { binding::catalejo_monitor_select() };
+
+    match target_backend {
+        binding::CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR => Some(MonitorBackend::IntelUmonitor),
+        binding::CATALEJO_MONITOR_BACKEND_AMD_MONITORX => Some(MonitorBackend::AmdMonitorx),
+        binding::CATALEJO_MONITOR_BACKEND_UNSUPPORTED => None,
+        _ => unreachable!(),
+    }
+}
+
+/// Arm the runtime selected hardware monitor for an address.
+///
+/// The returned backend identifies the instruction family that was armed. An unsupported
+/// instruction is detected through the protected `SIGILL` path and requests polling.
+///
+/// # Safety
+///
+/// * The address must be non-null and must name standard local memory reached under exposed
+///   provenance. It must be the downstream address whose cache activity is to be observed.
+///
+/// * The mapping that contains the address must remain alive until the matching [`monitor_wait`]
+///   call has completed. A mapping failure while arming is caught and reported.
+///
+/// * The caller must invoke [`monitor_wait`] on the same thread if this function succeeds.
+#[inline]
+pub unsafe fn monitor_arm(
+    _: Subsystem,
+    target_address: *const u8,
+) -> Result<MonitorBackend, MonitorError> {
+    let target_outcome =
+        // SAFETY
+        //
+        // The address and monitor lifetime requirements are delegated to the caller.
+        unsafe { binding::catalejo_monitor_arm(target_address) };
+
+    match target_outcome {
+        binding::CATALEJO_MONITOR_ARM_INTEL_UMONITOR => Ok(MonitorBackend::IntelUmonitor),
+        binding::CATALEJO_MONITOR_ARM_AMD_MONITORX => Ok(MonitorBackend::AmdMonitorx),
+        binding::CATALEJO_MONITOR_ARM_FAULT => Err(MonitorError::Fault),
+        binding::CATALEJO_MONITOR_ARM_UNSUPPORTED => Err(MonitorError::Unsupported),
+        _ => unreachable!(),
+    }
+}
+
+/// Wait for one bounded interval with an armed hardware monitor.
+///
+/// Every successful call has a finite hardware deadline. The caller should repeat arm and wait
+/// operations while checking its own application deadline and observed value.
+///
+/// # Safety
+///
+/// * The backend must have been returned by the immediately preceding successful [`monitor_arm`]
+///   call on this thread.
+///
+/// * The monitored mapping must remain alive for the duration of this call.
+#[inline]
+pub unsafe fn monitor_wait(
+    _: Subsystem,
+    target_backend: MonitorBackend,
+) -> Result<(), MonitorError> {
+    let target_backend = match target_backend {
+        MonitorBackend::IntelUmonitor => binding::CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR,
+        MonitorBackend::AmdMonitorx => binding::CATALEJO_MONITOR_BACKEND_AMD_MONITORX,
+    };
+
+    let target_outcome =
+        // SAFETY
+        //
+        // The same-thread arm and mapping lifetime requirements are delegated to the caller.
+        unsafe { binding::catalejo_monitor_wait(target_backend) };
+
+    match target_outcome {
+        binding::CATALEJO_OUTCOME_SUCCESS => Ok(()),
+        binding::CATALEJO_OUTCOME_ERROR => Err(MonitorError::Fault),
+        binding::CATALEJO_OUTCOME_INVALID_VALUE => Err(MonitorError::Unsupported),
+        _ => unreachable!(),
     }
 }
 
@@ -344,5 +451,95 @@ pub unsafe fn copy(
         binding::CATALEJO_OUTCOME_ERROR => Err(byte_count),
         // NOTE: No other such result may be possible.
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use core::time::Duration;
+
+    use super::{MonitorError, Subsystem, monitor_arm, monitor_backend, monitor_wait};
+
+    /// Acquire the initialized subsystem for monitor tests.
+    unsafe fn subsystem() -> Subsystem {
+        // SAFETY
+        //
+        // The test harness does not install competing synchronous signal handlers.
+        unsafe { Subsystem::initialize() }.expect("the catalejo subsystem must initialize")
+    }
+
+    #[test]
+    fn monitor_selection_and_wait_are_runtime_safe() {
+        let target_value = 0_u64;
+
+        // SAFETY
+        //
+        // The address names a live aligned local word throughout the arm and wait sequence.
+        let target_subsystem = unsafe { subsystem() };
+        let target_arm =
+            unsafe { monitor_arm(target_subsystem, (&raw const target_value).cast::<u8>()) };
+
+        match target_arm {
+            Ok(target_backend) => {
+                assert_eq!(monitor_backend(target_subsystem), Some(target_backend));
+
+                let target_start = std::time::Instant::now();
+
+                // SAFETY
+                //
+                // The backend was armed on this thread and the local word remains alive.
+                let target_wait = unsafe { monitor_wait(target_subsystem, target_backend) };
+
+                assert!(
+                    target_wait.is_ok() || target_wait == Err(MonitorError::Unsupported),
+                    "a protected hardware wait must complete or downgrade",
+                );
+                assert!(
+                    target_start.elapsed() < Duration::from_secs(1),
+                    "one hardware wait interval must remain finite",
+                );
+            }
+            Err(MonitorError::Unsupported) => {
+                assert_eq!(monitor_backend(target_subsystem), None);
+            }
+            Err(MonitorError::Fault) => {
+                panic!("arming a live local word must not report a mapping fault");
+            }
+        }
+    }
+
+    /// A signal outside the protected instruction section must reach the saved action.
+    #[test]
+    fn sigill_outside_the_fault_section_is_chained() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const CHILD_VARIABLE: &str = "CATALEJO_SIGILL_CHILD";
+
+        if std::env::var_os(CHILD_VARIABLE).is_some() {
+            // SAFETY
+            //
+            // The child has no competing signal installer and intentionally raises SIGILL.
+            let _ = unsafe { subsystem() };
+            unsafe { libc::raise(libc::SIGILL) };
+
+            panic!("the default SIGILL action must terminate the child");
+        }
+
+        let target_executable =
+            std::env::current_exe().expect("the test executable path must be available");
+        let target_status = std::process::Command::new(target_executable)
+            .args([
+                "--exact",
+                "ffi::test::sigill_outside_the_fault_section_is_chained",
+            ])
+            .env(CHILD_VARIABLE, "1")
+            .status()
+            .expect("the SIGILL child must run");
+
+        assert_eq!(
+            target_status.signal(),
+            Some(libc::SIGILL),
+            "SIGILL must retain its saved default behavior",
+        );
     }
 }

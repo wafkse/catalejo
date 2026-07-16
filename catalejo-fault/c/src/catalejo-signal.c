@@ -16,6 +16,7 @@
  */
 struct sigaction saved_segmentation_violation_signal_actor;
 struct sigaction saved_bus_signal_actor;
+struct sigaction saved_illegal_instruction_signal_actor;
 
 /**
  * The primary signal handler for catalejo.
@@ -43,13 +44,13 @@ void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *tar
         // NOTE: Override the `%rax` register, as it is used for the first return value as per the System V ABI.
         machine_context->gregs[REG_RAX] = CATALEJO_OUTCOME_ERROR;
 
-        // NOTE: Copy the string-operation counter register (`%rcx`) into `%rdx`,
-        // as this is required to report a complete `struct catalejo_faultable_copy_outcome`
-        // to the caller via the (`%rax`, `%rdx`) pair.
-        //
-        // The second System V integer return value is not used in the non-copy routine, which guarantees
-        // that performing this unconditionally is safe as long as done in the respective `%rip` range.
-        machine_context->gregs[REG_RDX] = machine_context->gregs[REG_RCX];
+        // NOTE: Preserve the copy counter only while the string instruction is active.
+        // Other protected routines receive the raised signal in the second return register.
+        if (target_address >= (uintptr_t)catalejo_copy_instruction_start &&
+            target_address < (uintptr_t)catalejo_copy_instruction_stop)
+            machine_context->gregs[REG_RDX] = machine_context->gregs[REG_RCX];
+        else
+            machine_context->gregs[REG_RDX] = raised_signal;
 
         return;
     }
@@ -65,6 +66,10 @@ void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *tar
         break;
     case SIGBUS:
         saved_signal_actor = &saved_bus_signal_actor;
+
+        break;
+    case SIGILL:
+        saved_signal_actor = &saved_illegal_instruction_signal_actor;
 
         break;
     default:

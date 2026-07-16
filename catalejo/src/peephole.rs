@@ -4,7 +4,7 @@
     reason = "imports are false-flagged by clippy where the fix would be nightly-only"
 )]
 
-use alloc::sync::Arc;
+use alloc::{rc::Rc, sync::Arc};
 
 use core::{
     alloc::Layout,
@@ -19,12 +19,14 @@ use std::{
     io,
     io::ErrorKind,
     os::fd::{AsFd, OwnedFd},
+    time::Instant,
 };
 
+use bitflags::bitflags;
 use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
 
 use catalejo_fault::{
-    behavior::Faultable,
+    behavior::{Faultable, equal},
     ffi::{self as fault},
     maybe::{MaybeFault, Opaque},
 };
@@ -39,46 +41,18 @@ use crate::{
     target::Target,
 };
 
-// NOTE: Re-export the `Subsystem` item for easy access from upstream crates without having to depend on `catalejo-fault` directly.
-pub use catalejo_fault::ffi::Subsystem;
+// NOTE: Re-export the `Subsystem` + `MonitorBackend` item for easy access from upstream crates without having to depend on `catalejo-fault` directly.
+pub use catalejo_fault::ffi::{MonitorBackend, Subsystem};
 
-/// The creation-time initialization word for a [`Peephole`].
-///
-/// This is a bitset of the kernel's `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*` preferences, applied when
-/// the peephole is created, so that a caller can request one-shot behavior without a follow-up
-/// command. Combine flags with [`InitializeWord::with`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InitializeWord(ffi::binding::mirilla_map_peephole_initialize_word_t);
-
-impl InitializeWord {
-    /// An empty word, requesting no creation-time behavior.
-    pub const EMPTY: Self = Self(0);
-
-    /// Populate the mapping during `mmap` rather than on first touch, so that a later read walks
-    /// resident PTEs instead of paying a fault and a remote pin per granule. This trades a slower
-    /// `mmap` for that faster steady state, so it suits an observer that reads the whole window.
-    pub const POPULATE: Self = Self(
-        ffi::binding::MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE
-            as ffi::binding::mirilla_map_peephole_initialize_word_t,
-    );
-
-    /// Return the word with the bits of `other` also set.
-    #[inline]
-    #[must_use]
-    pub const fn with(self, other: Self) -> Self {
-        let Self(target_value) = self;
-        let Self(target_other) = other;
-
-        Self(target_value | target_other)
-    }
-
-    /// The raw word for the foreign-function boundary.
-    #[inline]
-    #[must_use]
-    pub const fn bits(self) -> ffi::binding::mirilla_map_peephole_initialize_word_t {
-        let Self(target_value) = self;
-
-        target_value
+bitflags! {
+    /// The creation-time initialization word for a [`Peephole`].
+    ///
+    /// Each flag mirrors one generated `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*` preference.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct InitializeWord: ffi::binding::mirilla_map_peephole_initialize_word_t {
+        /// Populate the mapping during `mmap` rather than on first touch.
+        const POPULATE = ffi::binding::MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE
+            as ffi::binding::mirilla_map_peephole_initialize_word_t;
     }
 }
 
@@ -109,7 +83,7 @@ impl PeepholeContext {
     /// This may fail if the underlying peephole could not be created or memory-mapped.
     #[inline]
     pub fn view(target_context: &Target, address_range: ViRange) -> io::Result<Self> {
-        Self::view_with(target_context, address_range, InitializeWord::EMPTY)
+        Self::view_with(target_context, address_range, InitializeWord::empty())
     }
 
     /// Open a [`Peephole`] into the target, applying the given creation-time [`InitializeWord`].
@@ -245,7 +219,7 @@ impl Peephole {
     /// This may fail if the underlying peephole could not be created or memory-mapped.
     #[inline]
     pub fn view(target_context: &Target, address_range: ViRange) -> io::Result<Self> {
-        Self::view_with(target_context, address_range, InitializeWord::EMPTY)
+        Self::view_with(target_context, address_range, InitializeWord::empty())
     }
 
     /// Open a [`Peephole`] into the target, applying the given creation-time [`InitializeWord`].
@@ -401,11 +375,99 @@ where
     // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
     F: Unassociated;
 
+/// The implementation used by an armed foreign monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorMode {
+    /// Intel user monitor and user wait instructions.
+    IntelUmonitor,
+
+    /// AMD extended monitor and extended wait instructions.
+    AmdMonitorx,
+
+    /// Fault-protected reads with cooperative thread yielding.
+    Polling,
+}
+
+impl From<Option<MonitorBackend>> for MonitorMode {
+    #[inline]
+    fn from(target_backend: Option<MonitorBackend>) -> Self {
+        match target_backend {
+            Some(MonitorBackend::IntelUmonitor) => Self::IntelUmonitor,
+            Some(MonitorBackend::AmdMonitorx) => Self::AmdMonitorx,
+            None => Self::Polling,
+        }
+    }
+}
+
+/// A failure while arming a foreign monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorArmError {
+    /// The local peephole downstream address faulted.
+    Fault,
+}
+
+/// The result of waiting on a foreign monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorWaitOutcome {
+    /// The observed value changed at the bit level.
+    Changed,
+
+    /// The finite deadline was reached before a change was observed.
+    TimedOut,
+
+    /// A fault made the local peephole downstream address unreadable.
+    Fault,
+}
+
+/// An armed monitor borrowing a [`Foreign`] value.
+///
+/// The borrow keeps the peephole mapping alive through the wait. The token is bound to the
+/// arming thread because hardware monitor state is local to a logical processor context.
+///
+/// ```compile_fail
+/// use catalejo::peephole::ArmedMonitor;
+///
+/// fn require_send<T: Send>() {}
+///
+/// fn rejected(target_monitor: ArmedMonitor<'_, u64>) {
+///     require_send::<ArmedMonitor<'_, u64>>();
+/// }
+/// ```
+#[derive(Debug)]
+// NOTE(invariant) The token borrows the armed handle and cannot move away from the arming thread.
+pub struct ArmedMonitor<'foreign, F>
+where
+    F: Faultable,
+{
+    /// The foreign handle that keeps the peephole mapping alive.
+    target_handle: &'foreign Foreign<F>,
+
+    /// The value observed before the hardware monitor was armed.
+    target_expected: F,
+
+    /// The hardware backend armed for this token.
+    target_backend: Option<MonitorBackend>,
+
+    /// Whether the value changed while the monitor was being armed.
+    target_changed: bool,
+
+    /// The marker that prevents transfer to another thread.
+    not_send: marker::PhantomData<Rc<()>>,
+}
+
 impl<F> Foreign<F>
 where
     // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
     F: Unassociated,
 {
+    /// Determine the local downstream address in the peephole mapping.
+    #[inline]
+    pub fn address(&self) -> Option<NonZero<usize>> {
+        let Self(target_peephole, target_displacement, ..) = self;
+
+        Window::address(target_peephole.window()).checked_add(target_displacement.native())
+    }
+
     /// Field-project into a field of `F`, to the respective [`P::Value`].
     #[inline]
     pub fn project<P>(&self, target_project: impl Borrow<P>) -> Foreign<P::Value>
@@ -458,6 +520,15 @@ where
         L: Lift<Value = F>,
     {
         L::construct(self)
+    }
+
+    /// Repeatedly lift the foreign structure until two sequential values compare as equal.
+    #[inline]
+    pub fn coherent<L>(self) -> Result<L, L::Error>
+    where
+        L: Coherent<Value = F>,
+    {
+        L::construct_coherent(self)
     }
 
     /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
@@ -544,16 +615,13 @@ where
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
     pub fn read(&self) -> Option<F> {
-        let Self(target_peephole, target_displacement, ..) = self;
+        let Self(target_peephole, ..) = self;
 
         let PeepholeContext {
-            peephole_subsystem,
-            ref peephole_window,
-            ..
+            peephole_subsystem, ..
         } = **target_peephole;
 
-        let target_address =
-            Window::address(peephole_window).checked_add(target_displacement.native())?;
+        let target_address = Foreign::address(self)?;
 
         // SAFETY:
         //
@@ -566,6 +634,149 @@ where
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
         unsafe { MaybeFault::<F>::new(target_address).read(peephole_subsystem) }
+    }
+
+    /// Arm a monitor for changes to this foreign value.
+    ///
+    /// The protected instruction receives the local downstream address in the peephole mapping.
+    /// A snapshot read after arming closes the race between the initial read and monitor setup.
+    /// Unsupported optional instructions select polling instead of failing the operation.
+    ///
+    /// # Failure
+    ///
+    /// This fails when the local downstream address faults during either protected snapshot or
+    /// hardware arming operation.
+    #[inline]
+    pub fn monitor(&self) -> Result<ArmedMonitor<'_, F>, MonitorArmError> {
+        let Self(target_peephole, ..) = self;
+
+        let PeepholeContext {
+            peephole_subsystem, ..
+        } = **target_peephole;
+
+        let target_expected = Foreign::read(self).ok_or(MonitorArmError::Fault)?;
+        let target_address = Foreign::address(self).ok_or(MonitorArmError::Fault)?;
+        let target_address =
+            ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
+
+        let target_backend =
+            // SAFETY
+            //
+            // * The address is the in-bounds local downstream address rather than the foreign
+            //   virtual address.
+            //
+            // * The borrow stored in the returned token keeps the peephole mapping alive.
+            //
+            // * The returned token can only wait on this thread because it is not `Send`.
+            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
+                Ok(target_backend) => Some(target_backend),
+                Err(fault::MonitorError::Unsupported) => None,
+                Err(fault::MonitorError::Fault) => return Err(MonitorArmError::Fault),
+            };
+
+        let target_observed = Foreign::read(self).ok_or(MonitorArmError::Fault)?;
+        let target_changed = !equal(target_expected, target_observed);
+
+        Ok(ArmedMonitor {
+            target_handle: self,
+            target_expected,
+            target_backend,
+            target_changed,
+            not_send: marker::PhantomData,
+        })
+    }
+}
+
+impl<'foreign, F> ArmedMonitor<'foreign, F>
+where
+    F: Faultable,
+{
+    /// Determine the implementation used by this monitor.
+    #[inline]
+    pub fn mode(&self) -> MonitorMode {
+        let Self { target_backend, .. } = self;
+
+        MonitorMode::from(*target_backend)
+    }
+
+    /// Wait until the value changes or the finite deadline is reached.
+    ///
+    /// This consumes the armed token so its same-thread hardware state cannot be reused. Hardware
+    /// waits run in bounded slices. Every wake is followed by another protected arm and snapshot
+    /// sequence. Unsupported hardware switches to cooperative polling with the same deadline.
+    #[inline]
+    pub fn wait(self, target_deadline: Instant) -> MonitorWaitOutcome {
+        let Self {
+            target_handle,
+            target_expected,
+            mut target_backend,
+            target_changed,
+            not_send: _,
+        } = self;
+
+        if target_changed {
+            return MonitorWaitOutcome::Changed;
+        }
+
+        loop {
+            let Some(target_observed) = Foreign::read(target_handle) else {
+                return MonitorWaitOutcome::Fault;
+            };
+
+            if !equal(target_expected, target_observed) {
+                return MonitorWaitOutcome::Changed;
+            }
+
+            if Instant::now() >= target_deadline {
+                return MonitorWaitOutcome::TimedOut;
+            }
+
+            let Some(target_backend_value) = target_backend else {
+                std::thread::yield_now();
+
+                continue;
+            };
+
+            let Foreign(target_peephole, ..) = target_handle;
+
+            let PeepholeContext {
+                peephole_subsystem, ..
+            } = **target_peephole;
+
+            // SAFETY
+            //
+            // * This token was armed on the current thread and cannot move to another thread.
+            //
+            // * Its borrow keeps the local downstream mapping alive through the wait.
+            match unsafe { fault::monitor_wait(peephole_subsystem, target_backend_value) } {
+                Ok(()) => {}
+                Err(fault::MonitorError::Unsupported) => {
+                    target_backend = None;
+
+                    continue;
+                }
+                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
+            }
+
+            let Some(target_address) = Foreign::address(target_handle) else {
+                return MonitorWaitOutcome::Fault;
+            };
+            let target_address =
+                ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
+
+            // SAFETY
+            //
+            // * The address is the in-bounds local downstream address.
+            //
+            // * This consuming wait remains on the thread that created the armed token.
+            //
+            // * The borrowed foreign handle keeps the mapping alive.
+            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
+                Ok(target_backend_value) => target_backend = Some(target_backend_value),
+                Err(fault::MonitorError::Unsupported) => target_backend = None,
+                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
+            }
+        }
     }
 }
 
@@ -586,3 +797,29 @@ pub trait Lift: Immortal {
     where
         Self: Sized;
 }
+
+/// A [`Lift`] that can establish whole-structure coherence through repeated reads.
+///
+/// Two sequential lifted values must compare as equal before the newer value is returned.
+/// A foreign structure that never stabilizes can keep this operation from completing.
+pub trait Coherent: Lift + Eq {
+    /// Repeatedly lift the foreign structure until two sequential values compare as equal.
+    fn construct_coherent(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
+    where
+        Self: Sized,
+    {
+        let mut target_previous = Self::construct(target_handle.clone())?;
+
+        loop {
+            let target_current = Self::construct(target_handle.clone())?;
+
+            if target_previous == target_current {
+                return Ok(target_current);
+            }
+
+            target_previous = target_current;
+        }
+    }
+}
+
+impl<L> Coherent for L where L: Lift + Eq {}

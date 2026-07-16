@@ -13,6 +13,7 @@ dashmap = "6.2.1"
 libc = "0.2.186"
 nix = { version = "0.31.3", features = ["mman"] }
 tracing = "0.1.44"
+bitflags = "2"
 
 [dev-dependencies]
 # `html_reports` adds the plot and report generation on top of the default
