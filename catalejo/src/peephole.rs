@@ -434,7 +434,7 @@ pub enum MonitorWaitOutcome {
 /// }
 /// ```
 #[derive(Debug)]
-// NOTE(invariant) The token borrows the armed handle and cannot move away from the arming thread.
+// NOTE(invariant): The token borrows the armed handle and cannot move away from the arming thread.
 pub struct ArmedMonitor<'foreign, F>
 where
     F: Faultable,
@@ -528,7 +528,7 @@ where
     where
         L: Coherent<Value = F>,
     {
-        L::construct_coherent(self)
+        <L as Coherent>::construct(self)
     }
 
     /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
@@ -804,14 +804,14 @@ pub trait Lift: Immortal {
 /// A foreign structure that never stabilizes can keep this operation from completing.
 pub trait Coherent: Lift + Eq {
     /// Repeatedly lift the foreign structure until two sequential values compare as equal.
-    fn construct_coherent(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
+    fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
     where
         Self: Sized,
     {
-        let mut target_previous = Self::construct(target_handle.clone())?;
+        let mut target_previous = <Self as Lift>::construct(target_handle.clone())?;
 
         loop {
-            let target_current = Self::construct(target_handle.clone())?;
+            let target_current = <Self as Lift>::construct(target_handle.clone())?;
 
             if target_previous == target_current {
                 return Ok(target_current);
