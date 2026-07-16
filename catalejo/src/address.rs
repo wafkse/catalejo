@@ -138,7 +138,7 @@ where
 ///
 /// The type parameter preserves the complete foreign raw pointer identity.
 #[repr(transparent)]
-// NOTE(invariant) The encoded address always occupies one 64 bit foreign pointer word.
+// NOTE(invariant): The encoded address always occupies one 64 bit foreign pointer word.
 pub struct Pointer64<T>
 where
     T: 'static,
