@@ -181,7 +181,6 @@ where
     T: 'static,
 {
     #[inline]
-
     fn clone(&self) -> Self {
         *self
     }
