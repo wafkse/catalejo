@@ -50,6 +50,37 @@ guest_env := "env 'HOME=" + home + "' 'CARGO_HOME=" + cargo_home + "' 'RUSTUP_HO
 default:
     @just --list
 
+# --- Formatting ---
+
+# Format the entire Rust workspace.
+[group('format')]
+format-rust:
+    cargo fmt --all
+
+# Format every C source and header in the checkout.
+[group('format')]
+format-c:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    mapfile -d '' sources < <(
+        find . -type f \
+            \( -name '*.c' -o -name '*.h' \) \
+            -not -path './.git/*' \
+            -not -path './target/*' \
+            -print0 | sort -z
+    )
+
+    if [ "${#sources[@]}" -eq 0 ]; then
+        exit 0
+    fi
+
+    clang-format -i "${sources[@]}"
+
+# Format every language in the checkout.
+[group('format')]
+format: format-rust format-c
+
 # --- Linting ---
 
 # Check formatting and lint the entire Rust workspace.
