@@ -171,9 +171,9 @@ static void catalejo_monitor_downgrade(catalejo_monitor_backend_t target_backend
 {
     int expected_backend = target_backend;
 
-    atomic_compare_exchange_strong_explicit(
-        &catalejo_monitor_backend, &expected_backend, CATALEJO_MONITOR_BACKEND_UNSUPPORTED,
-        memory_order_acq_rel, memory_order_acquire);
+    atomic_compare_exchange_strong_explicit(&catalejo_monitor_backend, &expected_backend,
+                                            CATALEJO_MONITOR_BACKEND_UNSUPPORTED,
+                                            memory_order_acq_rel, memory_order_acquire);
 }
 
 catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address)
@@ -195,9 +195,9 @@ catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_addres
     }
 
     if (target_outcome.outcome_status == CATALEJO_OUTCOME_SUCCESS)
-        return target_backend == CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR
-                   ? CATALEJO_MONITOR_ARM_INTEL_UMONITOR
-                   : CATALEJO_MONITOR_ARM_AMD_MONITORX;
+        return target_backend == CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR ?
+                   CATALEJO_MONITOR_ARM_INTEL_UMONITOR :
+                   CATALEJO_MONITOR_ARM_AMD_MONITORX;
 
     if (target_outcome.fault_signal == SIGILL) {
         catalejo_monitor_downgrade(target_backend);
