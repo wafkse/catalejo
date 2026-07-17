@@ -73,6 +73,14 @@ where
 
         target_address
     }
+
+    /// Determine if the pointer is null.
+    #[inline]
+    pub const fn null(self) -> bool {
+        let Self { target_address, .. } = self;
+
+        target_address == u32::MIN
+    }
 }
 
 impl<T> Copy for Pointer32<T> where T: 'static {}
@@ -134,11 +142,11 @@ where
     const PRIMITIVE: Primitive = Primitive::U32;
 }
 
-/// A typed pointer encoded for a 64 bit foreign address space.
+/// A typed pointer encoded for a 64-bit foreign address space.
 ///
 /// The type parameter preserves the complete foreign raw pointer identity.
 #[repr(transparent)]
-// NOTE(invariant): The encoded address always occupies one 64 bit foreign pointer word.
+// NOTE(invariant): The encoded address always occupies one 64-bit foreign pointer word.
 pub struct Pointer64<T>
 where
     T: 'static,
@@ -154,7 +162,7 @@ impl<T> Pointer64<T>
 where
     T: 'static,
 {
-    /// Construct a typed 64 bit foreign pointer.
+    /// Construct a typed 64-bit foreign pointer.
     #[inline]
     pub const fn new(target_address: u64) -> Self {
         let target_type = marker::PhantomData;
@@ -171,6 +179,14 @@ where
         let Self { target_address, .. } = self;
 
         target_address
+    }
+
+    /// Determine if the pointer is null.
+    #[inline]
+    pub const fn null(self) -> bool {
+        let Self { target_address, .. } = self;
+
+        target_address == u64::MIN
     }
 }
 
@@ -220,12 +236,12 @@ where
 
 // SAFETY:
 //
-// Every 64 bit pattern is a valid foreign address and the pointee marker stores no bytes.
+// Every 64-bit pattern is a valid foreign address and the pointee marker stores no bytes.
 unsafe impl<T> Unassociated for Pointer64<T> where T: 'static {}
 
 // SAFETY:
 //
-// The representation is exactly one 64 bit foreign pointer word.
+// The representation is exactly one 64-bit foreign pointer word.
 unsafe impl<T> Faultable for Pointer64<T>
 where
     T: 'static,
