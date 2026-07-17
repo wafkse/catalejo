@@ -15,7 +15,7 @@ When observing memory concurrently without software synchronization, the resulti
 Machine-word coherence describes a physical hardware capability. It dictates that the CPU can fetch a specific primitive from the memory bus in a single, un-segmented hardware transaction. 
 
 An access is considered machine-word coherent if and only if:
-1. The requested data size is less than or equal to the CPU's native machine word (e.g., 64 bits on `x86_64` or `AArch64`).
+1. The requested data size is less than or equal to the CPU's native machine word (e.g., 64-bits on `x86_64` or `AArch64`).
 2. The memory address is at least aligned to its natural boundary.
 
 ### Snapshot Coherence

@@ -13,6 +13,7 @@ use dashmap::DashMap;
 use crate::{
     address::{ViAddr, ViRange},
     offset::Offset,
+    peephole::Foreign,
     prelude::Peephole,
     target::Target,
 };
@@ -189,6 +190,27 @@ pub trait Manage {
     where
         U: Unassociated;
 
+    /// Refresh an [`Access`] intent that may not correspond to the [`Peephole`] internally referenced.
+    #[inline]
+    fn refresh<U>(&self, target_value: Access<U>) -> Option<Foreign<U>>
+    where
+        U: Unassociated,
+    {
+        let Access(ref target_peephole, target_offset, ..) = target_value;
+
+        let base_address =
+            target_peephole.window().address().get() as ffi::binding::virtual_address_t;
+        let target_address = ViAddr::new(base_address.checked_add(target_offset.value())?);
+
+        match Access::foreign(target_value) {
+            Some(target_value) => Some(target_value),
+            None => match Self::source::<U>(self, target_address) {
+                Ok(target_value) => target_value.and_then(Access::<U>::foreign),
+                Err(..) => None,
+            },
+        }
+    }
+
     /// Determine the [`Granule`] at which this manager tiles the address space into windows.
     ///
     /// The granule is the span and alignment a window is quantized to, so a bulk consumer such as a
@@ -239,7 +261,7 @@ where
     ///
     /// [`Foreign`]: crate::peephole::Foreign
     #[inline]
-    pub fn foreign(self) -> Option<crate::peephole::Foreign<U>> {
+    pub fn foreign(self) -> Option<Foreign<U>> {
         let Self(target_peephole, target_offset, ..) = self;
 
         target_peephole.at::<U>(target_offset)

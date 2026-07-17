@@ -115,6 +115,10 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
             #( #doc_attr_list )*
             #[doc = ""]
             #[doc = #marker_doc]
+            #[allow(
+                non_camel_case_types,
+                reason = "generated marker types preserve the foreign field name"
+            )]
             #[derive(Debug, Clone, Copy, Default)]
             pub struct #field_ident;
 
@@ -165,6 +169,10 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         #[doc(hidden)]
+        #[allow(
+            non_snake_case,
+            reason = "the generated module preserves the enclosing foreign structure name"
+        )]
         pub mod #module_ident {
             use super::*;
 

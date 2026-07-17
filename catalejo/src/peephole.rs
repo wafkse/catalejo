@@ -37,7 +37,8 @@ use nix::sys::mman::{MapFlags, ProtFlags};
 
 use crate::{
     address::{ViAddr, ViRange},
-    offset::{Field, Offset},
+    manage::Access,
+    offset::{Field, Offset, Sparse},
     target::Target,
 };
 
@@ -481,9 +482,26 @@ where
             // NOTE(invariant): This remains in-bounds as `F` is guaranteed to be contained completely
             // into the peephole window, and the `Field` trait requires that the field offset is in-bounds
             // of the containing structure as a safety requirement.
-            Offset::stack(target_value, Field::offset(target_project)),
+            Offset::stack(target_value, Field::offset(target_project))
+                .expect("stacked offset should remain in-bounds"),
             marker::PhantomData::<P::Value>,
         )
+    }
+
+    /// Create a sparse access intent for a profile-selected field of `F`.
+    ///
+    /// The returned intent may lie outside the current peephole. Resolve it with
+    /// [`Manage::refresh`](crate::manage::Manage::refresh) before reading so the
+    /// manager can reuse or open a window that fits the projected value.
+    #[inline]
+    pub fn sparse<P>(&self, target_project: impl Borrow<P>) -> Option<Access<P::Value>>
+    where
+        P: Sparse<Structure = F>,
+    {
+        let &Self(ref peephole_state, target_value, ..) = self;
+        let target_displacement = Offset::stack(target_value, Sparse::offset(target_project))?;
+
+        Some(Access::intent(peephole_state.clone(), target_displacement))
     }
 
     /// Cast a foreign value to another, as long as:
@@ -518,6 +536,7 @@ where
     pub fn lift<L>(self) -> Result<L, L::Error>
     where
         L: Lift<Value = F>,
+        L::Context: Default,
     {
         L::construct(self)
     }
@@ -527,8 +546,27 @@ where
     pub fn coherent<L>(self) -> Result<L, L::Error>
     where
         L: Coherent<Value = F>,
+        L::Context: Default,
     {
         <L as Coherent>::construct(self)
+    }
+
+    /// Attempt to lift the [`Foreign`] type into the locally-managed value.
+    #[inline]
+    pub fn lift_with<L>(self, target_context: &L::Context) -> Result<L, L::Error>
+    where
+        L: Lift<Value = F>,
+    {
+        L::construct_with(self, target_context)
+    }
+
+    /// Repeatedly lift the foreign structure until two sequential values compare as equal.
+    #[inline]
+    pub fn coherent_with<L>(self, target_context: &L::Context) -> Result<L, L::Error>
+    where
+        L: Coherent<Value = F>,
+    {
+        <L as Coherent>::construct_with(self, target_context)
     }
 
     /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
@@ -789,13 +827,27 @@ pub trait Lift: Immortal {
     /// This does not require to be [`Faultable`], as it may be a structure itself.
     type Value: Unassociated;
 
+    /// The context that may be used during construction.
+    type Context;
+
     /// The error that can arise during construction.
     type Error;
 
+    /// Construct the type from a [`Foreign`] handle to the target value type, with the required context.
+    fn construct_with(
+        target_handle: Foreign<Self::Value>,
+        target_context: &Self::Context,
+    ) -> Result<Self, Self::Error>;
+
     /// Construct the type from a [`Foreign`] handle to the target value type.
+    #[inline]
     fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
     where
-        Self: Sized;
+        Self::Context: Default,
+        Self: Sized,
+    {
+        Self::construct_with(target_handle, &Self::Context::default())
+    }
 }
 
 /// A [`Lift`] that can establish whole-structure coherence through repeated reads.
@@ -806,12 +858,24 @@ pub trait Coherent: Lift + Eq {
     /// Repeatedly lift the foreign structure until two sequential values compare as equal.
     fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
     where
+        Self::Context: Default,
         Self: Sized,
     {
-        let mut target_previous = <Self as Lift>::construct(target_handle.clone())?;
+        <Self as Coherent>::construct_with(target_handle, &Self::Context::default())
+    }
+
+    /// Construct the type from a [`Foreign`] handle to the target value type, with the required context.
+    #[inline]
+    fn construct_with(
+        target_handle: Foreign<Self::Value>,
+        target_context: &Self::Context,
+    ) -> Result<Self, Self::Error> {
+        let mut target_previous =
+            <Self as Lift>::construct_with(target_handle.clone(), target_context)?;
 
         loop {
-            let target_current = <Self as Lift>::construct(target_handle.clone())?;
+            let target_current =
+                <Self as Lift>::construct_with(target_handle.clone(), target_context)?;
 
             if target_previous == target_current {
                 return Ok(target_current);

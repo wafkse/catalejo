@@ -16,7 +16,7 @@ impl<I> Immortal for I where I: Sized + 'static {}
 ///
 /// When dealing with concurrent, un-synchronized memory reads, understanding the physical hardware access model is critical:
 ///
-/// * **Machine-Word Coherence:** The hardware guarantee that a CPU can fetch data up to its native word size (e.g., 64 bits on x86_64) in a single, indivisible memory bus transaction.
+/// * **Machine-Word Coherence:** The hardware guarantee that a CPU can fetch data up to its native word size (e.g., 64-bits on x86_64) in a single, indivisible memory bus transaction.
 /// * **Snapshot Coherence:** A read resulting from a single, indivisible transaction. The resulting value represents the exact state of the memory at an isolated point in time.
 /// * **Mixed Coherence (Tearing):** A read assembled from multiple hardware transactions. If another thread mutates the memory between these fetches, the resulting value is a temporal mix of old and new bytes.
 ///

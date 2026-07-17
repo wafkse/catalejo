@@ -37,13 +37,16 @@ impl Offset {
 
     /// Stack two disjoint offsets onto a singular one.
     ///
-    /// This is equivalent to add the two byte-level together via wrapping arithmetic.
+    /// If the resulting offset overflows, the stacked offset is `None`.
     #[inline]
-    pub const fn stack(self, target_value: Self) -> Self {
+    pub const fn stack(self, target_value: Self) -> Option<Self> {
         let Self(target_left) = self;
         let Self(target_right) = target_value;
 
-        Self(target_left.wrapping_add(target_right))
+        match target_left.checked_add(target_right) {
+            Some(target_value) => Some(Self(target_value)),
+            None => None,
+        }
     }
 }
 
@@ -81,10 +84,27 @@ impl Offset {
 /// within [`Self::Structure`]. The resulting address must satisfy the alignment
 /// required by [`Self::Value`] when the structure base is properly aligned.
 pub unsafe trait Field: Unassociated {
-    /// The structure that this fields belongs to.
+    /// The structure that this field belongs to.
     type Structure: Unassociated;
 
     /// The value that this field is for and the thing actually read.
+    type Value: Unassociated;
+
+    /// Determine the offset of this field in respect to its structure.
+    fn offset(target_value: impl Borrow<Self>) -> Offset;
+}
+
+/// A trait that describes a sparse field inside a specific structure.
+///
+/// This is required for *partial modeling* of foreign structures without artificially
+/// inflating the size of what is otherwise an opaque structure.
+///
+/// Unlike the [`Field`] trait, this does not impose a requirement on the resulting field being part of
+pub trait Sparse: Unassociated {
+    /// The structure that this sparse field belongs to.
+    type Structure: Unassociated;
+
+    /// The value that this sparse field is for and the thing actually read.
     type Value: Unassociated;
 
     /// Determine the offset of this field in respect to its structure.
