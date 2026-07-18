@@ -198,8 +198,10 @@ pub trait Manage {
     {
         let Access(ref target_peephole, target_offset, ..) = target_value;
 
-        let base_address =
-            target_peephole.window().address().get() as ffi::binding::virtual_address_t;
+        let ViRange {
+            start_address: ViAddr(base_address),
+            ..
+        } = target_peephole.range();
         let target_address = ViAddr::new(base_address.checked_add(target_offset.value())?);
 
         match Access::foreign(target_value) {
