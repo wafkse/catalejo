@@ -495,11 +495,18 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
                                                     mirilla_command_argument_t argument);
 
 /*
- * NOTE(security): The minimum capability an engagement author must hold.
+ * NOTE(security): The minimum capability set an engagement author must hold.
  * `CAP_SYS_PTRACE` is appropriate because it already grants the same access
  * scope, namely unfettered `process_vm_{read,write}v` on arbitrary processes.
  */
 #define MIRILLA_MAP_ENGAGE_CAPABILITIES (CAP_SYS_PTRACE)
+
+/*
+ * NOTE(security): Disable engagement capability checking wholesale.
+ *
+ * This is discouraged for use, and is intended for debugging purposes only.
+ */
+#define MIRILLA_MAP_ENGAGE_IGNORE_CAPABILITIES (1)
 
 #define MIRILLA_MAP_FILE_FLAGS (O_RDWR | O_CLOEXEC)
 

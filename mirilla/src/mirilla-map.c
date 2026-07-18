@@ -579,6 +579,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
         MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find process with pid %d",
                                  argument->process_id);
 
+#if MIRILLA_MAP_ENGAGE_IGNORE_CAPABILITIES == 0
     /*
 	 * NOTE(self): Allow self-engagement when the target pid is the caller's
 	 * thread group.
@@ -586,6 +587,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
     if (target_pid != task_tgid(current))
         if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
             MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
+#endif
 
     if (!(target_task = get_pid_task(target_pid, PIDTYPE_PID))) {
         put_pid(target_pid);
