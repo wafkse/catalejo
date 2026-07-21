@@ -506,7 +506,7 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
  *
  * This is discouraged for use, and is intended for debugging purposes only.
  */
-#define MIRILLA_MAP_ENGAGE_IGNORE_CAPABILITIES (1)
+#define MIRILLA_MAP_ENGAGE_IGNORE_CAPABILITIES (0)
 
 #define MIRILLA_MAP_FILE_FLAGS (O_RDWR | O_CLOEXEC)
 

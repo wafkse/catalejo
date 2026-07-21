@@ -249,8 +249,11 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 		 * the above (and GUP's `mmap_assert_locked()`). Bounce to the
 		 * `mmap_lock` path.
 		 */
-        if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+        if (vmf->flags & FAULT_FLAG_VMA_LOCK) {
+            vma_end_read(vma);
+
             return VM_FAULT_RETRY;
+        }
 
         /* NOTE(lifetime): Re-check liveness under the held lock. */
         if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
@@ -265,6 +268,11 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 
         if (!mmap_read_trylock(peephole_context->address_space)) {
             mmput(peephole_context->address_space);
+
+            if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+                vma_end_read(vma);
+            else
+                mmap_read_unlock(vma->vm_mm);
 
             MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
                                                      "space lock is unavailable");
@@ -292,11 +300,17 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     if (page_count <= 0)
         switch (page_count) {
         case -EBUSY:
-            if (!mmap_read_locked)
+            if (!mmap_read_locked) {
+                if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+                    vma_end_read(vma);
+                else
+                    mmap_read_unlock(vma->vm_mm);
+
                 MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY,
                                          "page fault: page at address 0x%lx is "
                                          "busy",
                                          target_address);
+            }
             /*
 			 * NOTE(lock): Lock still held after `-EBUSY`, so fall through to
 			 * the common failure path.
