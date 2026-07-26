@@ -29,6 +29,12 @@
 #include "mirilla-device.h"
 #include "mirilla-command.h"
 
+#if defined(MIRILLA_STEALTH_MODE)
+#define MIRILLA_PEEPHOLE_INODE_NAME MIRILLA_STEALTH_PEEPHOLE_INODE_NAME
+#else
+#define MIRILLA_PEEPHOLE_INODE_NAME "[mirilla-peephole]"
+#endif
+
 /*
  * Declare context-specific reference-counting helper functions.
  */
@@ -772,9 +778,10 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 	 * `address_space`. A shared anon-inode mapping would let
 	 * `unmap_mapping_range` zap unrelated peepholes at the same page offset.
 	 */
-    struct file *anonymous_file =
-        anon_inode_create_getfile("[mirilla-peephole]", &mirilla_map_peephole_file_operations,
-                                  peephole_context, MIRILLA_MAP_FILE_FLAGS, NULL);
+    struct file *anonymous_file = anon_inode_create_getfile(MIRILLA_PEEPHOLE_INODE_NAME,
+                                                            &mirilla_map_peephole_file_operations,
+                                                            peephole_context,
+                                                            MIRILLA_MAP_FILE_FLAGS, NULL);
 
     if (IS_ERR(anonymous_file)) {
         /*

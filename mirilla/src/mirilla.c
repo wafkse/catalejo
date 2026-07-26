@@ -35,9 +35,20 @@ static void __exit mirilla_exit(void)
     MIRILLA_LOG("module unloaded");
 }
 
-module_init(mirilla_init);
-module_exit(mirilla_exit);
+#define MIRILLA_MODULE_INIT(init_function) module_init(init_function)
+#define MIRILLA_MODULE_EXIT(exit_function) module_exit(exit_function)
 
-MODULE_AUTHOR("W. Frakchi");
-MODULE_DESCRIPTION("The kernel module for catalejo");
+MIRILLA_MODULE_INIT(STEALTH_SYMBOL(mirilla_init, SYM_mirilla_init));
+MIRILLA_MODULE_EXIT(STEALTH_SYMBOL(mirilla_exit, SYM_mirilla_exit));
+
+#define MIRILLA_MODULE_AUTHOR(author) MODULE_AUTHOR(author)
+#define MIRILLA_MODULE_DESCRIPTION(description) MODULE_DESCRIPTION(description)
+
+#if defined(MIRILLA_STEALTH_MODE)
+MIRILLA_MODULE_AUTHOR(MIRILLA_STEALTH_AUTHOR);
+MIRILLA_MODULE_DESCRIPTION(MIRILLA_STEALTH_DESCRIPTION);
+#else
+MIRILLA_MODULE_AUTHOR("W. Frakchi");
+MIRILLA_MODULE_DESCRIPTION("The kernel module for catalejo");
+#endif
 MODULE_LICENSE("GPL");

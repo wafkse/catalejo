@@ -13,6 +13,8 @@ Module.symvers
 *.unsigned
 
 compile_commands.json
+*.generated.h
+mirilla-symbol.lst.preserve
 
 .cache
 

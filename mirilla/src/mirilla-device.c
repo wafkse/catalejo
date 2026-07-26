@@ -3,6 +3,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/uaccess.h>
 
 #include "mirilla-log.h"
@@ -53,6 +54,20 @@ MIRILLA_CONTEXT_DESTRUCTOR(device)
 
     kfree(target_context);
 }
+
+static char *mirilla_device_name = MIRILLA_DEVICE_DEFAULT_NAME;
+
+#if defined(MIRILLA_STEALTH_MODE)
+#define MIRILLA_DEVICE_PARAMETER_NAME MIRILLA_STEALTH_DEVICE_PARAMETER
+#else
+#define MIRILLA_DEVICE_PARAMETER_NAME device_name
+#endif
+
+#define MIRILLA_MODULE_PARAMETER(parameter_name, parameter) \
+    module_param_named(parameter_name, parameter, charp, 0444)
+
+MIRILLA_MODULE_PARAMETER(MIRILLA_DEVICE_PARAMETER_NAME,
+                         STEALTH_SYMBOL(mirilla_device_name, SYM_mirilla_device_name));
 
 static int mirilla_device_major_number = 0;
 
@@ -130,18 +145,21 @@ int mirilla_device_register(void)
     if (mirilla_device_major_number != 0)
         return -EEXIST;
 
+    if (!mirilla_device_name || !*mirilla_device_name)
+        return -EINVAL;
+
     if (0 > (mirilla_device_major_number = register_chrdev(
-                 MIRILLA_CHARACTER_DEVICE_MAJOR, MIRILLA_DEVICE_NAME, &mirilla_device_fops)))
+                 MIRILLA_CHARACTER_DEVICE_MAJOR, mirilla_device_name, &mirilla_device_fops)))
         return mirilla_device_major_number;
 
-    if (IS_ERR_OR_NULL(mirilla_device_class = class_create(MIRILLA_DEVICE_NAME)))
+    if (IS_ERR_OR_NULL(mirilla_device_class = class_create(mirilla_device_name)))
         goto unregister_device;
 
     if (IS_ERR_OR_NULL(mirilla_device_struct = device_create(
                            mirilla_device_class, MIRILLA_CHARACTER_DEVICE_PARENT,
                            (mirilla_device_number =
                                 MKDEV(mirilla_device_major_number, MIRILLA_CHARACTER_DEVICE_MINOR)),
-                           NULL, MIRILLA_DEVICE_NAME)))
+                           NULL, mirilla_device_name)))
         goto unregister_device_and_destroy_class;
 
     return 0;
@@ -151,7 +169,7 @@ unregister_device:
 
     MIRILLA_ERROR("error(0x%04x): failed to register device", pointer_error);
 
-    unregister_chrdev(mirilla_device_major_number, MIRILLA_DEVICE_NAME);
+    unregister_chrdev(mirilla_device_major_number, mirilla_device_name);
     mirilla_device_major_number = 0;
     mirilla_device_class = NULL;
 
@@ -164,7 +182,7 @@ unregister_device_and_destroy_class:
 
     class_destroy(mirilla_device_class);
 
-    unregister_chrdev(mirilla_device_major_number, MIRILLA_DEVICE_NAME);
+    unregister_chrdev(mirilla_device_major_number, mirilla_device_name);
     mirilla_device_major_number = 0;
     mirilla_device_class = NULL;
     mirilla_device_struct = NULL;
@@ -190,7 +208,7 @@ int mirilla_device_unregister(void)
     }
 
     if (mirilla_device_major_number) {
-        unregister_chrdev(mirilla_device_major_number, MIRILLA_DEVICE_NAME);
+        unregister_chrdev(mirilla_device_major_number, mirilla_device_name);
 
         mirilla_device_major_number = 0;
     }

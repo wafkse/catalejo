@@ -1,0 +1,44 @@
+# Mirilla function and static-storage symbols that use seed-keyed aliases in stealth builds.
+# Ordinary functions match ^(static\s+)?[A-Za-z_][A-Za-z0-9_\s*]*\s+(mirilla_[A-Za-z0-9_]+)\s*\(
+# Context macro expansions and static storage are listed explicitly.
+mirilla_context_device_construct
+mirilla_context_device_destruct
+mirilla_context_map_peephole_construct
+mirilla_context_map_peephole_destruct
+mirilla_context_map_peephole_reference_get
+mirilla_context_map_peephole_reference_set
+mirilla_context_map_target_construct
+mirilla_context_map_target_destruct
+mirilla_context_map_target_reference_get
+mirilla_context_map_target_reference_set
+mirilla_device_class
+mirilla_device_fops
+mirilla_device_major_number
+mirilla_device_name
+mirilla_device_number
+mirilla_device_register
+mirilla_device_struct
+mirilla_device_unregister
+mirilla_exit
+mirilla_init
+mirilla_ioctl
+mirilla_map_handle_command
+mirilla_map_handle_command_address_space_layout
+mirilla_map_handle_command_disengage
+mirilla_map_handle_command_engage
+mirilla_map_handle_command_peephole
+mirilla_map_peephole_file_mmap
+mirilla_map_peephole_file_operations
+mirilla_map_peephole_file_release
+mirilla_map_peephole_populate
+mirilla_map_peephole_vm_close
+mirilla_map_peephole_vm_fault
+mirilla_map_peephole_vm_mprotect
+mirilla_map_peephole_vm_mremap
+mirilla_map_peephole_vm_open
+mirilla_map_peephole_vm_operations
+mirilla_map_target_notificate_invalidate_range
+mirilla_open
+mirilla_peephole_mmu_interval_notifier_operations
+mirilla_release
+mirilla_task_is_legacy

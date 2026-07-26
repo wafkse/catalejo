@@ -202,6 +202,36 @@ cargo build --workspace
 make -C mirilla module
 ```
 
+## Stealth Mode Builds
+
+Stealth mode produces a seeded release module without project logging, debug metadata, BTF, or
+project-identifying module metadata. The same seed deterministically derives the module name,
+module parameter name, metadata, and internal C aliases.
+
+```sh
+seed=replace-with-a-release-seed
+device_name=example-device
+module_name=$(python3 mirilla/tools/mirilla-stealth.py --seed "$seed" --module-name)
+module_path="mirilla/$module_name.ko"
+
+make -C mirilla MIRILLA_STEALTH_MODE=1 MIRILLA_STEALTH_SEED="$seed" module
+
+parameter_name=$(modinfo -F parm "$module_path" | cut -d: -f1)
+sudo insmod "$module_path" "$parameter_name=$device_name"
+
+cargo build -p catalejo --features stealth-mode --no-default-features
+```
+
+The final module is processed with bare `strip --strip-unneeded`. Kbuild BTF generation is disabled
+for stealth builds, so the final artifact does not need a post-link BTF removal step.
+
+`MIRILLA_DEVICE_NAME` may supply a build-time device-name default. When it is nonempty, omit the
+runtime parameter from `insmod`. When it is empty, supply the generated parameter as shown above.
+
+`--no-default-features` removes Catalejo's development device-path convenience. In that mode,
+callers must use `Target::engage_at` with an explicit path or `Target::engage_with` with an
+already-open device descriptor.
+
 ## Testing
 
 The suites read a live `/dev/mirilla`, so they run inside a [`virtme-ng`](https://github.com/arighi/virtme-ng) VM that boots a mirilla-powered kernel. Every task is a [`just`](https://just.systems) recipe, and `just --list` shows them grouped by sub-module.

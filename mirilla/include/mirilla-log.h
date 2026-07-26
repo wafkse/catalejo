@@ -10,6 +10,14 @@
 #include <linux/kernel.h>
 #include <linux/printk.h>
 
+#if defined(MIRILLA_STEALTH_MODE)
+
+#define MIRILLA_DEBUG(fmt, ...) ((void)0)
+#define MIRILLA_LOG(fmt, ...) ((void)0)
+#define MIRILLA_ERROR(fmt, ...) ((void)0)
+
+#else
+
 #define MIRILLA_LOG_LOG_LEVEL KERN_INFO
 #define MIRILLA_LOG_ERROR_LEVEL KERN_ERR
 
@@ -35,6 +43,8 @@
     printk(MIRILLA_LOG_ERROR_LEVEL "mirilla: "         \
                                    "error: " fmt "\n", \
            ##__VA_ARGS__)
+
+#endif
 
 /*
  * Log a formatted error string and return the appropriate `ERRNO`.

@@ -9,10 +9,15 @@
 #include "mirilla-id.h" // IWYU pragma: export
 
 /* NOTE(invariant): The class name and device name are the same. */
-#define MIRILLA_DEVICE_NAME "mirilla"
+#ifndef MIRILLA_DEVICE_DEFAULT_NAME
+#ifdef __KERNEL__
+#error "MIRILLA_DEVICE_DEFAULT_NAME must be supplied by the module build"
+#else
+#define MIRILLA_DEVICE_DEFAULT_NAME "mirilla"
+#endif
+#endif
 
 #ifdef __KERNEL__
-
 #include <linux/refcount.h>
 #include <linux/rwsem.h>
 #include <linux/xarray.h>
