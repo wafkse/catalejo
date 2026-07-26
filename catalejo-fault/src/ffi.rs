@@ -3,11 +3,14 @@
 //! This is used to bind the with the *C* side of the crate, which implements signal guarding.
 
 use core::{
-    hint, marker,
+    marker,
     mem::{self, MaybeUninit},
     ptr,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+#[cfg(all(feature = "stealth-mode", not(test)))]
+use core::hint;
 
 use catalejo_memory::primitive::PrimitiveUnion;
 
