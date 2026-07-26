@@ -19,12 +19,16 @@ use catalejo_sys::id::{Id, TargetId};
 const AT_NULL: u64 = 0;
 const AT_PAGESIZE: u64 = 6;
 
-/// Open the `mirilla` device for a test.
+/// Open the configured default device for a test.
 fn open_device() -> io::Result<std::fs::File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&*command::MIRILLA_DEVICE_PATH)
+    let device_path = command::default_device_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "default device path is not configured",
+        )
+    })?;
+
+    OpenOptions::new().read(true).write(true).open(device_path)
 }
 
 /// Self-engage the current process and return the target id.

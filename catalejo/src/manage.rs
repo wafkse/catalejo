@@ -402,6 +402,10 @@ impl Manage for Rebased {
         U: Unassociated,
     {
         // NOTE: A structure larger than a half-granule cannot be guaranteed to fit either grid.
+        #[cfg(feature = "stealth-mode")]
+        debug_assert!(mem::size_of::<U>() as u64 <= self.capacity());
+
+        #[cfg(not(feature = "stealth-mode"))]
         debug_assert!(
             mem::size_of::<U>() as u64 <= self.capacity(),
             "structure exceeds the half-granule peephole cap",

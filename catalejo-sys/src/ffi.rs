@@ -25,9 +25,11 @@ pub mod command {
         io,
         io::ErrorKind,
         os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
-        path::PathBuf,
-        sync::LazyLock,
+        path::Path,
     };
+
+    #[cfg(feature = "default-device-path")]
+    use std::{path::PathBuf, sync::LazyLock};
 
     use core::ptr;
 
@@ -42,7 +44,7 @@ pub mod command {
     pub const MIRILLA_DEVICE_NAME: &str = const {
         // SAFETY: The `CStr` is obtained from a `bindgen`-generated C string literal, so it always properly nul-delimited.
         let target_value =
-            unsafe { CStr::from_bytes_with_nul_unchecked(binding::MIRILLA_DEVICE_NAME) };
+            unsafe { CStr::from_bytes_with_nul_unchecked(binding::MIRILLA_DEVICE_DEFAULT_NAME) };
 
         match target_value.to_str() {
             Ok(target_value) => target_value,
@@ -50,9 +52,25 @@ pub mod command {
         }
     };
 
-    /// A memoized path to the character device exposed by the kernel module.
-    pub static MIRILLA_DEVICE_PATH: LazyLock<PathBuf> =
-        LazyLock::new(|| PathBuf::from("/dev/").join(self::MIRILLA_DEVICE_NAME));
+    /// Determine the optionally configured default path to the kernel character device.
+    ///
+    /// A build without the `default-device-path` feature returns [`None`]. Callers must then
+    /// provide a path explicitly or use an already-open device file descriptor.
+    #[must_use]
+    pub fn default_device_path() -> Option<&'static Path> {
+        #[cfg(feature = "default-device-path")]
+        {
+            static DEFAULT_DEVICE_PATH: LazyLock<PathBuf> =
+                LazyLock::new(|| PathBuf::from("/dev/").join(self::MIRILLA_DEVICE_NAME));
+
+            Some(DEFAULT_DEVICE_PATH.as_path())
+        }
+
+        #[cfg(not(feature = "default-device-path"))]
+        {
+            None
+        }
+    }
 
     /// Engage with the target process.
     ///
@@ -306,6 +324,10 @@ pub mod command {
 
             retry_count += 1;
             if retry_count >= RETRY_BOUND {
+                #[cfg(feature = "stealth-mode")]
+                return Err(io::Error::from(ErrorKind::ResourceBusy));
+
+                #[cfg(not(feature = "stealth-mode"))]
                 return Err(io::Error::new(
                     ErrorKind::ResourceBusy,
                     "address space layout count did not converge within the retry bound",

@@ -8,6 +8,9 @@ build = "../build/build.rs"
 
 [lib]
 
+[features]
+stealth-mode = []
+
 [dependencies]
 catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
 tokel = "0.2.4"

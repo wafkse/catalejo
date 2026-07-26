@@ -44,6 +44,13 @@ macro_rules! faultable {
             // SAFETY: A primitive integer type is always a sound `Faultable` implementor.
             unsafe impl Faultable for $target_type {
                 const PRIMITIVE: Primitive = const {
+                    #[cfg(feature = "stealth-mode")]
+                    match Primitive::appropriate::<$target_type>() {
+                        Some(target_primitive) => target_primitive,
+                        None => panic!(),
+                    }
+
+                    #[cfg(not(feature = "stealth-mode"))]
                     Primitive::appropriate::<$target_type>().expect([< "error: no proper machine-coherent primitive found for `" $target_type "`" >]:to_string:concatenate)
                 };
             }

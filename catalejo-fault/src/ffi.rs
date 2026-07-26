@@ -163,7 +163,11 @@ impl Subsystem {
         if SUBSYSTEM_INITIALIZED.load(Ordering::Acquire) {
             Self(marker::PhantomData::<Self>)
         } else {
-            panic!("catalejo-fault subsystem is not initialized")
+            #[cfg(feature = "stealth-mode")]
+            panic!();
+
+            #[cfg(not(feature = "stealth-mode"))]
+            panic!("catalejo-fault subsystem is not initialized");
         }
     }
 }

@@ -477,13 +477,22 @@ where
     {
         let &Self(ref peephole_state, target_value, ..) = self;
 
+        let target_offset = Offset::stack(target_value, Field::offset(target_project));
+
+        #[cfg(feature = "stealth-mode")]
+        // SAFETY: `F` is contained completely within the peephole and `Field` requires an in-bounds
+        // field offset, so the stacked offset always exists.
+        let target_offset = unsafe { target_offset.unwrap_unchecked() };
+
+        #[cfg(not(feature = "stealth-mode"))]
+        let target_offset = target_offset.expect("stacked offset should remain in-bounds");
+
         Foreign::<P::Value>(
             peephole_state.clone(),
             // NOTE(invariant): This remains in-bounds as `F` is guaranteed to be contained completely
             // into the peephole window, and the `Field` trait requires that the field offset is in-bounds
             // of the containing structure as a safety requirement.
-            Offset::stack(target_value, Field::offset(target_project))
-                .expect("stacked offset should remain in-bounds"),
+            target_offset,
             marker::PhantomData::<P::Value>,
         )
     }

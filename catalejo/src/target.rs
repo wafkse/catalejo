@@ -4,6 +4,7 @@ use std::{
     fs::OpenOptions,
     io,
     os::fd::{AsFd, BorrowedFd, OwnedFd},
+    path::Path,
 };
 
 use catalejo_fault::ffi::Subsystem;
@@ -14,23 +15,52 @@ use catalejo_sys::{ffi, id::TargetId};
 pub struct Target(OwnedFd, TargetId, Subsystem);
 
 impl Target {
-    /// Engage a target process, creating a new `mirilla` session.
+    /// Engage a target process through the configured default device path.
+    ///
+    /// # Failure
+    ///
+    /// This returns [`io::ErrorKind::NotFound`] when the build does not configure a default device
+    /// path. Use [`Self::engage_at`] or [`Self::engage_with`] in that configuration.
     ///
     /// # Panics
     ///
     /// This will panic if the respective [`Subsystem`] has not been initialized.
     #[inline]
     pub fn engage(process_id: libc::pid_t) -> io::Result<Self> {
+        let target_path = match ffi::command::default_device_path() {
+            Some(target_path) => target_path,
+            None => {
+                #[cfg(feature = "stealth-mode")]
+                return Err(io::Error::from_raw_os_error(libc::ENODEV));
+
+                #[cfg(not(feature = "stealth-mode"))]
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "default device path is not configured",
+                ));
+            }
+        };
+
+        Self::engage_at(target_path, process_id)
+    }
+
+    /// Engage a target process through a caller-supplied device path.
+    ///
+    /// # Panics
+    ///
+    /// This will panic if the respective [`Subsystem`] has not been initialized.
+    #[inline]
+    pub fn engage_at(target_path: impl AsRef<Path>, process_id: libc::pid_t) -> io::Result<Self> {
         let target_subsystem = Subsystem::memoize();
 
         let target_device = OwnedFd::from(
             OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(ffi::command::MIRILLA_DEVICE_PATH.as_path())?,
+                .open(target_path)?,
         );
 
-        // SAFETY: The provided file descriptor was created by "mirilla".
+        // SAFETY: The provided file descriptor was created by the appropriate kernel module.
         let target_id = unsafe { ffi::command::engage(target_device.as_fd(), process_id)? };
 
         Ok(Self(target_device, target_id, target_subsystem))

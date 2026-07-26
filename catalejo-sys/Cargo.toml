@@ -5,6 +5,11 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 build = "../build/build.rs"
 
+[features]
+default = ["default-device-path"]
+default-device-path = []
+stealth-mode = []
+
 [dependencies]
 
 [build-dependencies]
