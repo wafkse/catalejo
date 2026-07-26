@@ -631,8 +631,6 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
     if (mirilla_context_map_target_construct(&target_context)) {
         put_pid(target_pid);
 
-        put_task_struct(target_task);
-
         MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to construct map target context");
     }
 
