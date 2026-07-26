@@ -17,7 +17,6 @@ catalejo-sys = { path = "../catalejo-sys", version = "0.1.0", default-features =
 dashmap = "6.2.1"
 libc = "0.2.186"
 nix = { version = "0.31.3", features = ["mman"] }
-tracing = "0.1.44"
 bitflags = "2"
 
 [dev-dependencies]

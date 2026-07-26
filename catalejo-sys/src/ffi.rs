@@ -105,7 +105,11 @@ pub mod command {
                 ..,
             ) => Err(io::Error::from_raw_os_error(target_errno.abs())),
             // NOTE: This is impossible, hence unreachable.
+            #[cfg(not(feature = "stealth-mode"))]
             _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 
@@ -134,7 +138,11 @@ pub mod command {
                 Err(io::Error::from_raw_os_error(target_errno.abs()))
             }
             // NOTE: This is impossible, hence unreachable.
+            #[cfg(not(feature = "stealth-mode"))]
             _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 
@@ -185,7 +193,11 @@ pub mod command {
                 (..),
             ) => Err(io::Error::from_raw_os_error(target_errno.abs())),
             // NOTE: This is impossible, hence unreachable.
+            #[cfg(not(feature = "stealth-mode"))]
             _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 
@@ -423,7 +435,11 @@ pub mod lower {
                 Err(io::Error::from_raw_os_error(target_errno.abs()))
             }
             // NOTE: This is impossible, hence unreachable.
+            #[cfg(not(feature = "stealth-mode"))]
             _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 }

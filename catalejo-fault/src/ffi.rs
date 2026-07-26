@@ -3,7 +3,7 @@
 //! This is used to bind the with the *C* side of the crate, which implements signal guarding.
 
 use core::{
-    marker,
+    hint, marker,
     mem::{self, MaybeUninit},
     ptr,
     sync::atomic::{AtomicBool, Ordering},
@@ -146,7 +146,15 @@ impl Subsystem {
             }
             binding::CATALEJO_OUTCOME_ERROR => None::<Self>,
             // NOTE: Any other value is impossible.
+            #[cfg(not(feature = "stealth-mode"))]
             _ => unreachable!(),
+
+            #[cfg(all(feature = "stealth-mode", test))]
+            _ => std::process::abort(),
+
+            #[cfg(all(feature = "stealth-mode", not(test)))]
+            // SAFETY: This is impossible, hence unreachable.
+            _ => unsafe { hint::unreachable_unchecked() },
         }
     }
 
@@ -157,14 +165,23 @@ impl Subsystem {
     /// # Panics
     ///
     /// This will panic if the underlying subsystem has not been initialized.
+    ///
+    /// NOTE: Stealth test builds abort the process. Stealth non-test `no_std` builds use
+    /// [`core::hint::unreachable_unchecked`] because this branch is impossible for a valid token.
     #[inline]
     pub fn memoize() -> Subsystem {
         // NOTE: If the subsystem is noted as initialized, fabricate the token.
         if SUBSYSTEM_INITIALIZED.load(Ordering::Acquire) {
             Self(marker::PhantomData::<Self>)
         } else {
-            #[cfg(feature = "stealth-mode")]
-            panic!();
+            #[cfg(all(feature = "stealth-mode", test))]
+            std::process::abort();
+
+            #[cfg(all(feature = "stealth-mode", not(test)))]
+            // SAFETY: This state is impossible for a valid subsystem token.
+            unsafe {
+                hint::unreachable_unchecked()
+            };
 
             #[cfg(not(feature = "stealth-mode"))]
             panic!("catalejo-fault subsystem is not initialized");
@@ -206,7 +223,16 @@ pub fn monitor_backend(_: Subsystem) -> Option<MonitorBackend> {
         binding::CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR => Some(MonitorBackend::IntelUmonitor),
         binding::CATALEJO_MONITOR_BACKEND_AMD_MONITORX => Some(MonitorBackend::AmdMonitorx),
         binding::CATALEJO_MONITOR_BACKEND_UNSUPPORTED => None,
+        // NOTE: Any other value is impossible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 
@@ -240,7 +266,16 @@ pub unsafe fn monitor_arm(
         binding::CATALEJO_MONITOR_ARM_AMD_MONITORX => Ok(MonitorBackend::AmdMonitorx),
         binding::CATALEJO_MONITOR_ARM_FAULT => Err(MonitorError::Fault),
         binding::CATALEJO_MONITOR_ARM_UNSUPPORTED => Err(MonitorError::Unsupported),
+        // NOTE: Any other value is impossible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 
@@ -275,7 +310,16 @@ pub unsafe fn monitor_wait(
         binding::CATALEJO_OUTCOME_SUCCESS => Ok(()),
         binding::CATALEJO_OUTCOME_ERROR => Err(MonitorError::Fault),
         binding::CATALEJO_OUTCOME_INVALID_VALUE => Err(MonitorError::Unsupported),
+        // NOTE: Any other value is impossible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 
@@ -338,7 +382,15 @@ where
         ),
         binding::CATALEJO_OUTCOME_ERROR => None,
         // NOTE: No other such result may be possible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 
@@ -383,7 +435,15 @@ where
         binding::CATALEJO_OUTCOME_SUCCESS => true,
         binding::CATALEJO_OUTCOME_ERROR => false,
         // NOTE: No other such result may be possible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 
@@ -454,7 +514,15 @@ pub unsafe fn copy(
         // NOTE: On a fault the remaining count at the faulting byte is reported back.
         binding::CATALEJO_OUTCOME_ERROR => Err(byte_count),
         // NOTE: No other such result may be possible.
+        #[cfg(not(feature = "stealth-mode"))]
         _ => unreachable!(),
+
+        #[cfg(all(feature = "stealth-mode", test))]
+        _ => std::process::abort(),
+
+        #[cfg(all(feature = "stealth-mode", not(test)))]
+        // SAFETY: This is impossible, hence unreachable.
+        _ => unsafe { hint::unreachable_unchecked() },
     }
 }
 

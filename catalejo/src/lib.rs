@@ -1,3 +1,4 @@
+#![cfg_attr(all(not(test), not(feature = "stealth-mode")), no_std)]
 #![forbid(
     clippy::inline_asm_x86_intel_syntax,
     clippy::missing_const_for_fn,

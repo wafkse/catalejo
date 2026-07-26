@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(feature = "stealth-mode")), no_std)]
 #![forbid(
     clippy::alloc_instead_of_core,
     clippy::std_instead_of_core,
