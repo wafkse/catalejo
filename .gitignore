@@ -12,3 +12,4 @@
 # NOTE: Keep `.editorconfig` and `.clang-format`.
 !.editorconfig
 !.clang-format
+!.clang-format-ignore
