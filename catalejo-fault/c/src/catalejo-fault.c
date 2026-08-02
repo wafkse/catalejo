@@ -303,10 +303,12 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
+// clang-format on
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
+    // clang-format off
     __asm__ volatile(
         /* Move the local downstream address into the UMONITOR register. */
         "movq %rdi, %rax\n\t"
@@ -327,10 +329,12 @@ catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "ret\n\t"
 
         CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+    // clang-format on
 }
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait()
 {
+    // clang-format off
     __asm__ volatile(
         /* Build a bounded absolute TSC deadline in EDX and EAX. */
         "rdtsc\n\t"
@@ -354,11 +358,13 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
         "ret\n\t"
 
         CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+    // clang-format on
 }
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
+    // clang-format off
     __asm__ volatile(
         /* MONITORX uses RAX for the local downstream address. */
         "movq %rdi, %rax\n\t"
@@ -381,10 +387,12 @@ catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "ret\n\t"
 
         CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+    // clang-format on
 }
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait()
 {
+    // clang-format off
     __asm__ volatile(
         /* MWAITX receives hints in EAX, extensions in ECX, and a finite cycle count in EBX. Preserve
            the callee-saved RBX value in the caller-saved R8 register across both exit paths. */
@@ -413,13 +421,14 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
         "ret\n\t"
 
         CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+    // clang-format on
 }
-// clang-format on
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
 catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
               CATALEJO_UNUSED size_t target_count)
 {
+    // clang-format off
     __asm__ volatile(
         /* %rdi = target_destination, %rsi = target_source, %rdx = target_count.
            This is already the register layout `rep movsb` expects (destination
@@ -454,4 +463,5 @@ catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uin
         "ret\n\t"
 
         CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));
+    // clang-format on
 }
