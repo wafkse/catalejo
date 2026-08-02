@@ -127,12 +127,12 @@ where
     }
 }
 
-// SAFETY
+// SAFETY:
 //
 // Every 32 bit pattern is a valid foreign address and the pointee marker stores no bytes.
 unsafe impl<T> Unassociated for Pointer32<T> where T: 'static {}
 
-// SAFETY
+// SAFETY:
 //
 // The representation is exactly one 32 bit foreign pointer word.
 unsafe impl<T> Faultable for Pointer32<T>
@@ -336,9 +336,12 @@ impl ViSparse {
             }
         });
 
-        let is_non_empty = range_list
-            .last()
-            .is_none_or(|target_last| target_last.start_address < target_last.end_address);
+        let is_non_empty = range_list.last().is_none_or(
+            |&ViRange {
+                 start_address,
+                 end_address,
+             }| start_address < end_address,
+        );
 
         if are_disjoint && is_non_empty {
             Some(Self(range_list.into_boxed_slice()))
