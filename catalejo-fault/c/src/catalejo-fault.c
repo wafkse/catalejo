@@ -315,7 +315,7 @@ catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
 
         /* UMONITOR %rax */
         "1:\n\t"
-        ".byte 0xf3, 0x0f, 0xae, 0xf0\n\t"
+        "umonitor %rax\n\t"
         "2:\n\t"
 
         /* Report success with no fault signal. */
@@ -344,7 +344,7 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
 
         /* UMWAIT %ecx */
         "1:\n\t"
-        ".byte 0xf2, 0x0f, 0xae, 0xf1\n\t"
+        "umwait %ecx\n\t"
         "2:\n\t"
 
         /* Report success with no fault signal. */
@@ -373,7 +373,7 @@ catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
 
         /* MONITORX */
         "1:\n\t"
-        ".byte 0x0f, 0x01, 0xfa\n\t"
+        "monitorx\n\t"
         "2:\n\t"
 
         /* Report success with no fault signal. */
@@ -405,7 +405,7 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
 
         /* MWAITX */
         "1:\n\t"
-        ".byte 0x0f, 0x01, 0xfb\n\t"
+        "mwaitx\n\t"
         "2:\n\t"
 
         /* Restore RBX and report success with no fault signal. */
