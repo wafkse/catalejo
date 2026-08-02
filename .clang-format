@@ -22,7 +22,7 @@ AttributeMacros:
     - __init
     - __exit
     - __user
-    - FAULT_ROUTINE
+    - CATALEJO_FAULT_ROUTINE
     - CATALEJO_USED
     - CATALEJO_UNUSED
 AlignAfterOpenBracket: Align

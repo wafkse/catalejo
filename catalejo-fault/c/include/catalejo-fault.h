@@ -84,7 +84,7 @@ catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
 /* NOTE: Individual protected-read routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(                       \
+    extern CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(              \
         catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source,   \
                                          CATALEJO_UNUSED target_type *target_value);
 
@@ -94,7 +94,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 /* NOTE: Individual protected-write routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(                       \
+    extern CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(              \
         catalejo_write_, target_typename)(CATALEJO_UNUSED target_type * target_value,        \
                                           CATALEJO_UNUSED const target_type *target_source);
 
@@ -122,24 +122,24 @@ typedef struct catalejo_faultable_instruction_outcome {
 /**
  * Arm an Intel user monitor with fault protection.
  */
-extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with Intel user wait support for a bounded interval.
  */
-extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
+extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
 
 /**
  * Arm an AMD extended monitor with fault protection.
  */
-extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with AMD extended wait support for a bounded interval.
  */
-extern FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
+extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
 
 /**
  * Structure to be used to report back after a bulk read-write operation.
@@ -161,7 +161,7 @@ typedef struct catalejo_faultable_copy_outcome {
 /**
  * Perform a bulk-copy that is fault-protected.
  */
-extern FAULT_ROUTINE catalejo_faultable_copy_outcome_t
+extern CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
 catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
               CATALEJO_UNUSED size_t target_count);
 

@@ -31,3 +31,6 @@ test/test-concurrency
 test/test-invariants
 test/test-ioctl
 test/test-layout
+
+# Binary Ninja Databases
+*.bndb

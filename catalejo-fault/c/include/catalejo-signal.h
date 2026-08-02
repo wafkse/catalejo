@@ -26,12 +26,6 @@ extern struct sigaction saved_illegal_instruction_signal_actor;
  */
 void catalejo_signal_handle(int raised_signal, siginfo_t *signal_info, void *target_context);
 
-/*
- * The instruction range where the copy counter must be preserved.
- */
-extern char catalejo_copy_instruction_start[];
-extern char catalejo_copy_instruction_stop[];
-
 #ifdef __cplusplus
 }
 #endif

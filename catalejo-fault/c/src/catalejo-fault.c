@@ -12,6 +12,7 @@
 #include "catalejo-macro.h"
 #include "catalejo-section.h"
 #include "catalejo-fault.h"
+#include "catalejo-fixup.h"
 #include "catalejo-signal.h"
 
 /**
@@ -242,7 +243,7 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
 // cannot lay out the backslash-continued `__asm__` template stably, so it is
 // held off across the macro definitions.
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
-    FAULT_ROUTINE catalejo_faultable_outcome_t                                                       \
+    CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
         CATALEJO_CONCAT(catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
                                                          CATALEJO_UNUSED target_type *target_value)  \
     {                                                                                                \
@@ -251,22 +252,29 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
             /* NOTE: Forcefully clear the register for the read. */                                  \
             "xorl %" #target_register32 ", %" #target_register32 "\n\t"                              \
                                                                                                      \
-            /* NOTE: Read the value. */                                                              \
+            /* NOTE: Read the value and move it to the out-pointer. */                               \
+            "1:\n\t"                                                                                \
             #target_mnemonic " (%rdi), %" #target_register "\n\t"                                    \
-                                                                                                     \
-            /* NOTE: Move read value to out-pointer. */                                              \
             #target_mnemonic " %" #target_register ", (%rsi)\n\t"                                    \
+            "2:\n\t"                                                                                \
                                                                                                      \
-            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */                   \
+            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0). */                  \
             "xorl %eax, %eax\n\t"                                                                    \
-            "ret\n\t");                                                                              \
+            "ret\n\t"                                                                                \
+                                                                                                     \
+            /* NOTE: Report a recoverable memory fault through the ordinary return ABI. */          \
+            "3:\n\t"                                                                                \
+            "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"                         \
+            "ret\n\t"                                                                                \
+                                                                                                     \
+            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));            \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
-    FAULT_ROUTINE catalejo_faultable_outcome_t                                                       \
+    CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
         CATALEJO_CONCAT(catalejo_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
                                                           CATALEJO_UNUSED const target_type *target_source) \
     {                                                                                                \
@@ -275,21 +283,28 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
             /* NOTE: Forcefully clear the register for the write. */                                 \
             "xorl %" #target_register32 ", %" #target_register32 "\n\t"                              \
                                                                                                      \
-            /* NOTE: Read the value from the source into a register. */                              \
+            /* NOTE: Read the source value and write it to the target address. */                    \
+            "1:\n\t"                                                                                \
             #target_mnemonic " (%rsi), %" #target_register "\n\t"                                    \
-                                                                                                     \
-            /* NOTE: Write the value to the target address. */                                       \
             #target_mnemonic " %" #target_register ", (%rdi)\n\t"                                    \
+            "2:\n\t"                                                                                \
                                                                                                      \
-            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */                   \
+            /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0). */                  \
             "xorl %eax, %eax\n\t"                                                                    \
-            "ret\n\t");                                                                              \
+            "ret\n\t"                                                                                \
+                                                                                                     \
+            /* NOTE: Report a recoverable memory fault through the ordinary return ABI. */          \
+            "3:\n\t"                                                                                \
+            "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"                         \
+            "ret\n\t"                                                                                \
+                                                                                                     \
+            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));            \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
-FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     __asm__ volatile(
@@ -297,15 +312,24 @@ catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "movq %rdi, %rax\n\t"
 
         /* UMONITOR %rax */
+        "1:\n\t"
         ".byte 0xf3, 0x0f, 0xae, 0xf0\n\t"
+        "2:\n\t"
 
         /* Report success with no fault signal. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
-        "ret\n\t");
+        "ret\n\t"
+
+        /* Report the fault signal supplied by the handler in %rdx. */
+        "3:\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
+        "ret\n\t"
+
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
 }
 
-FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait()
 {
     __asm__ volatile(
         /* Build a bounded absolute TSC deadline in EDX and EAX. */
@@ -315,15 +339,24 @@ FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wa
         "xorl %ecx, %ecx\n\t"
 
         /* UMWAIT %ecx */
+        "1:\n\t"
         ".byte 0xf2, 0x0f, 0xae, 0xf1\n\t"
+        "2:\n\t"
 
         /* Report success with no fault signal. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
-        "ret\n\t");
+        "ret\n\t"
+
+        /* Report the fault signal supplied by the handler in %rdx. */
+        "3:\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
+        "ret\n\t"
+
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
 }
 
-FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
 catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     __asm__ volatile(
@@ -333,33 +366,57 @@ catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "xorl %edx, %edx\n\t"
 
         /* MONITORX */
+        "1:\n\t"
         ".byte 0x0f, 0x01, 0xfa\n\t"
+        "2:\n\t"
 
         /* Report success with no fault signal. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
-        "ret\n\t");
+        "ret\n\t"
+
+        /* Report the fault signal supplied by the handler in %rdx. */
+        "3:\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
+        "ret\n\t"
+
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
 }
 
-FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait()
 {
     __asm__ volatile(
-        /* MWAITX receives a finite cycle count with timer operation enabled. */
+        /* MWAITX receives hints in EAX, extensions in ECX, and a finite cycle count in EBX. Preserve
+           the callee-saved RBX value in the caller-saved R8 register across both exit paths. */
+        "movq %rbx, %r8\n\t"
         "xorl %eax, %eax\n\t"
-        "movl $2, %ecx\n\t"
-        "movl $" CATALEJO_STR(CATALEJO_MONITOR_WAIT_CYCLES) ", %edx\n\t"
+        /* NOTE: Bit 1 enables the EBX timeout expressed in Software P0 clocks, the same clocks
+           counted by the TSC. */
+        "movl $0b10, %ecx\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_MONITOR_WAIT_CYCLES) ", %ebx\n\t"
 
         /* MWAITX */
+        "1:\n\t"
         ".byte 0x0f, 0x01, 0xfb\n\t"
+        "2:\n\t"
 
-        /* Report success with no fault signal. */
+        /* Restore RBX and report success with no fault signal. */
+        "movq %r8, %rbx\n\t"
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
-        "ret\n\t");
+        "ret\n\t"
+
+        /* Restore RBX and report the fault signal supplied by the handler in %rdx. */
+        "3:\n\t"
+        "movq %r8, %rbx\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
+        "ret\n\t"
+
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
 }
 // clang-format on
 
-FAULT_ROUTINE catalejo_faultable_copy_outcome_t
+CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
 catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
               CATALEJO_UNUSED size_t target_count)
 {
@@ -378,17 +435,23 @@ catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uin
 
         /* NOTE: [%rdi] = [%rsi] for %rcx bytes. A page fault on either side is
            restartable, as %rcx holds the remaining count at the faulting byte. */
-        ".global catalejo_copy_instruction_start\n\t"
-        "catalejo_copy_instruction_start:\n\t"
+        "1:\n\t"
         "rep movsb\n\t"
-        ".global catalejo_copy_instruction_stop\n\t"
-        "catalejo_copy_instruction_stop:\n\t"
+        "2:\n\t"
 
         /* NOTE: Reached only on full success, where %rcx has drained to zero, we
            surface it as the (zero) remaining count in the second return value. */
         "movq %rcx, %rdx\n\t"
 
-        /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0) */
+        /* NOTE: Signal a successful outcome (CATALEJO_OUTCOME_SUCCESS = 0). */
         "xorl %eax, %eax\n\t"
-        "ret\n\t");
+        "ret\n\t"
+
+        /* NOTE: Preserve the remaining string-operation count on rollback. */
+        "3:\n\t"
+        "movq %rcx, %rdx\n\t"
+        "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
+        "ret\n\t"
+
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));
 }
