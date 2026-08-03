@@ -207,7 +207,7 @@ catalejo-test: _mirilla-load
 # Build the module and run the integration tests inside a mirilla-powered VM. Host-side.
 [group('catalejo')]
 catalejo-test-vm: mirilla-module catalejo-build
-    cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+    cd '{{ kdir }}' && vng --verbose --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
         {{ guest_env }} --justfile '{{ justfile() }}' catalejo-test
 
 # --- Shared internals ---
