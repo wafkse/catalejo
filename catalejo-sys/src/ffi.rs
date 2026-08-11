@@ -19,6 +19,7 @@ pub mod command {
         reason = "imports are false-flagged by clippy where the fix would be nightly-only"
     )]
 
+    #[cfg(feature = "default-device-path")]
     use core::ffi::CStr;
 
     use std::{
@@ -41,6 +42,7 @@ pub mod command {
     /// The canonical name of the device exposed by the kernel module.
     ///
     /// This is used for identifying and interfacing with the appropriate character device.
+    #[cfg(feature = "default-device-path")]
     pub const MIRILLA_DEVICE_NAME: &str = const {
         // SAFETY: The `CStr` is obtained from a `bindgen`-generated C string literal, so it always properly nul-delimited.
         let target_value =

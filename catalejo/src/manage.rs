@@ -818,9 +818,11 @@ impl Manage for Memoize {
     {
         let target_layout = Layout::new::<U>();
 
+        let Self { window_tree, .. } = self;
+
         // Reuse an open window that already covers the whole structure.
         if let Some(target_peephole) = {
-            let window_tree = self.window_tree.read().unwrap();
+            let window_tree = window_tree.read().expect("the lock is poisoned");
 
             Self::covering(
                 &window_tree,
@@ -843,7 +845,7 @@ impl Manage for Memoize {
         let target_peephole = Peephole::view(self.engaged(), target_range)?;
 
         let target_peephole = {
-            let mut window_tree = self.window_tree.write().unwrap();
+            let mut window_tree = window_tree.write().expect("the lock is poisoned");
 
             // NOTE: A racing open may have covered this span already. Yield to it and let the freshly
             // opened window drop, both map the identical foreign range.

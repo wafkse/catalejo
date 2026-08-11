@@ -35,7 +35,12 @@ pub mod prelude {
     pub use crate::{
         address::{Pointer32, Pointer64, ViAddr, ViRange},
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
-        peephole::{Coherent, Foreign, InitializeWord, Lift, Peephole, Subsystem, Window},
+        peephole::{
+            ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole, Stabilize,
+            StabilizeError, Subsystem, Window,
+        },
         target::Target,
     };
+
+    pub use catalejo_fault::behavior::Faultable;
 }

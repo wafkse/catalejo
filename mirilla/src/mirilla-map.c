@@ -17,6 +17,8 @@
 
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
+#include <linux/fs.h>
+#include <linux/kdev_t.h>
 #include <linux/mm.h>
 #include <linux/mm_types.h>
 #include <linux/mmu_notifier.h>
@@ -615,15 +617,7 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
         MIRILLA_ERROR_AND_RETURN(-ESRCH, "could not find respective task");
     }
 
-    if (mirilla_task_is_legacy(target_task)) {
-        put_pid(target_pid);
-
-        put_task_struct(target_task);
-
-        MIRILLA_ERROR_AND_RETURN(-ENOTSUPP, "legacy foreign address spaces are not supported");
-    }
-
-    /* NOTE(refcount): Release transient ref to `struct task_struct` for legacy process gating. */
+    /* NOTE(refcount): Release the transient task reference after engagement liveness proof. */
     put_task_struct(target_task);
 
     struct mirilla_map_target_context *target_context = NULL;
@@ -1036,9 +1030,28 @@ mirilla_map_handle_command_address_space_layout(struct mirilla_device_context *d
             if (area->vm_flags & VM_GROWSDOWN)
                 attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_STACK;
 
-            layout_list[layout_index] = (struct mirilla_map_address_space_layout){ area->vm_start,
-                                                                                   area->vm_end,
-                                                                                   attribute_list };
+            uint64_t file_offset = 0, inode_number = 0;
+            uint32_t device_major = 0, device_minor = 0;
+
+            if (area->vm_file) {
+                struct inode *backing_inode = file_inode(area->vm_file);
+
+                attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE;
+                file_offset = (uint64_t)area->vm_pgoff << PAGE_SHIFT;
+                device_major = MAJOR(backing_inode->i_sb->s_dev);
+                device_minor = MINOR(backing_inode->i_sb->s_dev);
+                inode_number = backing_inode->i_ino;
+            }
+
+            layout_list[layout_index] = (struct mirilla_map_address_space_layout){
+                .start_address = area->vm_start,
+                .end_address = area->vm_end,
+                .attribute_list = attribute_list,
+                .file_offset = file_offset,
+                .device_major = device_major,
+                .device_minor = device_minor,
+                .inode_number = inode_number,
+            };
         }
 
         layout_index++;

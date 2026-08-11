@@ -23,6 +23,8 @@
 #include "test-harness.h"
 
 #include <stdint.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 /* Auxiliary vector type constants, as widened by the kernel ABI. */
 #define AT_NULL 0
@@ -176,6 +178,11 @@ static int test_layout_full_population(void)
                    "test region is missing the WRITE attribute");
             ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_ANONYMOUS) != 0,
                    "test region is missing the ANONYMOUS attribute");
+            ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE) == 0,
+                   "anonymous test region unexpectedly reports file backing");
+            ASSERT(layout_buffer[i].file_offset == 0 && layout_buffer[i].device_major == 0 &&
+                       layout_buffer[i].device_minor == 0 && layout_buffer[i].inode_number == 0,
+                   "anonymous test region carries file provenance");
 
             found_region = 1;
             break;
@@ -183,6 +190,46 @@ static int test_layout_full_population(void)
     }
 
     ASSERT(found_region, "test region was not found in the layout");
+
+    struct stat executable_stat = { 0 };
+    ASSERT(stat("/proc/self/exe", &executable_stat) == 0, "failed to stat test executable");
+
+    virtual_address_t code_address = (virtual_address_t)&test_layout_full_population;
+    int found_executable = 0;
+
+    for (uint32_t i = 0; i < layout_outcome.total_count; i++) {
+        if (layout_buffer[i].start_address <= code_address &&
+            code_address < layout_buffer[i].end_address) {
+            ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE) != 0,
+                   "test executable mapping lacks file backing");
+            ASSERT(layout_buffer[i].device_major == major(executable_stat.st_dev), "test "
+                                                                                   "executable "
+                                                                                   "mapping has "
+                                                                                   "the wrong "
+                                                                                   "device major");
+            ASSERT(layout_buffer[i].device_minor == minor(executable_stat.st_dev), "test "
+                                                                                   "executable "
+                                                                                   "mapping has "
+                                                                                   "the wrong "
+                                                                                   "device minor");
+            ASSERT(layout_buffer[i].inode_number == (uint64_t)executable_stat.st_ino, "test "
+                                                                                      "executable "
+                                                                                      "mapping has "
+                                                                                      "the wrong "
+                                                                                      "inode");
+            ASSERT((layout_buffer[i].file_offset & (sysconf(_SC_PAGESIZE) - 1)) == 0, "test "
+                                                                                      "executable "
+                                                                                      "mapping "
+                                                                                      "file offset "
+                                                                                      "is not page "
+                                                                                      "aligned");
+
+            found_executable = 1;
+            break;
+        }
+    }
+
+    ASSERT(found_executable, "test executable mapping was not found in the layout");
 
     print_with_timestamp("[LAYOUT] Full population: %u entries, test region found\n",
                          layout_outcome.total_count);

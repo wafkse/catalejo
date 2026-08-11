@@ -78,6 +78,7 @@ extern int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_stru
 static const struct file_operations mirilla_map_peephole_file_operations = {
     .release = mirilla_map_peephole_file_release,
     .mmap = mirilla_map_peephole_file_mmap,
+    .owner = THIS_MODULE
 };
 
 #endif /* __KERNEL__ */
@@ -227,6 +228,7 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(peephole);
 #define MIRILLA_MAP_LAYOUT_ATTRIBUTE_ANONYMOUS (1U << 3)
 #define MIRILLA_MAP_LAYOUT_ATTRIBUTE_SHARED (1U << 4)
 #define MIRILLA_MAP_LAYOUT_ATTRIBUTE_STACK (1U << 5)
+#define MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE (1U << 6)
 
 /*
  * The attributes to a layout component.
@@ -246,6 +248,8 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(peephole);
  * * `SHARED`:    `vm_flags & VM_SHARED`.
  * * `STACK`:     `vm_flags & VM_GROWSDOWN`. The VMA grows downward, which
  *   is the kernel's marker for stack (and guard) mappings.
+ * * `FILE`:      `vm_file != NULL`. The backing identity and file offset fields
+ *   are valid for this entry.
  */
 typedef uint32_t mirilla_map_layout_attributes_t;
 
@@ -262,6 +266,21 @@ struct mirilla_map_address_space_layout {
      * The attribute list for this portion of the address space.
      */
     mirilla_map_layout_attributes_t attribute_list;
+
+    /**
+     * Byte offset in the backing file when `MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE` is set.
+     */
+    uint64_t file_offset;
+
+    /**
+     * Device identity of the backing inode when the file attribute is set.
+     */
+    uint32_t device_major, device_minor;
+
+    /**
+     * Inode number of the backing file when the file attribute is set.
+     */
+    uint64_t inode_number;
 };
 
 /*

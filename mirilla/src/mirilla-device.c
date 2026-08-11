@@ -136,7 +136,8 @@ static long mirilla_ioctl(struct file *file, unsigned int ioctl_command,
 static struct file_operations mirilla_device_fops = { .open = mirilla_open,
                                                       .release = mirilla_release,
                                                       .unlocked_ioctl = mirilla_ioctl,
-                                                      .compat_ioctl = compat_ptr_ioctl };
+                                                      .compat_ioctl = compat_ptr_ioctl,
+                                                      .owner = THIS_MODULE };
 
 int mirilla_device_register(void)
 {

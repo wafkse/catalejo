@@ -74,12 +74,20 @@ where
         target_address
     }
 
-    /// Determine if the pointer is null.
+    /// Determine whether the pointer is null.
     #[inline]
     pub const fn null(self) -> bool {
         let Self { target_address, .. } = self;
 
         target_address == u32::MIN
+    }
+
+    /// Determine whether the pointer is non-null.
+    #[inline]
+    pub const fn nonnull(self) -> bool {
+        let Self { target_address, .. } = self;
+
+        target_address != u32::MIN
     }
 }
 
@@ -181,12 +189,20 @@ where
         target_address
     }
 
-    /// Determine if the pointer is null.
+    /// Determine whether the pointer is null.
     #[inline]
     pub const fn null(self) -> bool {
         let Self { target_address, .. } = self;
 
         target_address == u64::MIN
+    }
+
+    /// Determine whether the pointer is non-null.
+    #[inline]
+    pub const fn nonnull(self) -> bool {
+        let Self { target_address, .. } = self;
+
+        target_address != u64::MIN
     }
 }
 
@@ -377,6 +393,23 @@ mod test {
             mem::align_of::<Pointer64<*mut u8>>(),
             mem::align_of::<u64>()
         );
+    }
+
+    #[test]
+    fn foreign_pointer_null_predicates_are_complements() {
+        let target_null32 = Pointer32::<*mut u8>::new(0);
+        let target_value32 = Pointer32::<*mut u8>::new(1);
+        let target_null64 = Pointer64::<*mut u8>::new(0);
+        let target_value64 = Pointer64::<*mut u8>::new(1);
+
+        assert!(target_null32.null());
+        assert!(!target_null32.nonnull());
+        assert!(!target_value32.null());
+        assert!(target_value32.nonnull());
+        assert!(target_null64.null());
+        assert!(!target_null64.nonnull());
+        assert!(!target_value64.null());
+        assert!(target_value64.nonnull());
     }
 
     #[test]

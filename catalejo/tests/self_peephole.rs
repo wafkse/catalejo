@@ -125,3 +125,44 @@ fn memoizes_a_peephole_by_page() {
         "page-distant addresses should resolve to distinct peepholes",
     );
 }
+
+#[test]
+#[ignore = "requires the mirilla device"]
+fn copies_an_arbitrary_byte_span() {
+    let manager = Memoize::new(engage_self());
+    let target_source = Box::new(*b"runtime-sized-copy-span");
+    let target_address = address_of(&target_source[0]);
+    let target_access = manager
+        .source::<u8>(target_address)
+        .expect("the peephole should open")
+        .expect("the window should admit a byte");
+    let mut target_buffer = [core::mem::MaybeUninit::<u8>::uninit(); 23];
+    let target_foreign = target_access.foreign().expect("the handle should validate");
+    let target_copy = target_foreign
+        .bytes(&mut target_buffer)
+        .expect("the runtime byte span should fit");
+
+    assert!(target_copy.complete());
+    assert_eq!(target_copy.bytes(), target_source.as_slice());
+}
+
+#[test]
+#[ignore = "requires the mirilla device"]
+fn appends_an_arbitrary_byte_span() {
+    let manager = Memoize::new(engage_self());
+    let source = Box::new(*b"runtime-sized-copy-span");
+    let address = address_of(&source[0]);
+    let access = manager
+        .source::<u8>(address)
+        .expect("the peephole should open")
+        .expect("the window should admit a byte");
+    let foreign = access.foreign().expect("the handle should validate");
+    let mut buffer = b"prefix-".to_vec();
+    let copy = foreign
+        .append(&mut buffer, source.len())
+        .expect("the runtime byte span should fit");
+
+    assert!(copy.complete());
+    assert_eq!(copy.bytes(), source.as_slice());
+    assert_eq!(buffer, b"prefix-runtime-sized-copy-span");
+}
