@@ -4,12 +4,12 @@
     reason = "imports are false-flagged by clippy where the fix would be nightly-only"
 )]
 
-use alloc::{rc::Rc, sync::Arc};
+use alloc::{rc::Rc, sync::Arc, vec::Vec};
 
 use core::{
     alloc::Layout,
     borrow::Borrow,
-    marker, mem,
+    fmt, marker, mem,
     num::NonZero,
     ops::Deref,
     ptr::{self, NonNull},
@@ -368,14 +368,6 @@ impl Drop for Window {
     }
 }
 
-/// A [`Faultable`]-family type located in a foreign address space.
-#[derive(Debug, Clone)]
-// NOTE(invariant): Offset is in-bounds and properly aligned for `F`.
-pub struct Foreign<F>(Peephole, Offset, marker::PhantomData<F>)
-where
-    // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
-    F: Unassociated;
-
 /// The implementation used by an armed foreign monitor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorMode {
@@ -453,8 +445,168 @@ where
     target_changed: bool,
 
     /// The marker that prevents transfer to another thread.
-    not_send: marker::PhantomData<Rc<()>>,
+    marker: marker::PhantomData<Rc<()>>,
 }
+
+impl<'foreign, F> ArmedMonitor<'foreign, F>
+where
+    F: Faultable,
+{
+    /// Determine the implementation used by this monitor.
+    #[inline]
+    pub fn mode(&self) -> MonitorMode {
+        let Self { target_backend, .. } = self;
+
+        MonitorMode::from(*target_backend)
+    }
+
+    /// Wait until the value changes or the finite deadline is reached.
+    ///
+    /// This consumes the armed token so its same-thread hardware state cannot be reused. Hardware
+    /// waits run in bounded slices. Every wake is followed by another protected arm and snapshot
+    /// sequence. Unsupported hardware switches to cooperative polling with the same deadline.
+    #[inline]
+    pub fn wait(self, target_deadline: Instant) -> MonitorWaitOutcome {
+        let Self {
+            target_handle,
+            target_expected,
+            mut target_backend,
+            target_changed,
+            marker: _,
+        } = self;
+
+        if target_changed {
+            return MonitorWaitOutcome::Changed;
+        }
+
+        loop {
+            let Some(target_observed) = Foreign::read(target_handle) else {
+                return MonitorWaitOutcome::Fault;
+            };
+
+            if !equal(target_expected, target_observed) {
+                return MonitorWaitOutcome::Changed;
+            }
+
+            if Instant::now() >= target_deadline {
+                return MonitorWaitOutcome::TimedOut;
+            }
+
+            let Some(target_backend_value) = target_backend else {
+                std::thread::yield_now();
+
+                continue;
+            };
+
+            let Foreign(target_peephole, ..) = target_handle;
+
+            let PeepholeContext {
+                peephole_subsystem, ..
+            } = **target_peephole;
+
+            // SAFETY
+            //
+            // * This token was armed on the current thread and cannot move to another thread.
+            //
+            // * Its borrow keeps the local downstream mapping alive through the wait.
+            match unsafe { fault::monitor_wait(peephole_subsystem, target_backend_value) } {
+                Ok(()) => {}
+                Err(fault::MonitorError::Unsupported) => {
+                    target_backend = None;
+
+                    continue;
+                }
+                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
+            }
+
+            let Some(target_address) = Foreign::address(target_handle) else {
+                return MonitorWaitOutcome::Fault;
+            };
+            let target_address =
+                ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
+
+            // SAFETY
+            //
+            // * The address is the in-bounds local downstream address.
+            //
+            // * This consuming wait remains on the thread that created the armed token.
+            //
+            // * The borrowed foreign handle keeps the mapping alive.
+            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
+                Ok(target_backend_value) => target_backend = Some(target_backend_value),
+                Err(fault::MonitorError::Unsupported) => target_backend = None,
+                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
+            }
+        }
+    }
+}
+
+/// Completion state of an arbitrary byte copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteCopyStatus {
+    /// The complete requested span was copied.
+    Complete,
+
+    /// The copy faulted after writing a prefix.
+    Faulted,
+}
+
+/// Result of copying an arbitrary byte span from a peephole window.
+#[derive(Debug)]
+// NOTE(invariant): `bytes` is exactly the initialized destination prefix written by the protected copy, and `state` records whether that prefix covers the complete requested span.
+pub struct ByteCopy<'a> {
+    /// The populated copy buffer.
+    copy_buffer: &'a mut [u8],
+
+    /// The final state of the byte copy.
+    copy_state: ByteCopyStatus,
+}
+
+impl ByteCopy<'_> {
+    /// Borrow the initialized bytes written by the protected copy.
+    #[inline]
+    #[must_use]
+    pub const fn bytes(&self) -> &[u8] {
+        let Self {
+            copy_buffer: bytes, ..
+        } = self;
+
+        bytes
+    }
+
+    /// Determine the number of bytes written before completion or fault.
+    #[inline]
+    #[must_use]
+    pub const fn copied(&self) -> usize {
+        ByteCopy::bytes(self).len()
+    }
+
+    /// Determine the completion state of the protected copy.
+    #[inline]
+    #[must_use]
+    pub const fn status(&self) -> ByteCopyStatus {
+        let &Self { copy_state, .. } = self;
+
+        copy_state
+    }
+
+    /// Determine whether the complete requested span was copied.
+    #[inline]
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        let &Self { copy_state, .. } = self;
+
+        matches!(copy_state, ByteCopyStatus::Complete)
+    }
+}
+
+/// A [`Faultable`]-family type located in a foreign address space.
+#[derive(Debug, Clone)]
+// NOTE(invariant): Offset is in-bounds and properly aligned for `F`.
+pub struct Foreign<F>(Peephole, Offset, marker::PhantomData<F>)
+where
+    // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
+    F: Unassociated;
 
 impl<F> Foreign<F>
 where
@@ -560,6 +712,16 @@ where
         <L as Coherent>::construct(self)
     }
 
+    /// Lift at most `N` times while seeking two equal sequential observations.
+    #[inline]
+    pub fn stabilize<L, const N: usize>(self) -> Result<L, StabilizeError<L::Error>>
+    where
+        L: Stabilize<N, Value = F>,
+        L::Context: Default,
+    {
+        <L as Stabilize<N>>::construct(self)
+    }
+
     /// Attempt to lift the [`Foreign`] type into the locally-managed value.
     #[inline]
     pub fn lift_with<L>(self, target_context: &L::Context) -> Result<L, L::Error>
@@ -576,6 +738,18 @@ where
         L: Coherent<Value = F>,
     {
         <L as Coherent>::construct_with(self, target_context)
+    }
+
+    /// Lift at most `N` times with context while seeking equal sequential observations.
+    #[inline]
+    pub fn stabilize_with<L, const N: usize>(
+        self,
+        target_context: &L::Context,
+    ) -> Result<L, StabilizeError<L::Error>>
+    where
+        L: Stabilize<N, Value = F>,
+    {
+        <L as Stabilize<N>>::construct_with(self, target_context)
     }
 
     /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
@@ -646,7 +820,7 @@ where
             // initialized in whole, and `F` is `Unassociated`, so the assembled bit-pattern is a
             // valid inhabitant of `F` regardless of any tearing.
             Ok(()) => Ok(unsafe { target_buffer.assume_init_mut() }),
-            Err(target_remaining) => Err(target_remaining),
+            Err(target_count) => Err(target_count),
         }
     }
 }
@@ -729,101 +903,133 @@ where
             target_expected,
             target_backend,
             target_changed,
-            not_send: marker::PhantomData,
+            marker: marker::PhantomData,
         })
     }
 }
 
-impl<'foreign, F> ArmedMonitor<'foreign, F>
-where
-    F: Faultable,
-{
-    /// Determine the implementation used by this monitor.
+impl Foreign<u8> {
+    /// Determine the nonzero byte capacity remaining from this foreign byte address.
     #[inline]
-    pub fn mode(&self) -> MonitorMode {
-        let Self { target_backend, .. } = self;
+    #[must_use]
+    pub fn leftover(&self) -> NonZero<usize> {
+        let Self(peephole, displacement, ..) = self;
+        let window_size = peephole.window().size().get();
 
-        MonitorMode::from(*target_backend)
+        window_size
+            .checked_sub(displacement.native())
+            .and_then(NonZero::new)
+            .expect("a Foreign<u8> always retains its starting byte inside the peephole")
     }
 
-    /// Wait until the value changes or the finite deadline is reached.
+    /// Copy an arbitrary byte span from this foreign address into caller-owned storage.
     ///
-    /// This consumes the armed token so its same-thread hardware state cannot be reused. Hardware
-    /// waits run in bounded slices. Every wake is followed by another protected arm and snapshot
-    /// sequence. Unsupported hardware switches to cooperative polling with the same deadline.
+    /// The requested span may extend beyond `F` but must fit within the current peephole window.
+    /// A fault returns the initialized prefix written before the faulting byte.
+    ///
+    /// # Failure
+    ///
+    /// This returns [`None`] when the requested byte span exceeds the current peephole window.
     #[inline]
-    pub fn wait(self, target_deadline: Instant) -> MonitorWaitOutcome {
-        let Self {
-            target_handle,
-            target_expected,
-            mut target_backend,
-            target_changed,
-            not_send: _,
-        } = self;
+    pub fn bytes<'a>(&self, target_buffer: &'a mut [mem::MaybeUninit<u8>]) -> Option<ByteCopy<'a>> {
+        let Self(target_peephole, target_displacement, ..) = self;
 
-        if target_changed {
-            return MonitorWaitOutcome::Changed;
+        let PeepholeContext {
+            peephole_subsystem,
+            peephole_window,
+            ..
+        } = &**target_peephole;
+        let target_count = target_buffer.len();
+
+        let target_available = Foreign::leftover(self);
+
+        let in_bounds = target_count <= target_available.get();
+
+        if in_bounds {
+            let target_source =
+                Window::address(peephole_window).checked_add(target_displacement.native())?;
+
+            let target_address = target_buffer.as_mut_ptr().cast::<u8>();
+
+            let target_source =
+                ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_source));
+
+            // SAFETY:
+            //
+            // * `Self` retains the peephole mapping and proves the starting displacement is
+            //   in-bounds. The runtime fit check proves the complete requested span remains in
+            //   that mapping.
+            //
+            // * The destination slice is caller-owned `MaybeUninit<u8>` storage valid and
+            //   writable for `target_count` bytes.
+            //
+            // * The local destination allocation and foreign peephole mapping cannot overlap.
+            let target_outcome = unsafe {
+                fault::copy(
+                    *peephole_subsystem,
+                    target_address,
+                    target_source,
+                    target_count,
+                )
+            };
+
+            let (target_copied, copy_state) = match target_outcome {
+                Ok(()) => (target_count, ByteCopyStatus::Complete),
+                Err(target_remaining) => (
+                    target_count.saturating_sub(target_remaining),
+                    ByteCopyStatus::Faulted,
+                ),
+            };
+
+            // SAFETY: The protected copy reports the untouched suffix length. The preceding
+            // `target_copied` bytes are therefore initialized. Saturation conservatively
+            // exposes an empty prefix if a malformed backend reports an excessive remainder.
+            let copy_buffer =
+                unsafe { core::slice::from_raw_parts_mut(target_address, target_copied) };
+
+            Some(ByteCopy {
+                copy_buffer,
+                copy_state,
+            })
+        } else {
+            None
         }
+    }
 
-        loop {
-            let Some(target_observed) = Foreign::read(target_handle) else {
-                return MonitorWaitOutcome::Fault;
-            };
+    /// Append a protected foreign byte copy directly into an owned byte vector.
+    ///
+    /// The vector grows only by the initialized prefix reported by [`Self::bytes`]. A fault keeps
+    /// that prefix in the vector and is reported through the returned [`ByteCopyStatus`].
+    ///
+    /// # Failure
+    ///
+    /// This returns [`None`] when `count` exceeds the bytes remaining in the current peephole.
+    #[inline]
+    pub fn append<'a>(&self, buffer: &'a mut Vec<u8>, count: usize) -> Option<ByteCopy<'a>> {
+        let start = buffer.len();
 
-            if !equal(target_expected, target_observed) {
-                return MonitorWaitOutcome::Changed;
-            }
+        buffer.reserve(count);
 
-            if Instant::now() >= target_deadline {
-                return MonitorWaitOutcome::TimedOut;
-            }
+        let (copied, state) = {
+            let spare = &mut buffer.spare_capacity_mut()[..count];
+            let copy = Foreign::bytes(self, spare)?;
+            let copied = copy.copied();
+            let state = copy.status();
 
-            let Some(target_backend_value) = target_backend else {
-                std::thread::yield_now();
+            (copied, state)
+        };
 
-                continue;
-            };
+        // SAFETY: `Foreign::bytes` exposes exactly the initialized destination prefix. The vector
+        // reserved `count` bytes before that copy, and `copied` cannot exceed `count`.
+        unsafe { buffer.set_len(start + copied) };
 
-            let Foreign(target_peephole, ..) = target_handle;
+        let copy_buffer = &mut buffer[start..];
+        let copy_state = state;
 
-            let PeepholeContext {
-                peephole_subsystem, ..
-            } = **target_peephole;
-
-            // SAFETY
-            //
-            // * This token was armed on the current thread and cannot move to another thread.
-            //
-            // * Its borrow keeps the local downstream mapping alive through the wait.
-            match unsafe { fault::monitor_wait(peephole_subsystem, target_backend_value) } {
-                Ok(()) => {}
-                Err(fault::MonitorError::Unsupported) => {
-                    target_backend = None;
-
-                    continue;
-                }
-                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
-            }
-
-            let Some(target_address) = Foreign::address(target_handle) else {
-                return MonitorWaitOutcome::Fault;
-            };
-            let target_address =
-                ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
-
-            // SAFETY
-            //
-            // * The address is the in-bounds local downstream address.
-            //
-            // * This consuming wait remains on the thread that created the armed token.
-            //
-            // * The borrowed foreign handle keeps the mapping alive.
-            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
-                Ok(target_backend_value) => target_backend = Some(target_backend_value),
-                Err(fault::MonitorError::Unsupported) => target_backend = None,
-                Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
-            }
-        }
+        Some(ByteCopy {
+            copy_buffer,
+            copy_state,
+        })
     }
 }
 
@@ -896,3 +1102,98 @@ pub trait Coherent: Lift + Eq {
 }
 
 impl<L> Coherent for L where L: Lift + Eq {}
+
+/// Failure while establishing bounded whole-structure stability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StabilizeError<E> {
+    /// The underlying [`Lift`] failed before stability could be established.
+    Lift(E),
+
+    /// The configured lift count was exhausted before two sequential values compared equal.
+    Unstable(usize),
+}
+
+impl<E> fmt::Display for StabilizeError<E>
+where
+    E: fmt::Display,
+{
+    #[inline]
+    fn fmt(&self, target_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lift(target_error) => write!(
+                target_formatter,
+                "lift failed while stabilizing: {target_error}"
+            ),
+            Self::Unstable(target_count) => write!(
+                target_formatter,
+                "foreign structure did not stabilize within the configured lift count ({target_count})"
+            ),
+        }
+    }
+}
+
+impl<E> core::error::Error for StabilizeError<E>
+where
+    E: core::error::Error + 'static,
+{
+    #[inline]
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Lift(target_error) => Some(target_error),
+            Self::Unstable(..) => None,
+        }
+    }
+}
+
+/// A [`Coherent`]-like lift contract with a finite observation count.
+///
+/// `N` counts complete lifts including the initial baseline observation. Stability requires two
+/// sequential lifted values to compare equal. Values of `N` below two therefore always yield
+/// [`StabilizeError::Unstable`] unless an earlier lift fails.
+pub trait Stabilize<const N: usize>: Lift + Eq {
+    /// Lift until two sequential observations compare equal or `N` lifts are exhausted.
+    #[inline]
+    fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, StabilizeError<Self::Error>>
+    where
+        Self::Context: Default,
+        Self: Sized,
+    {
+        <Self as Stabilize<N>>::construct_with(target_handle, &Self::Context::default())
+    }
+
+    /// Lift with context until stability is established or `N` lifts are exhausted.
+    #[inline]
+    fn construct_with(
+        target_handle: Foreign<Self::Value>,
+        target_context: &Self::Context,
+    ) -> Result<Self, StabilizeError<Self::Error>> {
+        let mut target_count = 0_usize;
+        let mut target_previous = None;
+
+        loop {
+            let target_within_bound = target_count < N;
+
+            match target_within_bound {
+                true => {}
+                false => break Err(StabilizeError::Unstable(target_count)),
+            }
+
+            let target_current =
+                <Self as Lift>::construct_with(target_handle.clone(), target_context)
+                    .map_err(StabilizeError::Lift)?;
+
+            target_count += 1;
+
+            let target_stable = target_previous
+                .as_ref()
+                .is_some_and(|target_previous| target_previous == &target_current);
+
+            match target_stable {
+                true => break Ok(target_current),
+                false => target_previous = Some(target_current),
+            }
+        }
+    }
+}
+
+impl<L, const N: usize> Stabilize<N> for L where L: Lift + Eq {}
