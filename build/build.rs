@@ -42,6 +42,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut bind_context =
         bindgen::Builder::default().parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
 
+    // Track canonical header targets as well as the include-tree symlinks. Cargo otherwise observes
+    // the symlink metadata and can miss edits made to Mirilla headers behind that directory link.
+    for target_value in WalkDir::new(&include).follow_links(true) {
+        let target_value = target_value?;
+
+        if target_value.file_type().is_file() {
+            println!(
+                "cargo:rerun-if-changed={}",
+                target_value.path().canonicalize()?.display()
+            );
+        }
+    }
+
     for target_value in WalkDir::new(include) {
         let target_value = target_value?;
 
