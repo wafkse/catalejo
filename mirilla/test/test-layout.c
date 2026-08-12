@@ -22,9 +22,8 @@
 
 #include "test-harness.h"
 
+#include <inttypes.h>
 #include <stdint.h>
-#include <sys/stat.h>
-#include <sys/sysmacros.h>
 
 /* Auxiliary vector type constants, as widened by the kernel ABI. */
 #define AT_NULL 0
@@ -46,6 +45,57 @@ static struct mirilla_outside_list make_outside_list(void *list_address, uint32_
     };
 
     return descriptor;
+}
+
+/* Numeric VMA provenance reported by `/proc/self/maps`. */
+struct proc_mapping {
+    virtual_address_t start_address, end_address;
+    uint64_t file_offset;
+    uint32_t device_major, device_minor;
+    uint64_t inode_number;
+};
+
+/* Find the `/proc/self/maps` entry containing one process address. */
+static int read_proc_mapping(virtual_address_t target_address, struct proc_mapping *mapping)
+{
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps) {
+        perror("fopen /proc/self/maps");
+        return -1;
+    }
+
+    char *line = NULL;
+    size_t line_capacity = 0;
+    int status = -1;
+
+    while (getline(&line, &line_capacity, maps) >= 0) {
+        struct proc_mapping candidate = { 0 };
+        int fields = sscanf(
+            line, "%" SCNx64 "-%" SCNx64 " %*4s %" SCNx64 " %" SCNx32 ":%" SCNx32 " %" SCNu64,
+            &candidate.start_address, &candidate.end_address, &candidate.file_offset,
+            &candidate.device_major, &candidate.device_minor, &candidate.inode_number);
+
+        if (fields == 6 && candidate.start_address <= target_address &&
+            target_address < candidate.end_address) {
+            *mapping = candidate;
+            status = 0;
+            break;
+        }
+    }
+
+    if (ferror(maps)) {
+        perror("read /proc/self/maps");
+        status = -1;
+    }
+
+    free(line);
+
+    if (fclose(maps) != 0) {
+        perror("fclose /proc/self/maps");
+        return -1;
+    }
+
+    return status;
 }
 
 /*
@@ -191,10 +241,12 @@ static int test_layout_full_population(void)
 
     ASSERT(found_region, "test region was not found in the layout");
 
-    struct stat executable_stat = { 0 };
-    ASSERT(stat("/proc/self/exe", &executable_stat) == 0, "failed to stat test executable");
-
     virtual_address_t code_address = (virtual_address_t)&test_layout_full_population;
+    struct proc_mapping executable_mapping = { 0 };
+    ASSERT(read_proc_mapping(code_address, &executable_mapping) == 0, "failed to find test "
+                                                                      "executable mapping in "
+                                                                      "/proc/self/maps");
+
     int found_executable = 0;
 
     for (uint32_t i = 0; i < layout_outcome.total_count; i++) {
@@ -202,27 +254,35 @@ static int test_layout_full_population(void)
             code_address < layout_buffer[i].end_address) {
             ASSERT((layout_buffer[i].attribute_list & MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE) != 0,
                    "test executable mapping lacks file backing");
-            ASSERT(layout_buffer[i].device_major == major(executable_stat.st_dev), "test "
+            ASSERT(layout_buffer[i].start_address == executable_mapping.start_address,
+                   "test executable mapping has the wrong start address");
+            ASSERT(layout_buffer[i].end_address == executable_mapping.end_address, "test "
                                                                                    "executable "
                                                                                    "mapping has "
-                                                                                   "the wrong "
-                                                                                   "device major");
-            ASSERT(layout_buffer[i].device_minor == minor(executable_stat.st_dev), "test "
+                                                                                   "the wrong end "
+                                                                                   "address");
+            ASSERT(layout_buffer[i].file_offset == executable_mapping.file_offset, "test "
                                                                                    "executable "
                                                                                    "mapping has "
-                                                                                   "the wrong "
-                                                                                   "device minor");
-            ASSERT(layout_buffer[i].inode_number == (uint64_t)executable_stat.st_ino, "test "
-                                                                                      "executable "
-                                                                                      "mapping has "
-                                                                                      "the wrong "
-                                                                                      "inode");
-            ASSERT((layout_buffer[i].file_offset & (sysconf(_SC_PAGESIZE) - 1)) == 0, "test "
-                                                                                      "executable "
-                                                                                      "mapping "
-                                                                                      "file offset "
-                                                                                      "is not page "
-                                                                                      "aligned");
+                                                                                   "the wrong file "
+                                                                                   "offset");
+            ASSERT(layout_buffer[i].device_major == executable_mapping.device_major, "test "
+                                                                                     "executable "
+                                                                                     "mapping has "
+                                                                                     "the wrong "
+                                                                                     "device "
+                                                                                     "major");
+            ASSERT(layout_buffer[i].device_minor == executable_mapping.device_minor, "test "
+                                                                                     "executable "
+                                                                                     "mapping has "
+                                                                                     "the wrong "
+                                                                                     "device "
+                                                                                     "minor");
+            ASSERT(layout_buffer[i].inode_number == executable_mapping.inode_number, "test "
+                                                                                     "executable "
+                                                                                     "mapping has "
+                                                                                     "the wrong "
+                                                                                     "inode");
 
             found_executable = 1;
             break;
