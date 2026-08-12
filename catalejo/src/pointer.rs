@@ -27,7 +27,7 @@ impl detail::Sealed for u64 {}
 /// A pointee-tagged generic pointer presumed to reside in foreign memory.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct Pointer<T, A>(A, marker::PhantomData<T>)
+pub struct Pointer<T, A>(A, marker::PhantomData<fn() -> T>)
 where
     T: Immortal,
     A: Address;
