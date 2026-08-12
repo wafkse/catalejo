@@ -102,6 +102,7 @@ dependencies = [
  "dashmap",
  "libc",
  "nix",
+ "num-traits",
 ]
 
 [[package]]

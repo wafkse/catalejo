@@ -22,6 +22,8 @@ pub mod peephole;
 
 pub mod address;
 
+pub mod pointer;
+
 pub mod manage;
 
 pub mod offset;
@@ -33,12 +35,13 @@ pub mod prelude {
     //! The prelude of the `catalejo` crate.
 
     pub use crate::{
-        address::{Pointer32, Pointer64, ViAddr, ViRange},
+        address::{ViAddr, ViRange},
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
         peephole::{
             ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole, Stabilize,
             StabilizeError, Subsystem, Window,
         },
+        pointer::{Pointer, Pointer32, Pointer64},
         target::Target,
     };
 
