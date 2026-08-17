@@ -228,7 +228,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     unsigned long notifier_seq;
 
 #define MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN                                \
-    MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGBUS,                                \
+    MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGBUS,                                \
                              "page fault: peephole is dead: 0x%lx address: " \
                              "0x%lx",                                        \
                              relative_address, target_address);
@@ -271,7 +271,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
                                            /*gup_flags=*/0, &target_page, NULL);
     } else {
         if (!mmget_not_zero(peephole_context->address_space))
-            MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
+            MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
                                                       "in teardown");
 
         if (!mmap_read_trylock(peephole_context->address_space)) {
@@ -282,7 +282,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
             else
                 mmap_read_unlock(vma->vm_mm);
 
-            MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
+            MIRILLA_LOG_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
                                                      "space lock is unavailable");
         }
 
@@ -314,7 +314,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
                 else
                     mmap_read_unlock(vma->vm_mm);
 
-                MIRILLA_ERROR_AND_RETURN(VM_FAULT_RETRY,
+                MIRILLA_LOG_AND_RETURN(VM_FAULT_RETRY,
                                          "page fault: page at address 0x%lx is "
                                          "busy",
                                          target_address);
@@ -325,7 +325,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 			 */
             fallthrough;
         default:
-            MIRILLA_ERROR_AND_RETURN(VM_FAULT_SIGSEGV,
+            MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGSEGV,
                                      "page fault: failed to access page at address "
                                      "0x%lx",
                                      target_address);

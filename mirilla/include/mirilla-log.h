@@ -47,6 +47,17 @@
 #endif
 
 /*
+ * Log a formatted string and return the appropriate `ERRNO`.
+ */
+#define MIRILLA_LOG_AND_RETURN(retval, fmt, ...) \
+    do {                                         \
+        MIRILLA_LOG(fmt, ##__VA_ARGS__);         \
+                                                 \
+        return retval;                           \
+    } while (0);
+
+
+/*
  * Log a formatted error string and return the appropriate `ERRNO`.
  */
 #define MIRILLA_ERROR_AND_RETURN(retval, fmt, ...) \
