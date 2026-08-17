@@ -38,8 +38,8 @@ pub mod prelude {
         address::{ViAddr, ViRange},
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
         peephole::{
-            ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole, Stabilize,
-            StabilizeError, Subsystem, Window,
+            ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole,
+            PrimitiveLiftError, Stabilize, StabilizeError, Subsystem, Window,
         },
         pointer::{Pointer, Pointer32, Pointer64},
         target::Target,

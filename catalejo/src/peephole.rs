@@ -1065,6 +1065,40 @@ pub trait Lift: Immortal {
     }
 }
 
+/// Failure while lifting one fault-safe primitive directly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrimitiveLiftError;
+
+impl fmt::Display for PrimitiveLiftError {
+    #[inline]
+    fn fmt(&self, target_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self = self;
+
+        target_formatter.write_str("foreign primitive read faulted")
+    }
+}
+
+impl core::error::Error for PrimitiveLiftError {}
+
+impl<F> Lift for F
+where
+    F: Faultable,
+{
+    type Value = Self;
+
+    type Context = ();
+
+    type Error = PrimitiveLiftError;
+
+    #[inline]
+    fn construct_with(
+        target_handle: Foreign<Self::Value>,
+        _target_context: &Self::Context,
+    ) -> Result<Self, Self::Error> {
+        target_handle.read().ok_or(PrimitiveLiftError)
+    }
+}
+
 /// A [`Lift`] that can establish whole-structure coherence through repeated reads.
 ///
 /// Two sequential lifted values must compare as equal before the newer value is returned.
