@@ -1034,7 +1034,7 @@ mirilla_map_handle_command_address_space_layout(struct mirilla_device_context *d
             uint32_t device_major = 0, device_minor = 0;
 
             if (area->vm_file) {
-                struct inode *backing_inode = file_inode(area->vm_file);
+                const struct inode *backing_inode = file_user_inode(area->vm_file);
 
                 attribute_list |= MIRILLA_MAP_LAYOUT_ATTRIBUTE_FILE;
                 file_offset = (uint64_t)area->vm_pgoff << PAGE_SHIFT;
