@@ -15,7 +15,7 @@ stealth-mode = []
 
 [dependencies]
 catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
-tokel = "0.2.4"
+tokel = "0.2.5"
 
 [dev-dependencies]
 libc = "0.2.186"

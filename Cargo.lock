@@ -769,9 +769,9 @@ dependencies = [
 
 [[package]]
 name = "tokel"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f395a3c2eb00066caf6a1b31587723bb06a6e56c72d394fafb283dd668b097c3"
+checksum = "0a8cfbeb901dacf9b2d2e1005d01fd5e5dd8c598bec0aab0f572d6e546229f96"
 dependencies = [
  "tokel-derive",
 ]
