@@ -227,11 +227,11 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 	 */
     unsigned long notifier_seq;
 
-#define MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN                                \
+#define MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN                              \
     MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGBUS,                                \
-                             "page fault: peephole is dead: 0x%lx address: " \
-                             "0x%lx",                                        \
-                             relative_address, target_address);
+                           "page fault: peephole is dead: 0x%lx address: " \
+                           "0x%lx",                                        \
+                           relative_address, target_address);
     if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
         MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
 
@@ -272,7 +272,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     } else {
         if (!mmget_not_zero(peephole_context->address_space))
             MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
-                                                      "in teardown");
+                                                    "in teardown");
 
         if (!mmap_read_trylock(peephole_context->address_space)) {
             mmput(peephole_context->address_space);
@@ -283,7 +283,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
                 mmap_read_unlock(vma->vm_mm);
 
             MIRILLA_LOG_AND_RETURN(VM_FAULT_RETRY, "page fault: peephole foreign address "
-                                                     "space lock is unavailable");
+                                                   "space lock is unavailable");
         }
 
         /* NOTE(lifetime): Re-check liveness. */
@@ -315,9 +315,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
                     mmap_read_unlock(vma->vm_mm);
 
                 MIRILLA_LOG_AND_RETURN(VM_FAULT_RETRY,
-                                         "page fault: page at address 0x%lx is "
-                                         "busy",
-                                         target_address);
+                                       "page fault: page at address 0x%lx is "
+                                       "busy",
+                                       target_address);
             }
             /*
 			 * NOTE(lock): Lock still held after `-EBUSY`, so fall through to
@@ -326,9 +326,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
             fallthrough;
         default:
             MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGSEGV,
-                                     "page fault: failed to access page at address "
-                                     "0x%lx",
-                                     target_address);
+                                   "page fault: failed to access page at address "
+                                   "0x%lx",
+                                   target_address);
         }
 
     mutex_lock(&peephole_context->install_lock);

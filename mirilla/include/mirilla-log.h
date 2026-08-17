@@ -56,7 +56,6 @@
         return retval;                           \
     } while (0);
 
-
 /*
  * Log a formatted error string and return the appropriate `ERRNO`.
  */
