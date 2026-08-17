@@ -120,32 +120,6 @@ pub type Pointer32<T> = Pointer<T, u32>;
 /// A type-level alias to the respective 64-bit pointer type.
 pub type Pointer64<T> = Pointer<T, u64>;
 
-/// Common capability of typed foreign pointers with a fixed encoded address width.
-///
-/// Implementations preserve their pointee type in the concrete pointer identity. The associated
-/// address type remains the encoded foreign width until a caller explicitly converts it into a
-/// process-wide address representation.
-pub trait ForeignPointer: Unassociated + Copy + Eq + fmt::Debug {
-    /// Encoded foreign address width carried by this pointer family.
-    type Address: Copy + Eq + Ord + fmt::Debug + Into<u64>;
-
-    /// Construct a typed foreign pointer from one encoded target address.
-    #[must_use]
-    fn new(target_address: Self::Address) -> Self;
-
-    /// Return the encoded foreign address without widening it.
-    #[must_use]
-    fn address(self) -> Self::Address;
-
-    /// Determine whether the encoded foreign address is null.
-    #[must_use]
-    fn null(self) -> bool;
-
-    /// Determine whether the encoded foreign address is non-null.
-    #[must_use]
-    fn nonnull(self) -> bool;
-}
-
 #[cfg(test)]
 mod test {
     use core::{any::TypeId, mem};
