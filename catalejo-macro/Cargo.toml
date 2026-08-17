@@ -2,6 +2,9 @@
 name = "catalejo-macro"
 version = "0.1.0"
 edition = "2024"
+description = "Derive macros for the Catalejo process-memory observation library."
+repository = "https://github.com/wafkse/catalejo"
+license = "GPL-3.0-or-later"
 
 [lib]
 proc-macro = true

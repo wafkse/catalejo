@@ -2,6 +2,8 @@
 name = "catalejo"
 version = "0.1.0"
 edition = "2024"
+description = "Userspace library for observing process memory through the Mirilla kernel module."
+repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
 [features]

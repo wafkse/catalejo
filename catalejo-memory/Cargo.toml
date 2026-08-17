@@ -2,6 +2,8 @@
 name = "catalejo-memory"
 version = "0.1.0"
 edition = "2024"
+description = "Memory coherence and type-safety abstractions for unsynchronized shared-memory observation."
+repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
 [dependencies]

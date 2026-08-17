@@ -2,8 +2,10 @@
 name = "catalejo-sys"
 version = "0.1.0"
 edition = "2024"
+description = "System-level userspace bindings to the Mirilla kernel module."
+repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
-build = "../build/build.rs"
+build = "build.rs"
 
 [features]
 default = ["default-device-path"]

@@ -2,9 +2,11 @@
 name = "catalejo-fault"
 version = "0.1.0"
 edition = "2024"
+description = "Fault-tolerant memory access primitives for Catalejo."
+repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
-build = "../build/build.rs"
+build = "build.rs"
 
 [lib]
 
