@@ -34,3 +34,6 @@ test/test-layout
 
 # Binary Ninja Databases
 *.bndb
+
+# Misc. helper scripts
+*.helper.sh
