@@ -9,7 +9,7 @@ use alloc::{rc::Rc, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     borrow::Borrow,
-    fmt, marker, mem,
+    marker, mem,
     num::NonZero,
     ops::Deref,
     ptr::{self, NonNull},
@@ -24,6 +24,7 @@ use std::{
 
 use bitflags::bitflags;
 use catalejo_memory::{behavior::Immortal, prelude::Unassociated};
+use fack::prelude::Error;
 
 use catalejo_fault::{
     behavior::{Faultable, equal},
@@ -1066,19 +1067,9 @@ pub trait Lift: Immortal {
 }
 
 /// Failure while lifting one fault-safe primitive directly.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("foreign primitive read faulted")]
 pub struct PrimitiveLiftError;
-
-impl fmt::Display for PrimitiveLiftError {
-    #[inline]
-    fn fmt(&self, target_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self = self;
-
-        target_formatter.write_str("foreign primitive read faulted")
-    }
-}
-
-impl core::error::Error for PrimitiveLiftError {}
 
 impl<F> Lift for F
 where
@@ -1138,45 +1129,16 @@ pub trait Coherent: Lift + Eq {
 impl<L> Coherent for L where L: Lift + Eq {}
 
 /// Failure while establishing bounded whole-structure stability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 pub enum StabilizeError<E> {
     /// The underlying [`Lift`] failed before stability could be established.
+    #[error("lift failed while stabilizing: {0}")]
+    #[error(source(0))]
     Lift(E),
 
     /// The configured lift count was exhausted before two sequential values compared equal.
+    #[error("foreign structure did not stabilize within the configured lift count ({0})")]
     Unstable(usize),
-}
-
-impl<E> fmt::Display for StabilizeError<E>
-where
-    E: fmt::Display,
-{
-    #[inline]
-    fn fmt(&self, target_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Lift(target_error) => write!(
-                target_formatter,
-                "lift failed while stabilizing: {target_error}"
-            ),
-            Self::Unstable(target_count) => write!(
-                target_formatter,
-                "foreign structure did not stabilize within the configured lift count ({target_count})"
-            ),
-        }
-    }
-}
-
-impl<E> core::error::Error for StabilizeError<E>
-where
-    E: core::error::Error + 'static,
-{
-    #[inline]
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Lift(target_error) => Some(target_error),
-            Self::Unstable(..) => None,
-        }
-    }
 }
 
 /// A [`Coherent`]-like lift contract with a finite observation count.
