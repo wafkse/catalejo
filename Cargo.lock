@@ -91,7 +91,7 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "catalejo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags",
  "catalejo-fault",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "catalejo-fault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bindgen",
  "catalejo-memory",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "catalejo-macro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -128,11 +128,11 @@ dependencies = [
 
 [[package]]
 name = "catalejo-memory"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "catalejo-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bindgen",
  "cc",
