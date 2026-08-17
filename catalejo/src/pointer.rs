@@ -1,6 +1,6 @@
 //! Foreign pointer representation.
 
-use std::{fmt, marker};
+use core::{fmt, marker};
 
 use catalejo_fault::behavior::Faultable;
 use catalejo_memory::{
@@ -91,9 +91,7 @@ where
     A: Address,
 {
     fn clone(&self) -> Self {
-        let &Self(target_address, ..) = self;
-
-        Self(target_address, marker::PhantomData)
+        *self
     }
 }
 
