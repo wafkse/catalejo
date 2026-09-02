@@ -27,9 +27,9 @@ impl ViAddr {
 
 impl fmt::Debug for ViAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self(target_value) = self;
+        let &Self(target_value) = self;
 
-        write!(f, "#{target_value:p}")
+        write!(f, "#{target_value:#x}")
     }
 }
 

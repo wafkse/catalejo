@@ -15,8 +15,13 @@ mod detail {
     pub trait Sealed {}
 }
 
+/// A trait that describes a type that can be formatted in hex format.
+pub trait Formatted: fmt::LowerHex + fmt::UpperHex + detail::Sealed {}
+
+impl<T> Formatted for T where T: fmt::LowerHex + fmt::UpperHex + detail::Sealed + ?Sized {}
+
 /// A marker trait for address-representing faultable primitives.
-pub trait Address: Num + Faultable + detail::Sealed {}
+pub trait Address: Num + Faultable + Formatted + detail::Sealed {}
 
 impl Address for u32 {}
 impl Address for u64 {}
@@ -108,9 +113,9 @@ where
     A: Address,
 {
     fn fmt(&self, target_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self(target_address, ..) = self;
+        let &Self(target_address, ..) = self;
 
-        write!(target_formatter, "#{target_address:p}")
+        write!(target_formatter, "#{target_address:#x}")
     }
 }
 
