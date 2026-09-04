@@ -36,6 +36,7 @@ pub mod prelude {
 
     pub use crate::{
         address::{ViAddr, ViRange},
+        manage::{Memoize, Rebased},
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
         peephole::{
             ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole,
