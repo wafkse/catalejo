@@ -1,10 +1,10 @@
 /*
  * Mapping Invariant Test Suite for the Mirilla Module
  *
- * The peephole view enforces a read-only, private, whole-length mapping
- * discipline. These negative cases pin down every rejection:
- * - The module's mmap handler refuses shared, partial-length and offset
- *   (`EINVAL`) mappings.
+ * The peephole mmap declares its access intent while remaining private. Writable mappings resolve
+ * the target with `FOLL_WRITE`; `pfn_mkwrite` then upgrades the mixed-PFN PTE instead of allowing
+ * observer-side COW. Every view remains whole-length, non-executable, and fixed in protection after
+ * creation. Shared, partial-length, and non-zero-offset mappings remain invalid.
  * - The VMA operations refuse relocation and reprotection (`EPERM`).
  * - Core mm backs the rest before the module hook is even consulted:
  *   `SB_I_NOEXEC` on the anon-inode mount blocks executable mappings
@@ -104,6 +104,11 @@ static int test_reject_prot_exec(void)
 static int test_reject_map_shared(void)
 {
     return expect_mmap_rejection(PROT_READ, MAP_SHARED, TEST_REGION_SIZE, 0, EINVAL);
+}
+
+static int test_reject_writable_map_shared(void)
+{
+    return expect_mmap_rejection(PROT_READ | PROT_WRITE, MAP_SHARED, TEST_REGION_SIZE, 0, EINVAL);
 }
 
 /* NOTE(invariant): Must map the entire peephole, no partial mappings. */
@@ -233,6 +238,78 @@ static int test_reject_mprotect_none(void)
     return rejection_status;
 }
 
+/*
+ * A writable private peephole view bypasses observer-side COW and mutates the target PFN directly.
+ * The target value is restored so the shared fixture remains reusable.
+ */
+static int test_explicit_writable_mapping_updates_target(void)
+{
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+
+    ASSERT(MIRILLA_COMMAND_IS_OK(mirilla_peephole(
+               fixture.mirilla_fd, fixture.target_id, (virtual_address_t)fixture.region,
+               (virtual_address_t)fixture.region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)),
+           "failed to create peephole");
+
+    void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE, peephole_fd, 0);
+    ASSERT(view != MAP_FAILED, "failed to mmap writable peephole view");
+
+    uint32_t replacement = MAGIC_VALUE_5;
+    ASSERT(catalejo_write_u32((uint32_t *)view, &replacement) == CATALEJO_OUTCOME_SUCCESS,
+           "protected write through writable peephole failed");
+    ASSERT(((uint32_t *)fixture.region)[0] == replacement, "writable peephole did not update "
+                                                           "target memory");
+
+    ((uint32_t *)fixture.region)[0] = MAGIC_VALUE_1;
+
+    munmap(view, TEST_REGION_SIZE);
+    close(peephole_fd);
+    return 0;
+}
+
+/*
+ * Writable mmap intent is not debugger-style forced write. If the target VMA no longer permits
+ * writes, a refault is refused even though the observer view itself is writable.
+ */
+static int test_writable_mapping_respects_target_permissions(void)
+{
+    mirilla_map_peephole_id_t peephole_id = 0;
+    int peephole_fd = -1;
+    void *view = MAP_FAILED;
+    int status = -1;
+
+    if (!MIRILLA_COMMAND_IS_OK(mirilla_peephole(
+            fixture.mirilla_fd, fixture.target_id, (virtual_address_t)fixture.region,
+            (virtual_address_t)fixture.region + TEST_REGION_SIZE, &peephole_id, &peephole_fd)))
+        goto out;
+
+    view = mmap(NULL, TEST_REGION_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE, peephole_fd, 0);
+    if (view == MAP_FAILED)
+        goto out;
+
+    if (mprotect(fixture.region, TEST_REGION_SIZE, PROT_READ) != 0)
+        goto out;
+
+    uint32_t replacement = MAGIC_VALUE_4;
+    if (catalejo_write_u32((uint32_t *)view, &replacement) != CATALEJO_OUTCOME_ERROR) {
+        fprintf(stderr, "write unexpectedly succeeded against read-only target VMA\n");
+        goto restore;
+    }
+
+    status = 0;
+
+restore:
+    if (mprotect(fixture.region, TEST_REGION_SIZE, PROT_READ | PROT_WRITE) != 0)
+        status = -1;
+out:
+    if (view != MAP_FAILED)
+        munmap(view, TEST_REGION_SIZE);
+    if (peephole_fd >= 0)
+        close(peephole_fd);
+    return status;
+}
+
 /* A well-formed mapping must still succeed after all the rejections. */
 static int test_wellformed_mapping_still_works(void)
 {
@@ -262,12 +339,16 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 
     RUN_TEST("Reject PROT_EXEC View", test_reject_prot_exec);
     RUN_TEST("Reject MAP_SHARED View", test_reject_map_shared);
+    RUN_TEST("Reject Writable MAP_SHARED View", test_reject_writable_map_shared);
     RUN_TEST("Reject Partial-Length View", test_reject_partial_length);
     RUN_TEST("Reject Non-Zero Offset View", test_reject_nonzero_offset);
     RUN_TEST("Reject mremap Growth", test_reject_mremap_grow);
     RUN_TEST("Reject mremap Move", test_reject_mremap_move);
     RUN_TEST("Reject mprotect to Writable", test_reject_mprotect_write);
     RUN_TEST("Reject mprotect to PROT_NONE", test_reject_mprotect_none);
+    RUN_TEST("Writable Private View Updates Target", test_explicit_writable_mapping_updates_target);
+    RUN_TEST("Writable View Respects Target Permissions",
+             test_writable_mapping_respects_target_permissions);
     RUN_TEST("Well-Formed View Still Works", test_wellformed_mapping_still_works);
 
     fixture_destruct();

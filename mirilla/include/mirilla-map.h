@@ -52,6 +52,7 @@ static const struct mmu_interval_notifier_ops mirilla_peephole_mmu_interval_noti
  * Required forward-declarations for VMA operations.
  */
 extern vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf);
+extern vm_fault_t mirilla_map_peephole_vm_pfn_mkwrite(struct vm_fault *vmf);
 extern void mirilla_map_peephole_vm_open(struct vm_area_struct *vma);
 extern void mirilla_map_peephole_vm_close(struct vm_area_struct *vma);
 extern int mirilla_map_peephole_vm_mremap(struct vm_area_struct *vma);
@@ -63,6 +64,7 @@ extern int mirilla_map_peephole_vm_mprotect(struct vm_area_struct *vma, unsigned
  */
 static const struct vm_operations_struct mirilla_map_peephole_vm_operations = {
     .fault = mirilla_map_peephole_vm_fault,
+    .pfn_mkwrite = mirilla_map_peephole_vm_pfn_mkwrite,
     .open = mirilla_map_peephole_vm_open,
     .close = mirilla_map_peephole_vm_close,
     .mremap = mirilla_map_peephole_vm_mremap,
@@ -514,16 +516,16 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
                                                     mirilla_command_argument_t argument);
 
 /*
- * NOTE(security): The minimum capability set an engagement author must hold.
- * `CAP_SYS_PTRACE` is appropriate because it already grants the same access
- * scope, namely unfettered `process_vm_{read,write}v` on arbitrary processes.
+ * NOTE(security): Engagement is the authorization boundary. A foreign engagement requires this
+ * capability; after success, possession of the same open file description is the capability.
+ * Delegating that descriptor (for example with SCM_RIGHTS) intentionally delegates its targets.
  */
 #define MIRILLA_MAP_ENGAGE_CAPABILITIES (CAP_SYS_PTRACE)
 
 /*
- * NOTE(security): Disable engagement capability checking wholesale.
+ * NOTE(security): Disable engagement-time capability checking wholesale.
  *
- * This is discouraged for use, and is intended for debugging purposes only.
+ * This is discouraged for use and intended for debugging only.
  */
 #define MIRILLA_MAP_ENGAGE_IGNORE_CAPABILITIES (0)
 

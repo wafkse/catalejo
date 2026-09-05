@@ -219,6 +219,10 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     int page_count = 0;
     struct page *target_page = NULL;
 
+    unsigned long is_writable = vma->vm_flags & VM_WRITE;
+
+    unsigned int gup_flags = is_writable ? FOLL_WRITE : 0;
+
     int mmap_read_locked = true;
 
     /*
@@ -267,8 +271,8 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
         if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
             MIRILLA_VMFAULT_DEAD_ERROR_AND_RETURN;
 
-        page_count = get_user_pages_remote(current->mm, target_address, 1,
-                                           /*gup_flags=*/0, &target_page, NULL);
+        page_count =
+            get_user_pages_remote(current->mm, target_address, 1, gup_flags, &target_page, NULL);
     } else {
         if (!mmget_not_zero(peephole_context->address_space))
             MIRILLA_LOG_AND_RETURN(VM_FAULT_SIGBUS, "page fault: peephole address space is "
@@ -296,7 +300,7 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
         }
 
         page_count = get_user_pages_remote(peephole_context->address_space, target_address, 1,
-                                           /*gup_flags=*/0, &target_page, &mmap_read_locked);
+                                           gup_flags, &target_page, &mmap_read_locked);
 
         if (mmap_read_locked)
             mmap_read_unlock(peephole_context->address_space);
@@ -351,6 +355,9 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 
         unsigned int reclaim_flags;
 
+        if (gup_flags & FOLL_WRITE)
+            set_page_dirty_lock(target_page);
+
         reclaim_flags = memalloc_noreclaim_save();
         insert_outcome = vmf_insert_mixed(vma, vmf->address, page_to_pfn(target_page));
         memalloc_noreclaim_restore(reclaim_flags);
@@ -375,19 +382,22 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
  * would not want it.
  *
  * This deliberately duplicates the pin-and-install of the demand-fault path
- * rather than sharing it. The fault path resolves one racing granule under the
- * interval-notifier sequence, whereas this pass runs under the mapper's held
- * `mmap_lock` and pins `MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE` granules
- * per remote pin for throughput. There is no notifier sequence here. The install
- * is advisory, so a granule that cannot be pinned now, or that a racing
- * invalidation zaps back out, is simply left for the demand-fault path rather
- * than failing the `mmap`. Coherence still rides on the invalidate callback,
- * which zaps installed PTEs through the peephole file mapping.
+ * rather than sharing it. The fault path resolves one racing granule, whereas
+ * this pass pins `MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE` granules per
+ * remote pin for throughput. Each batch still participates in the interval
+ * notifier protocol: it samples the sequence before pinning, then holds the
+ * install lock across the retry check and PFN installs. A collided batch is
+ * dropped and left for the demand-fault path rather than risking a stale alias.
+ * Population remains advisory; failure to pin a batch never fails the `mmap`.
  */
 static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *peephole_context,
                                           struct vm_area_struct *vma)
 {
     struct mm_struct *address_space = peephole_context->address_space;
+
+    /* Writable projections resolve target write permission/COW on demand. */
+    if (vma->vm_flags & VM_WRITE)
+        return;
 
     unsigned long page_span = (peephole_context->end_address - peephole_context->start_address) >>
                               PAGE_SHIFT;
@@ -427,6 +437,8 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
         if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
             break;
 
+        unsigned long notifier_seq = mmu_interval_read_begin(&peephole_context->interval_subscribe);
+
         if (self_observer) {
             pinned_count = get_user_pages_remote(current->mm, target_address, batch,
                                                  /*gup_flags=*/0, page_list, NULL);
@@ -453,6 +465,22 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
         if (pinned_count <= 0)
             break;
 
+        mutex_lock(&peephole_context->install_lock);
+
+        /*
+		 * NOTE(coherence): Match the demand-fault hand-off. If the target
+		 * invalidated this range while the batch was being pinned, do not install
+		 * any of those now-stale PFNs after the invalidate callback has already
+		 * performed its zap.
+		 */
+        if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
+            for (page_index = 0; page_index < pinned_count; page_index++)
+                put_page(page_list[page_index]);
+
+            mutex_unlock(&peephole_context->install_lock);
+            break;
+        }
+
         for (page_index = 0; page_index < pinned_count; page_index++) {
             unsigned long install_address =
                 vma->vm_start + ((populated_count + page_index) << PAGE_SHIFT);
@@ -465,11 +493,65 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
             put_page(page_list[page_index]);
         }
 
+        mutex_unlock(&peephole_context->install_lock);
+
         populated_count += pinned_count;
     }
 
     if (!self_observer)
         mmput(address_space);
+}
+
+struct mirilla_map_peephole_write_pte {
+    struct vm_area_struct *vma;
+    unsigned long pfn;
+};
+
+static int mirilla_map_peephole_pte_mkwrite(pte_t *pte, unsigned long address,
+                                            void *outside_context)
+{
+    struct mirilla_map_peephole_write_pte *write_context = outside_context;
+
+    pte_t target_pte = ptep_get(pte);
+
+    if (!pte_present(target_pte) || pte_pfn(target_pte) != write_context->pfn)
+        return -EAGAIN;
+
+    target_pte = pte_mkyoung(pte_mkdirty(target_pte));
+    target_pte = pte_mkwrite_novma(target_pte);
+
+    set_pte_at(write_context->vma->vm_mm, address, pte, target_pte);
+    update_mmu_cache(write_context->vma, address, pte);
+
+    return 0;
+}
+
+/*
+ * Break observer-side COW for a writable private mixed-PFN mapping. `VM_MAYSHARE` routes the
+ * write-protect fault here while `VM_SHARED` remains clear. Upgrade only the PFN that faulted and
+ * return `VM_FAULT_NOPAGE` so core does not enter its shared-VMA mkwrite finisher.
+ */
+vm_fault_t mirilla_map_peephole_vm_pfn_mkwrite(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct mirilla_map_peephole_context *peephole_context = vma->vm_private_data;
+    struct mirilla_map_peephole_write_pte write_pte = {
+        .vma = vma,
+        .pfn = pte_pfn(vmf->orig_pte),
+    };
+
+    if (!(vma->vm_flags & VM_WRITE))
+        return VM_FAULT_SIGBUS;
+
+    if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
+        return VM_FAULT_SIGBUS;
+
+    mutex_lock(&peephole_context->install_lock);
+    apply_to_page_range(vma->vm_mm, vmf->address, PAGE_SIZE, mirilla_map_peephole_pte_mkwrite,
+                        &write_pte);
+    mutex_unlock(&peephole_context->install_lock);
+
+    return VM_FAULT_NOPAGE;
 }
 
 void mirilla_map_peephole_vm_open(struct vm_area_struct *vma)
@@ -522,9 +604,17 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
     unsigned long peephole_length = peephole_context->end_address - peephole_context->start_address;
     unsigned long vma_length = vma->vm_end - vma->vm_start;
 
-    /* NOTE(invariant): Disallow executable and shared mappings. */
+    bool is_writable = vma->vm_flags & VM_WRITE;
+
+    /* NOTE(invariant): Executable observer mappings are never permitted. */
     if (vma->vm_flags & VM_EXEC)
         return -EACCES;
+
+    /*
+     * NOTE(permission): The mmap itself declares the access intent. Peepholes remain user-visible
+     * private mappings in both modes; shared mappings are never accepted. Writable private views
+     * escape ordinary COW through the `pfn_mkwrite` path installed below.
+     */
     if (vma->vm_flags & VM_SHARED)
         return -EINVAL;
 
@@ -555,8 +645,17 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
 
     vm_flags_set(vma, VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_IO);
 
-    /* NOTE(invariant): Clear writable/executable mapping capability. */
-    vm_flags_clear(vma, VM_MAYSHARE | VM_MAYWRITE | VM_MAYEXEC);
+    /*
+     * NOTE(invariant): The user mapping stays private. For a writable `MAP_PRIVATE` request, keep
+     * `VM_SHARED` clear and set only `VM_MAYSHARE`; core uses that bit to route special-PFN
+     * write-protect faults through `pfn_mkwrite`. Read-only mappings lose future write/share
+     * capability, and `mprotect()` remains forbidden in either mode.
+     */
+    vm_flags_clear(vma, VM_SHARED | VM_MAYEXEC);
+    if (is_writable)
+        vm_flags_set(vma, VM_MAYSHARE);
+    else
+        vm_flags_clear(vma, VM_MAYSHARE | VM_MAYWRITE);
 
     /*
 	 * NOTE(populate): Honor the one-shot populate word by prefaulting the whole
@@ -607,8 +706,12 @@ mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
 	 * thread group.
 	 */
     if (target_pid != task_tgid(current))
-        if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES))
+        if (!capable(MIRILLA_MAP_ENGAGE_CAPABILITIES)) {
+            put_pid(target_pid);
+
             MIRILLA_ERROR_AND_RETURN(-EPERM, "process engage author is not capable");
+        }
+
 #endif
 
     if (!(target_task = get_pid_task(target_pid, PIDTYPE_PID))) {
@@ -834,15 +937,19 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
         MIRILLA_ERROR_AND_RETURN(fd, "failed to allocate file descriptor");
     }
 
-    fd_install(fd, anonymous_file);
-
-    MIRILLA_DEBUG("created peephole context");
-
     mirilla_id_t peephole_id = atomic_inc_return(&target_context->peephole_count);
 
     peephole_context->id = result->id = peephole_id;
-
     result->fd = fd;
+
+    MIRILLA_DEBUG("created peephole context");
+
+    /*
+     * NOTE(publication): This is the final operation involving `anonymous_file` or
+     * `peephole_context`. Once installed, another thread sharing the descriptor table may close the
+     * descriptor immediately and release the file's sole context reference.
+     */
+    fd_install(fd, anonymous_file);
 
     mirilla_context_map_target_reference_set(target_context);
 
