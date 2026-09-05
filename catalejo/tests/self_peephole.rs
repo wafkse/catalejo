@@ -12,7 +12,7 @@
 
 use catalejo::{
     address::ViAddr,
-    manage::{Granule, Manage, Memoize},
+    manage::{Granule, Manage, memoize::Memoize},
     target::Target,
 };
 

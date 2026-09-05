@@ -120,6 +120,18 @@ impl PeepholeContext {
                 .size()
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
 
+            let region_protection = ProtFlags::PROT_NONE
+                | if cfg!(feature = "read") {
+                    ProtFlags::PROT_READ
+                } else {
+                    ProtFlags::PROT_NONE
+                }
+                | if cfg!(feature = "write") {
+                    ProtFlags::PROT_WRITE
+                } else {
+                    ProtFlags::PROT_NONE
+                };
+
             // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
             // file, which is exactly what the kernel module requires, it validates the
             // parameters and rejects (with `-EINVAL` or `-EACCES`) anything else.
@@ -127,7 +139,7 @@ impl PeepholeContext {
                 nix::sys::mman::mmap(
                     None,
                     region_size,
-                    ProtFlags::PROT_READ,
+                    region_protection,
                     MapFlags::MAP_PRIVATE,
                     peephole_file.as_fd(),
                     0,
@@ -139,6 +151,7 @@ impl PeepholeContext {
             Window {
                 base_address,
                 region_size,
+                region_protection,
             }
         };
 
@@ -177,6 +190,18 @@ impl PeepholeContext {
                 .size()
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
 
+            let region_protection = ProtFlags::PROT_NONE
+                | if cfg!(feature = "read") {
+                    ProtFlags::PROT_READ
+                } else {
+                    ProtFlags::PROT_NONE
+                }
+                | if cfg!(feature = "write") {
+                    ProtFlags::PROT_WRITE
+                } else {
+                    ProtFlags::PROT_NONE
+                };
+
             // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
             // file, which is exactly what the kernel module requires, it validates the
             // parameters and rejects (with `-EINVAL` or `-EACCES`) anything else.
@@ -184,7 +209,7 @@ impl PeepholeContext {
                 nix::sys::mman::mmap(
                     None,
                     region_size,
-                    ProtFlags::PROT_READ,
+                    region_protection,
                     MapFlags::MAP_PRIVATE,
                     peephole_file.as_fd(),
                     0,
@@ -196,6 +221,7 @@ impl PeepholeContext {
             Window {
                 base_address,
                 region_size,
+                region_protection,
             }
         };
 
@@ -211,7 +237,8 @@ impl PeepholeContext {
 
 /// A handle to a peephole into a foreign memory address space.
 #[derive(Debug, Clone)]
-pub struct Peephole(Arc<PeepholeContext>);
+// NOTE(invariant): every `Peephole` owns one strong `Arc` to its context, and dropping the final strong owner destroys the mapped window and closes the peephole file descriptor.
+pub struct Peephole(pub Arc<PeepholeContext>);
 
 impl Peephole {
     /// Open a [`Peephole`] into the target over the specified virtual address range.
@@ -332,6 +359,10 @@ pub struct Window {
 
     /// The size of the memory-mapped region.
     region_size: NonZero<usize>,
+
+    /// The virtual memory protection flags applied to the window.
+    // NOTE(invariant): This is fixed and depends on the enabled feature set.
+    region_protection: ProtFlags,
 }
 
 impl Window {
@@ -622,7 +653,7 @@ where
         Window::address(target_peephole.window()).checked_add(target_displacement.native())
     }
 
-    /// Field-project into a field of `F`, to the respective [`P::Value`].
+    /// Field-project into a field of `F`, to the respective `P::Value`.
     #[inline]
     pub fn project<P>(&self, target_project: impl Borrow<P>) -> Foreign<P::Value>
     where
@@ -769,6 +800,7 @@ where
     /// reference is produced, because the buffer holds only the copied prefix and its tail stays
     /// uninitialized.
     #[inline]
+    #[cfg(any(feature = "read", feature = "write"))]
     pub fn copy<'buffer>(
         &self,
         target_buffer: &'buffer mut mem::MaybeUninit<F>,
@@ -836,6 +868,7 @@ where
     /// holds the value observed at the instant of the read, a [`None`] denotes that the read
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
+    #[cfg(feature = "read")]
     pub fn read(&self) -> Option<F> {
         let Self(target_peephole, ..) = self;
 
@@ -856,6 +889,40 @@ where
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
         unsafe { MaybeFault::<F>::new(target_address).read(peephole_subsystem) }
+    }
+
+    /// Attempt to write a [`Faultable`] `F` to the foreign address space.
+    ///
+    /// This is a fault-protected, machine-word-coherent write of the foreign window. A [`Some`]
+    /// holds the value observed at the instant of the read, a [`None`] denotes that the read
+    /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
+    #[inline]
+    #[cfg(feature = "write")]
+    pub fn write(&self, target_value: F) -> bool {
+        let Self(target_peephole, ..) = self;
+
+        let PeepholeContext {
+            peephole_subsystem, ..
+        } = **target_peephole;
+
+        match Foreign::address(self) {
+            Some(target_address) => {
+                // SAFETY:
+                //
+                // * `F` is `Faultable`, so every bit-pattern written is a valid value.
+                //
+                // * `Self`'s invariant guarantees the displacement is in-bounds and aligned for `F`, so
+                //   `target_address` lies within the live mapping, kept mapped for `'a` by the
+                //   `Arc<Window>` borrowed through the peephole, and the foreign window is ordinary RAM,
+                //   never side-effecting MMIO.
+                //
+                // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
+                unsafe {
+                    MaybeFault::<F>::new(target_address).write(peephole_subsystem, target_value)
+                }
+            }
+            None => false,
+        }
     }
 
     /// Arm a monitor for changes to this foreign value.

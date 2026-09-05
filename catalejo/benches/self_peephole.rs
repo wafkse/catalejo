@@ -22,7 +22,7 @@ use std::mem::MaybeUninit;
 
 use catalejo::{
     address::ViAddr,
-    manage::{Manage, Rebased},
+    manage::{Manage, rebased::Rebased},
     peephole::Foreign,
     target::Target,
 };

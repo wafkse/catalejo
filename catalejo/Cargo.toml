@@ -7,9 +7,11 @@ repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
 [features]
-default = ["default-device-path"]
+default = ["default-device-path", "read", "write"]
 default-device-path = ["catalejo-sys/default-device-path"]
 stealth-mode = ["catalejo-fault/stealth-mode", "catalejo-sys/stealth-mode"]
+read = []
+write = []
 
 [dependencies]
 catalejo-fault = { path = "../catalejo-fault", version = "0.1.0", default-features = false }
@@ -19,6 +21,7 @@ catalejo-sys = { path = "../catalejo-sys", version = "0.1.0", default-features =
 dashmap = "6.2.1"
 fack = "0.2.0"
 libc = "0.2.186"
+lru = "0.18.4"
 nix = { version = "0.31.3", features = ["mman"] }
 num-traits = { version = "0.2.19", default-features = false }
 bitflags = "2"
