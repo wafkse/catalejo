@@ -1,6 +1,8 @@
 //! The home module for the [`Rebased`] manager.
 
-use std::{alloc::Layout, io, mem};
+use core::{alloc::Layout, mem};
+
+use std::io;
 
 use catalejo_memory::behavior::Unassociated;
 use catalejo_sys::ffi;

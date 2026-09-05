@@ -1,6 +1,10 @@
 //! The home module for the [`Memoize`] manager.
 
-use std::{alloc::Layout, collections::BTreeMap, io, sync::RwLock};
+use std::{io, sync::RwLock};
+
+use alloc::collections::BTreeMap;
+
+use core::alloc::Layout;
 
 use catalejo_memory::behavior::Unassociated;
 use catalejo_sys::ffi;
@@ -17,7 +21,7 @@ use crate::{
 ///
 /// # Why this exists
 ///
-/// [`Rebased`] quantizes every access to a granule, so it opens a granule-sized window even for a
+/// [`crate::manage::rebased::Rebased`] quantizes every access to a granule, so it opens a granule-sized window even for a
 /// single word. Against a foreign target the observer's address space is unrelated to the target's
 /// and the kernel places the view clear of everything, so the oversized window is harmless. When the
 /// observer engages itself the picture changes. The observed granule reaches past the mapped
@@ -29,7 +33,7 @@ use crate::{
 /// A structure that is itself page resident yields a fully mapped observed range, leaving the kernel
 /// no unpopulated hole to place the view into, so the self-peephole resolves. This makes [`Memoize`]
 /// the manager to reach for when the observer is its own target. It is a drop-in [`Manage`], so it
-/// substitutes for [`Rebased`] without any other change.
+/// substitutes for [`crate::manage::rebased::Rebased`] without any other change.
 ///
 /// # Memoization
 ///

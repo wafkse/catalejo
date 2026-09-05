@@ -14,9 +14,11 @@ use crate::{
     prelude::Peephole,
 };
 
-mod memoize;
+pub mod lru;
 
-mod rebased;
+pub mod memoize;
+
+pub mod rebased;
 
 pub use self::{
     memoize::Memoize,
@@ -183,7 +185,7 @@ pub trait Manage {
     /// Resolve an absolute foreign address into an [`Access`] for `U`, opening a [`Peephole`] on miss.
     ///
     /// This behaves as [`Manage::absolute`] save that, when no cached window covers the address, it
-    /// opens a fresh [`Peephole`] over the [`Frame`] through the engaged [`Target`] and caches it
+    /// opens a fresh [`Peephole`] over the [`Frame`] through the engaged [`crate::target::Target`] and caches it
     /// before awarding the [`Access`]. A [`None`] denotes that no frame of this manager can contain
     /// `U` at the given address, which arises only when the structure exceeds the implementor size
     /// constraint.
