@@ -180,6 +180,9 @@ impl PeepholeContext {
             peephole_id,
             address_range,
             peephole_subsystem,
+            peephole_window: Window {
+                region_protection, ..
+            },
             ..
         } = self;
 
@@ -189,18 +192,6 @@ impl PeepholeContext {
             let region_size = address_range
                 .size()
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
-
-            let region_protection = ProtFlags::PROT_NONE
-                | if cfg!(feature = "read") {
-                    ProtFlags::PROT_READ
-                } else {
-                    ProtFlags::PROT_NONE
-                }
-                | if cfg!(feature = "write") {
-                    ProtFlags::PROT_WRITE
-                } else {
-                    ProtFlags::PROT_NONE
-                };
 
             // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
             // file, which is exactly what the kernel module requires, it validates the
