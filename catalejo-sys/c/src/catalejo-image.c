@@ -303,8 +303,8 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
     close(target_fd);
     target_fd = -1;
 
-    if (syscall(__NR_mseal, target_accessor, target_accessor_length, 0) < 0 ||
-        syscall(__NR_mseal, target_table, target_table_length, 0) < 0) {
+    if (mseal(target_accessor, target_accessor_length, 0) < 0 ||
+        mseal(target_table, target_table_length, 0) < 0) {
         target_status = -errno;
         goto release;
     }
