@@ -800,7 +800,6 @@ where
             ..
         } = **target_peephole;
         let image = {
-            let this = &target_peephole;
             Image::retrieve()
                 .expect("a peephole context exists only after exception-image registration")
         };
@@ -855,7 +854,6 @@ where
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
     pub fn read(&self) -> Option<F> {
-        let Self(target_peephole, ..) = self;
         let target_address = Foreign::address(self)?;
 
         // SAFETY:
@@ -869,7 +867,6 @@ where
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
         let image = {
-            let this = &target_peephole;
             Image::retrieve()
                 .expect("a peephole context exists only after exception-image registration")
         };
@@ -885,8 +882,6 @@ where
     #[inline]
     #[cfg(feature = "write")]
     pub fn write(&self, target_value: F) -> bool {
-        let Self(target_peephole, ..) = self;
-
         match Foreign::address(self) {
             Some(target_address) => {
                 // SAFETY:
@@ -900,7 +895,6 @@ where
                 //
                 // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
                 let image = {
-                    let this = &target_peephole;
                     Image::retrieve()
                         .expect("a peephole context exists only after exception-image registration")
                 };
@@ -923,13 +917,11 @@ where
     /// hardware arming operation.
     #[inline]
     pub fn monitor(&self) -> Result<ArmedMonitor<'_, F>, MonitorArmError> {
-        let Self(target_peephole, ..) = self;
         let target_expected = Foreign::read(self).ok_or(MonitorArmError::Fault)?;
         let target_address = Foreign::address(self).ok_or(MonitorArmError::Fault)?;
         let target_address =
             ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
         let image = {
-            let this = &target_peephole;
             Image::retrieve()
                 .expect("a peephole context exists only after exception-image registration")
         };
@@ -992,7 +984,6 @@ impl Foreign<u8> {
             peephole_window, ..
         } = &**target_peephole;
         let image = {
-            let this = &target_peephole;
             Image::retrieve()
                 .expect("a peephole context exists only after exception-image registration")
         };

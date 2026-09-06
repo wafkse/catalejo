@@ -5,9 +5,9 @@
 //! the protected instruction ranges, accepted architectural exceptions, and rollback destinations
 //! consumed by Mirilla.
 //!
-//! [`Image::setup`] constructs these regions once, seals their common backing object, applies the
+//! [`Image::retrieve`] constructs these regions once, seals their common backing object, applies the
 //! final virtual-memory permissions, and seals the mappings themselves. Rust owns the one-time
-//! initialization state through [`IMAGE`]. Possession of an [`Image`] therefore proves image
+//! initialization state through a process-global cell. Possession of an [`Image`] therefore proves image
 //! construction, but not Mirilla registration. Protected execution additionally requires the same
 //! image to be registered for the current address space through a live Mirilla session.
 
@@ -89,7 +89,7 @@ impl ImageRegion {
 /// constructor copies those sections into one dedicated backing object, rebases the exception
 /// records against their runtime addresses, maps the rollback region read-execute and the table
 /// read-only, seals the backing object against writes and resizing, then seals both VMAs against
-/// later virtual-memory changes. [`Image::setup`] publishes the Rust value only after that complete
+/// later virtual-memory changes. [`Image::retrieve`] publishes the Rust value only after that complete
 /// sequence succeeds. The mappings therefore remain immutable at stable addresses for the lifetime
 /// of the process.
 ///
@@ -121,9 +121,12 @@ impl Image {
     /// The first call invokes the C constructor to relocate the retained accessors and exception
     /// records into their final VMAs, make their shared backing object immutable, seal both
     /// mappings, and return the resulting Mirilla region descriptors. Rust stores that construction
-    /// result in [`IMAGE`]. Later calls return the same result without invoking the C constructor
+    /// result in the process-global cell. Later calls return the same result without invoking the C constructor
     /// again.
+    /// Return the initialized image or terminate when its one-time construction failed.
     ///
+    /// A regular build treats construction failure as unreachable. A stealth-mode build aborts so
+    /// it does not expose an unexpected runtime value to callers.
     /// This operation does not register the image with Mirilla. Registration is a separate
     /// address-space operation performed through [`crate::ffi::command::register_exception_image`].
     /// Callers that execute protected accessors must keep the Mirilla session owning that
@@ -142,7 +145,7 @@ impl Image {
         }
     }
 
-    ///
+    /// TODO: Document this
     #[inline]
     pub fn infallible() -> &'static Self {
         match Self::retrieve() {
@@ -228,6 +231,6 @@ impl Image {
 
 /// The process-global result of constructing the exception image.
 ///
-/// [`Image::setup`] is the only initialization path. The first construction result is retained for
+/// [`Image::retrieve`] is the only initialization path. The first construction result is retained for
 /// the lifetime of the process, so the C constructor is invoked exactly once.
 static IMAGE: OnceLock<Result<Image, binding::catalejo_outcome_t>> = OnceLock::new();
