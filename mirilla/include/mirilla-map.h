@@ -49,6 +49,14 @@ static const struct mmu_interval_notifier_ops mirilla_peephole_mmu_interval_noti
 };
 
 /*
+ * State passed while upgrading one writable peephole PTE.
+ */
+struct mirilla_map_peephole_write_pte {
+    struct vm_area_struct *vma;
+    unsigned long pfn;
+};
+
+/*
  * Required forward-declarations for VMA operations.
  */
 extern vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf);

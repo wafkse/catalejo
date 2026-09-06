@@ -502,11 +502,6 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
         mmput(address_space);
 }
 
-struct mirilla_map_peephole_write_pte {
-    struct vm_area_struct *vma;
-    unsigned long pfn;
-};
-
 static int mirilla_map_peephole_pte_mkwrite(pte_t *pte, unsigned long address,
                                             void *outside_context)
 {
