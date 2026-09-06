@@ -89,7 +89,7 @@ jobs:
             matrix:
                 kernel:
                     - { series: "6.18", tag: "v6.18.38" }
-                    - { series: "7.1", tag: "v7.1.3" }
+                    - { series: "7.2", tag: "v7.2.2" }
         steps:
             - uses: actions/checkout@v7
 
