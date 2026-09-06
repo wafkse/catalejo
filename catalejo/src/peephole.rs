@@ -515,11 +515,7 @@ where
                 continue;
             };
 
-            #[cfg(not(feature = "stealth-mode"))]
-            let target_image = Image::retrieve()
-                .expect("a peephole context exists only after exception-image registration");
-            #[cfg(feature = "stealth-mode")]
-            let target_image = Image::infallible();
+            let target_image = Image::preferred();
 
             // SAFETY:
             //
@@ -799,10 +795,7 @@ where
             ref peephole_window,
             ..
         } = **target_peephole;
-        let image = {
-            Image::retrieve()
-                .expect("a peephole context exists only after exception-image registration")
-        };
+        let image = Image::preferred();
 
         let target_count = mem::size_of::<F>();
 
@@ -866,10 +859,7 @@ where
         //   never side-effecting MMIO.
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
-        let image = {
-            Image::retrieve()
-                .expect("a peephole context exists only after exception-image registration")
-        };
+        let image = Image::preferred();
 
         unsafe { MaybeFault::<F>::new(target_address).read(image) }
     }
@@ -894,10 +884,7 @@ where
                 //   never side-effecting MMIO.
                 //
                 // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
-                let image = {
-                    Image::retrieve()
-                        .expect("a peephole context exists only after exception-image registration")
-                };
+                let image = Image::preferred();
 
                 unsafe { MaybeFault::<F>::new(target_address).write(image, target_value) }
             }
@@ -921,10 +908,7 @@ where
         let target_address = Foreign::address(self).ok_or(MonitorArmError::Fault)?;
         let target_address =
             ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
-        let image = {
-            Image::retrieve()
-                .expect("a peephole context exists only after exception-image registration")
-        };
+        let image = Image::preferred();
 
         let target_backend =
             // SAFETY:
@@ -983,10 +967,7 @@ impl Foreign<u8> {
         let PeepholeContext {
             peephole_window, ..
         } = &**target_peephole;
-        let image = {
-            Image::retrieve()
-                .expect("a peephole context exists only after exception-image registration")
-        };
+        let image = Image::preferred();
         let target_count = target_buffer.len();
 
         let target_available = Foreign::leftover(self);
