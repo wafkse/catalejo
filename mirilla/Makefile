@@ -50,7 +50,7 @@ CATALEJO_FAULT_SRCS := $(wildcard $(CATALEJO_FAULT_DIR)/src/*.c)
 CATALEJO_SYS_DIR := ../catalejo-sys/c
 CATALEJO_SYS_SRCS := $(wildcard $(CATALEJO_SYS_DIR)/src/*.c)
 
-TEST_CFLAGS := -I. -I$(CATALEJO_FAULT_DIR)/include -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
+TEST_CFLAGS := -I. -Iinclude -I$(CATALEJO_FAULT_DIR)/include -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
 
 TEST_SUITES := test/test-suite test/test-self test/test-concurrency \
            test/test-invariants test/test-ioctl test/test-layout

@@ -5,12 +5,8 @@
  * exercises its scenarios through the helpers below, and exits nonzero
  * when any case failed so a runner can aggregate results.
  *
- * Faulting accesses ride the `catalejo-fault` subsystem end to end, as reads
- * against peephole views go through the fault-protected routines, so an
- * access the module refuses (SIGSEGV on an unresolvable range, SIGBUS on a
- * dead peephole) surfaces as `CATALEJO_OUTCOME_ERROR` instead of taking the
- * suite down. This exercises the same recovery path the userspace crates
- * rely on.
+ * Faulting accesses ride the sealed `catalejo-fault` image end to end. Every opened Mirilla session
+ * registers the image for the current address space before protected reads begin.
  */
 
 #ifndef _MIRILLA_TEST_HARNESS_H_
@@ -38,6 +34,7 @@
 #include "../include/mirilla-map.h"
 
 #include "catalejo-fault.h"
+#include "catalejo-image.h"
 #include "catalejo-mirilla.h"
 
 /* Configuration */
@@ -186,6 +183,15 @@ static inline int mirilla_open_device(void)
         perror("Failed to open mirilla device");
         fprintf(stderr, "Make sure the mirilla module is loaded (sudo insmod "
                         "mirilla.ko)\n");
+    } else {
+        struct mirilla_except_image image;
+
+        if (catalejo_fault_image_initialize(&image) < 0 ||
+            !MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image))) {
+            perror("Failed to register the catalejo exception image");
+            close(mirilla_fd);
+            mirilla_fd = -1;
+        }
     }
     return mirilla_fd;
 }
@@ -320,17 +326,12 @@ static inline int verify_region(void *addr, size_t size, unsigned int expected_b
 }
 
 /*
- * Set up the `catalejo-fault` environment for the suite.
- *
- * NOTE(invariant): This must run before any protected read is performed.
- * The chaining signal handler it installs is process-wide, so forked
- * children and spawned threads are covered as well.
+ * Construct the sealed `catalejo-fault` image for the suite.
  */
 static inline int harness_fault_initialize(void)
 {
-    if (catalejo_fault_initialize() != CATALEJO_OUTCOME_SUCCESS) {
-        fprintf(stderr, COLOR_RED "Failed to initialize the catalejo-fault "
-                                  "subsystem\n" COLOR_RESET);
+    if (catalejo_fault_image_initialize(NULL) < 0) {
+        fprintf(stderr, COLOR_RED "Failed to initialize the catalejo-fault image\n" COLOR_RESET);
         return -1;
     }
     return 0;
@@ -340,8 +341,7 @@ static inline int harness_fault_initialize(void)
  * Probe a single word through the fault-protected read routine.
  *
  * Returns `CATALEJO_OUTCOME_SUCCESS` and stores the value, or
- * `CATALEJO_OUTCOME_ERROR` when the access faulted (the module answered the
- * page fault with SIGSEGV or SIGBUS and the chaining handler recovered).
+ * `CATALEJO_OUTCOME_ERROR` when the registered Mirilla image recovered the access.
  */
 static inline catalejo_faultable_outcome_t faultable_probe_u32(const void *addr,
                                                                unsigned int *value)
