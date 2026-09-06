@@ -528,12 +528,12 @@ where
             // * Its borrow keeps the local downstream mapping alive through the wait.
             let wait_outcome = unsafe {
                 monitor::wait(
-                    {
-                        let this = &target_peephole;
-                        Image::retrieve().expect(
-                            "a peephole context exists only after exception-image registration",
-                        )
-                    },
+                    #[cfg(not(feature = "stealth-mode"))]
+                    Image::retrieve().expect(
+                        "a peephole context exists only after exception-image registration",
+                    ),
+                    #[cfg(feature = "stealth-mode")]
+                    Image::infallible(),
                     target_backend_value,
                 )
             };
