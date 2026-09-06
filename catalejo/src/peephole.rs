@@ -515,28 +515,18 @@ where
                 continue;
             };
 
-            let Foreign(target_peephole, ..) = target_handle;
-            let image: &Image = {
-                Image::retrieve()
-                    .expect("a peephole context exists only after exception-image registration")
-            };
+            #[cfg(not(feature = "stealth-mode"))]
+            let target_image = Image::retrieve()
+                .expect("a peephole context exists only after exception-image registration");
+            #[cfg(feature = "stealth-mode")]
+            let target_image = Image::infallible();
 
             // SAFETY:
             //
             // * This token was armed on the current thread and cannot move to another thread.
             //
             // * Its borrow keeps the local downstream mapping alive through the wait.
-            let wait_outcome = unsafe {
-                monitor::wait(
-                    #[cfg(not(feature = "stealth-mode"))]
-                    Image::retrieve().expect(
-                        "a peephole context exists only after exception-image registration",
-                    ),
-                    #[cfg(feature = "stealth-mode")]
-                    Image::infallible(),
-                    target_backend_value,
-                )
-            };
+            let wait_outcome = unsafe { monitor::wait(target_image, target_backend_value) };
 
             match wait_outcome {
                 Ok(()) => {}
@@ -561,7 +551,7 @@ where
             // * This consuming wait remains on the thread that created the armed token.
             //
             // * The borrowed foreign handle keeps the mapping alive.
-            let monitor_backend = unsafe { monitor::arm(image, target_address) };
+            let monitor_backend = unsafe { monitor::arm(target_image, target_address) };
 
             match monitor_backend {
                 Ok(backend_value) => target_backend = Some(backend_value),
