@@ -9,10 +9,7 @@ use core::{
 
 use catalejo_memory::prelude::{Primitive, Unassociated};
 
-use crate::{
-    behavior::Faultable,
-    ffi::{self, Subsystem},
-};
+use crate::{behavior::Faultable, ffi};
 
 /// An opaque probe.
 ///
@@ -31,8 +28,8 @@ unsafe impl Faultable for Opaque {
 
 /// A maybe-fault pointer represents a non-null pointer to memory region where reads or writes may result in a synchronous hardware exception.
 ///
-/// This may be due to an unpopulated page table, bad access to the underlying page table, or any other hardware exception that is signaled via
-/// a `SIGBUS` or `SIGSEGV` signal to the faulting thread.
+/// This may be due to an unpopulated page table, bad access to the underlying page table, or another
+/// synchronous hardware exception accepted by the registered Mirilla image.
 ///
 /// This is `repr(transparent)` over the managed [`NonZero`] `<usize>` address. It stores a bare, provenance-free address rather than a live pointer. At
 /// the point of access the address is reconstituted into a pointer carrying *exposed* provenance, under which memory outside the Rust abstract machine,
@@ -78,15 +75,14 @@ where
     ///
     /// See [`ffi::read`] for safety concerns.
     #[inline]
-    pub unsafe fn read(&self, target_subsystem: Subsystem) -> Option<F> {
+    pub unsafe fn read(&self) -> Option<F> {
         let &Self(target_source, ..) = self;
 
         // SAFETY: Safety constraints are delegated to the caller.
         unsafe {
-            ffi::read(
-                target_subsystem,
-                ptr::with_exposed_provenance_mut(NonZero::<usize>::get(target_source)),
-            )
+            ffi::read(ptr::with_exposed_provenance_mut(NonZero::<usize>::get(
+                target_source,
+            )))
         }
     }
 
@@ -96,13 +92,12 @@ where
     ///
     /// See [`ffi::write`] for safety concerns.
     #[inline]
-    pub unsafe fn write(&self, target_subsystem: Subsystem, target_value: F) -> bool {
+    pub unsafe fn write(&self, target_value: F) -> bool {
         let &Self(target_address, ..) = self;
 
         // SAFETY: Safety constraints are delegated to the caller.
         unsafe {
             ffi::write(
-                target_subsystem,
                 ptr::with_exposed_provenance_mut(NonZero::<usize>::get(target_address)),
                 target_value,
             )
@@ -142,7 +137,7 @@ mod test {
     use core::fmt::Debug;
 
     use crate::behavior::Faultable;
-    use crate::ffi::Subsystem;
+    use crate::ffi::{image as fault_image, register_test_image};
 
     use super::MaybeFault;
 
@@ -152,14 +147,9 @@ mod test {
     const FAULTING_ADDRESS: NonZero<usize> =
         NonZero::new(0x50).expect("the faulting address must be non-zero");
 
-    /// Acquire the subsystem token for a test.
-    ///
-    /// # Safety
-    ///
-    /// The test harness does not install a conflicting `SIGSEGV`/`SIGBUS` handler concurrently.
-    unsafe fn subsystem() -> Subsystem {
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        unsafe { Subsystem::initialize() }.expect("the catalejo subsystem must initialize")
+    /// Ensure the sealed accessor image exists for a non-faulting unit test.
+    fn image() {
+        fault_image().expect("the sealed accessor image must initialize");
     }
 
     /// The size of a single page, in bytes.
@@ -241,17 +231,20 @@ mod test {
         let maybe = MaybeFault::<u64>::new(address(&raw const target_value));
 
         // SAFETY: The address is a live, aligned `u64` for the duration of the read.
-        let target_outcome = unsafe { maybe.read(subsystem()) };
+        image();
+        let target_outcome = unsafe { maybe.read() };
 
         assert_eq!(target_outcome, Some(0xDEAD_BEEF_u64));
     }
 
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn read_of_a_faulting_address_yields_none() {
+        let _target_registration = register_test_image();
         let maybe = MaybeFault::<u64>::new(FAULTING_ADDRESS);
 
-        // SAFETY: The address is aligned; the read faults and is caught by the subsystem.
-        let target_outcome = unsafe { maybe.read(subsystem()) };
+        // SAFETY: The address is aligned and the device-backed test environment registers the image.
+        let target_outcome = unsafe { maybe.read() };
 
         assert_eq!(target_outcome, None);
     }
@@ -263,18 +256,21 @@ mod test {
         let maybe = MaybeFault::<u64>::new(address((&raw mut target_slot).cast_const()));
 
         // SAFETY: The address is a live, aligned, exclusively-borrowed `u64`.
-        let target_outcome = unsafe { maybe.write(subsystem(), 0xC0FF_EE00) };
+        image();
+        let target_outcome = unsafe { maybe.write(0xC0FF_EE00) };
 
         assert!(target_outcome);
         assert_eq!(target_slot, 0xC0FF_EE00);
     }
 
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn write_to_a_faulting_address_reports_failure() {
+        let _target_registration = register_test_image();
         let maybe = MaybeFault::<u64>::new(FAULTING_ADDRESS);
 
-        // SAFETY: The address is aligned; the write faults and is caught by the subsystem.
-        let target_outcome = unsafe { maybe.write(subsystem(), 0xFF) };
+        // SAFETY: The address is aligned and the device-backed test environment registers the image.
+        let target_outcome = unsafe { maybe.write(0xFF) };
 
         assert!(!target_outcome);
     }
@@ -283,7 +279,9 @@ mod test {
     /// written sentinel, and the *same* address faults to `None` once its
     /// backing page is taken away.
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn read_tracks_a_pages_lifecycle() {
+        let _target_registration = register_test_image();
         const SENTINEL: u64 = 0x1234_5678_9ABC_DEF0;
 
         let target_page = map(libc::PROT_READ | libc::PROT_WRITE);
@@ -291,18 +289,17 @@ mod test {
         // A page is page-aligned, hence trivially `8`-aligned for a `u64`.
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        let target_subsystem = unsafe { subsystem() };
+        image();
 
         // SAFETY: The page is mapped read-write and aligned for the duration of the call.
         assert!(
-            unsafe { maybe.write(target_subsystem, SENTINEL) },
+            unsafe { maybe.write(SENTINEL) },
             "writing through a live mapping must succeed",
         );
 
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             Some(SENTINEL),
             "reading a live mapping must yield the written sentinel",
         );
@@ -314,11 +311,11 @@ mod test {
         protect(target_page, libc::PROT_NONE);
 
         // The address is unchanged, but the page is now inaccessible: the access
-        // faults and the subsystem converts the hardware exception into `None`.
+        // faults and Mirilla redirects the instruction to its recovery path.
         //
-        // SAFETY: The address is aligned; the read faults and is caught by the subsystem.
+        // SAFETY: The address is aligned and the device-backed test environment registers the image.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             None,
             "reading the now-inaccessible page must fault to `None`",
         );
@@ -329,25 +326,26 @@ mod test {
     /// A read-only page must serve reads but reject writes: the store faults to
     /// `false` and the underlying memory is left untouched.
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn write_to_a_readonly_page_faults_while_reads_succeed() {
+        let _target_registration = register_test_image();
         let target_page = map(libc::PROT_READ);
 
         // A freshly-mapped anonymous page reads back as zero.
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        let target_subsystem = unsafe { subsystem() };
+        image();
 
         // SAFETY: The page is mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             Some(0),
             "a fresh read-only page must read back as zero",
         );
 
         // SAFETY: The address is aligned; the write faults on the read-only page.
         assert!(
-            !unsafe { maybe.write(target_subsystem, 0xDEAD_BEEF) },
+            !unsafe { maybe.write(0xDEAD_BEEF) },
             "writing to a read-only page must fault to `false`",
         );
 
@@ -355,7 +353,7 @@ mod test {
         //
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             Some(0),
             "a faulting write must leave the memory untouched",
         );
@@ -366,19 +364,20 @@ mod test {
     /// `mprotect`-ing a live read-write page down to read-only must flip writes
     /// from succeeding to faulting, while reads keep observing the last value.
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn revoking_write_permission_flips_writes_to_faulting() {
+        let _target_registration = register_test_image();
         const SENTINEL: u64 = 0x0BAD_F00D_DEAD_C0DE;
 
         let target_page = map(libc::PROT_READ | libc::PROT_WRITE);
 
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        let target_subsystem = unsafe { subsystem() };
+        image();
 
         // SAFETY: The page is mapped read-write and aligned.
         assert!(
-            unsafe { maybe.write(target_subsystem, SENTINEL) },
+            unsafe { maybe.write(SENTINEL) },
             "the initial write to a read-write page must succeed",
         );
 
@@ -386,13 +385,13 @@ mod test {
 
         // SAFETY: The address is aligned; the write now faults on the read-only page.
         assert!(
-            !unsafe { maybe.write(target_subsystem, !SENTINEL) },
+            !unsafe { maybe.write(!SENTINEL) },
             "the write must fault once write permission is revoked",
         );
 
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             Some(SENTINEL),
             "the read must still observe the value from before the revocation",
         );
@@ -402,24 +401,25 @@ mod test {
 
     /// A `PROT_NONE` page is inaccessible: both reads and writes must fault.
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn an_inaccessible_page_faults_on_both_reads_and_writes() {
+        let _target_registration = register_test_image();
         let target_page = map(libc::PROT_NONE);
 
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        let target_subsystem = unsafe { subsystem() };
+        image();
 
         // SAFETY: The address is aligned; the read faults on the inaccessible page.
         assert_eq!(
-            unsafe { maybe.read(target_subsystem) },
+            unsafe { maybe.read() },
             None,
             "reading a `PROT_NONE` page must fault to `None`",
         );
 
         // SAFETY: The address is aligned; the write faults on the inaccessible page.
         assert!(
-            !unsafe { maybe.write(target_subsystem, 0xFF) },
+            !unsafe { maybe.write(0xFF) },
             "writing a `PROT_NONE` page must fault to `false`",
         );
 
@@ -428,7 +428,7 @@ mod test {
 
     /// Drive every primitive width through both a live mapping (round-trip) and
     /// the unmapped bottom page (fault), so each per-width routine is covered.
-    fn exercise_width<F>(target_subsystem: Subsystem, target_value: F)
+    fn exercise_width<F>(target_value: F)
     where
         F: Faultable + Copy + PartialEq + Debug,
     {
@@ -439,14 +439,14 @@ mod test {
 
         // SAFETY: The page is mapped read-write and aligned for `F`.
         assert!(
-            unsafe { live.write(target_subsystem, target_value) },
+            unsafe { live.write(target_value) },
             "a width-{} write to a live mapping must succeed",
             size_of::<F>() * 8,
         );
 
         // SAFETY: The page is still mapped readable and aligned for `F`.
         assert_eq!(
-            unsafe { live.read(target_subsystem) },
+            unsafe { live.read() },
             Some(target_value),
             "a width-{} read must yield the written value",
             size_of::<F>() * 8,
@@ -458,7 +458,7 @@ mod test {
 
         // SAFETY: `0x50` is aligned for any primitive width; the read faults.
         assert_eq!(
-            unsafe { faulting.read(target_subsystem) },
+            unsafe { faulting.read() },
             None,
             "a width-{} read of an unmapped page must fault to `None`",
             size_of::<F>() * 8,
@@ -466,33 +466,32 @@ mod test {
 
         // SAFETY: `0x50` is aligned for any primitive width; the write faults.
         assert!(
-            !unsafe { faulting.write(target_subsystem, target_value) },
+            !unsafe { faulting.write(target_value) },
             "a width-{} write to an unmapped page must fault to `false`",
             size_of::<F>() * 8,
         );
     }
 
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn every_primitive_width_round_trips_and_faults() {
-        // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-        let target_subsystem = unsafe { subsystem() };
+        let _target_registration = register_test_image();
+        image();
 
-        exercise_width::<u8>(target_subsystem, 0xA5);
-        exercise_width::<u16>(target_subsystem, 0xA55A);
-        exercise_width::<u32>(target_subsystem, 0xDEAD_BEEF);
-        exercise_width::<u64>(target_subsystem, 0x1234_5678_9ABC_DEF0);
+        exercise_width::<u8>(0xA5);
+        exercise_width::<u16>(0xA55A);
+        exercise_width::<u32>(0xDEAD_BEEF);
+        exercise_width::<u64>(0x1234_5678_9ABC_DEF0);
     }
 
-    /// A genuine stack overflow must still reach the host's overflow handler:
-    /// catalejo installs itself for `SIGSEGV`, but on finding the faulting `%RIP`
-    /// outside its routine section it must *chain* to the previously-installed
-    /// handler (here, the Rust runtime's stack-overflow reporter) rather than
-    /// swallow the fault. Verified out-of-process because it ends in `abort`.
+    /// A genuine stack overflow must still reach the host's ordinary overflow handler. The faulting
+    /// instruction is outside the registered accessor image and remains untouched. This is verified
+    /// out-of-process because the runtime ends in `abort`.
     #[test]
     fn a_stack_overflow_still_reaches_the_host_handler() {
         use std::os::unix::process::ExitStatusExt;
 
-        // Child role: install the subsystem, then deliberately overflow.
+        // Child role deliberately overflows without any process-global signal installation.
         if std::env::var_os(OVERFLOW_CHILD_VARIABLE).is_some() {
             // Suppress the core dump from the intentional abort. `RLIMIT_CORE`
             // alone is ignored when `core_pattern` is a pipe (e.g. systemd), so
@@ -508,9 +507,6 @@ mod test {
                 libc::setrlimit(libc::RLIMIT_CORE, &target_limit);
                 libc::prctl(libc::PR_SET_DUMPABLE, 0);
             }
-
-            // SAFETY: The test harness does not race the subsystem with a conflicting handler.
-            let _ = unsafe { subsystem() };
 
             // Overflow on a dedicated, small-stacked thread so the runtime's
             // per-thread guard page and alternate stack are in force.

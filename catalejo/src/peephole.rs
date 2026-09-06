@@ -43,8 +43,19 @@ use crate::{
     target::Target,
 };
 
-// NOTE: Re-export the `Subsystem` + `MonitorBackend` item for easy access from upstream crates without having to depend on `catalejo-fault` directly.
-pub use catalejo_fault::ffi::{MonitorBackend, Subsystem};
+// NOTE: Re-export the monitor backend for upstream crates that do not depend on
+// `catalejo-fault` directly.
+pub use catalejo_fault::ffi::MonitorBackend;
+
+/// Register the immutable exception image for the current address space on one Mirilla session.
+fn register_exception_image(target_device: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    let image = fault::image()
+        .map_err(|target_error| io::Error::from_raw_os_error(target_error.code().get()))?;
+
+    // SAFETY: Callers source the descriptor from an existing Mirilla `Target`/peephole session,
+    // and `image` proves the immutable accessor/table construction invariant.
+    unsafe { ffi::command::register_exception_image(target_device, image) }
+}
 
 bitflags! {
     /// The creation-time initialization word for a [`Peephole`].
@@ -60,7 +71,12 @@ bitflags! {
 
 /// The context backing a peephole into a foreign memory address space.
 #[derive(Debug)]
+// NOTE(invariant): `exception_session` shares the open file description that owns the current
+// address space's registration, so every callable window remains protected for its full lifetime.
 pub struct PeepholeContext {
+    /// A duplicate of the Mirilla session that owns the exception-image registration.
+    exception_session: OwnedFd,
+
     /// The peephole instance file descriptor.
     peephole_file: OwnedFd,
 
@@ -72,9 +88,6 @@ pub struct PeepholeContext {
 
     /// The lazily memory-mapped area of the peephole.
     peephole_window: Window,
-
-    /// The initialization token to the `catalejo-fault` subsystem for fault-tolerant memory access.
-    peephole_subsystem: Subsystem,
 }
 
 impl PeepholeContext {
@@ -114,18 +127,14 @@ impl PeepholeContext {
                 initialize_word.bits(),
             )?
         };
+        let exception_session = target_context.device().try_clone_to_owned()?;
 
         let peephole_window = {
             let region_size = address_range
                 .size()
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
 
-            let region_protection = ProtFlags::PROT_NONE
-                | if cfg!(feature = "read") {
-                    ProtFlags::PROT_READ
-                } else {
-                    ProtFlags::PROT_NONE
-                }
+            let region_protection = ProtFlags::PROT_READ
                 | if cfg!(feature = "write") {
                     ProtFlags::PROT_WRITE
                 } else {
@@ -155,14 +164,12 @@ impl PeepholeContext {
             }
         };
 
-        let peephole_subsystem = target_context.subsystem();
-
         Ok(Self {
+            exception_session,
             peephole_file,
             peephole_id,
             address_range,
             peephole_window,
-            peephole_subsystem,
         })
     }
 }
@@ -176,17 +183,20 @@ impl PeepholeContext {
     #[inline]
     pub fn duplicate(&self) -> io::Result<Self> {
         let &Self {
+            ref exception_session,
             ref peephole_file,
             peephole_id,
             address_range,
-            peephole_subsystem,
             peephole_window: Window {
                 region_protection, ..
             },
             ..
         } = self;
 
+        register_exception_image(exception_session.as_fd())?;
+
         let peephole_file = OwnedFd::try_clone(peephole_file)?;
+        let exception_session = OwnedFd::try_clone(exception_session)?;
 
         let peephole_window = {
             let region_size = address_range
@@ -217,11 +227,11 @@ impl PeepholeContext {
         };
 
         Ok(Self {
+            exception_session,
             peephole_file,
             peephole_id,
             address_range,
             peephole_window,
-            peephole_subsystem,
         })
     }
 }
@@ -342,10 +352,8 @@ impl Deref for Peephole {
 pub struct Window {
     /// The base address of the memory-mapped peephole region.
     ///
-    /// This is a maybe-fault region, and is protected against
-    /// memory-access-related synchronous hardware exceptions (e.g.,
-    /// #GP, unhandled #PF forwarded to userspace via `SIGSEGV`) that
-    /// are exposed in a clear manner to the offender thread of execution.
+    /// This is a maybe-fault region protected by the Mirilla exception image registered when the
+    /// owning target session was acquired.
     base_address: MaybeFault<Opaque>,
 
     /// The size of the memory-mapped region.
@@ -521,18 +529,12 @@ where
                 continue;
             };
 
-            let Foreign(target_peephole, ..) = target_handle;
-
-            let PeepholeContext {
-                peephole_subsystem, ..
-            } = **target_peephole;
-
             // SAFETY
             //
             // * This token was armed on the current thread and cannot move to another thread.
             //
             // * Its borrow keeps the local downstream mapping alive through the wait.
-            match unsafe { fault::monitor_wait(peephole_subsystem, target_backend_value) } {
+            match unsafe { fault::monitor_wait(target_backend_value) } {
                 Ok(()) => {}
                 Err(fault::MonitorError::Unsupported) => {
                     target_backend = None;
@@ -555,7 +557,7 @@ where
             // * This consuming wait remains on the thread that created the armed token.
             //
             // * The borrowed foreign handle keeps the mapping alive.
-            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
+            match unsafe { fault::monitor_arm(target_address) } {
                 Ok(target_backend_value) => target_backend = Some(target_backend_value),
                 Err(fault::MonitorError::Unsupported) => target_backend = None,
                 Err(fault::MonitorError::Fault) => return MonitorWaitOutcome::Fault,
@@ -791,7 +793,6 @@ where
     /// reference is produced, because the buffer holds only the copied prefix and its tail stays
     /// uninitialized.
     #[inline]
-    #[cfg(any(feature = "read", feature = "write"))]
     pub fn copy<'buffer>(
         &self,
         target_buffer: &'buffer mut mem::MaybeUninit<F>,
@@ -799,7 +800,6 @@ where
         let Self(target_peephole, target_displacement, ..) = self;
 
         let PeepholeContext {
-            peephole_subsystem,
             ref peephole_window,
             ..
         } = **target_peephole;
@@ -830,14 +830,7 @@ where
         // * The destination is the caller's `MaybeUninit<F>`, ordinary abstract-machine memory
         //   valid and writable for `target_count` bytes, exclusively borrowed for `'buffer`, and
         //   aligned for `F` by construction, so it never overlaps the disjoint foreign source.
-        let target_outcome = unsafe {
-            fault::copy(
-                peephole_subsystem,
-                target_address,
-                target_source,
-                target_count,
-            )
-        };
+        let target_outcome = unsafe { fault::copy(target_address, target_source, target_count) };
 
         match target_outcome {
             // SAFETY: The copy wrote every one of the `target_count` bytes, so the buffer is
@@ -859,14 +852,7 @@ where
     /// holds the value observed at the instant of the read, a [`None`] denotes that the read
     /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
     #[inline]
-    #[cfg(feature = "read")]
     pub fn read(&self) -> Option<F> {
-        let Self(target_peephole, ..) = self;
-
-        let PeepholeContext {
-            peephole_subsystem, ..
-        } = **target_peephole;
-
         let target_address = Foreign::address(self)?;
 
         // SAFETY:
@@ -879,23 +865,17 @@ where
         //   never side-effecting MMIO.
         //
         // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
-        unsafe { MaybeFault::<F>::new(target_address).read(peephole_subsystem) }
+        unsafe { MaybeFault::<F>::new(target_address).read() }
     }
 
     /// Attempt to write a [`Faultable`] `F` to the foreign address space.
     ///
-    /// This is a fault-protected, machine-word-coherent write of the foreign window. A [`Some`]
-    /// holds the value observed at the instant of the read, a [`None`] denotes that the read
-    /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
+    /// This is a fault-protected, machine-word-coherent write of the foreign window. It returns
+    /// `true` when the store completes and `false` when the access faults, for example because the
+    /// target mapping disappeared or no longer permits writes.
     #[inline]
     #[cfg(feature = "write")]
     pub fn write(&self, target_value: F) -> bool {
-        let Self(target_peephole, ..) = self;
-
-        let PeepholeContext {
-            peephole_subsystem, ..
-        } = **target_peephole;
-
         match Foreign::address(self) {
             Some(target_address) => {
                 // SAFETY:
@@ -908,9 +888,7 @@ where
                 //   never side-effecting MMIO.
                 //
                 // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
-                unsafe {
-                    MaybeFault::<F>::new(target_address).write(peephole_subsystem, target_value)
-                }
+                unsafe { MaybeFault::<F>::new(target_address).write(target_value) }
             }
             None => false,
         }
@@ -928,12 +906,6 @@ where
     /// hardware arming operation.
     #[inline]
     pub fn monitor(&self) -> Result<ArmedMonitor<'_, F>, MonitorArmError> {
-        let Self(target_peephole, ..) = self;
-
-        let PeepholeContext {
-            peephole_subsystem, ..
-        } = **target_peephole;
-
         let target_expected = Foreign::read(self).ok_or(MonitorArmError::Fault)?;
         let target_address = Foreign::address(self).ok_or(MonitorArmError::Fault)?;
         let target_address =
@@ -948,7 +920,7 @@ where
             // * The borrow stored in the returned token keeps the peephole mapping alive.
             //
             // * The returned token can only wait on this thread because it is not `Send`.
-            match unsafe { fault::monitor_arm(peephole_subsystem, target_address) } {
+            match unsafe { fault::monitor_arm(target_address) } {
                 Ok(target_backend) => Some(target_backend),
                 Err(fault::MonitorError::Unsupported) => None,
                 Err(fault::MonitorError::Fault) => return Err(MonitorArmError::Fault),
@@ -994,9 +966,7 @@ impl Foreign<u8> {
         let Self(target_peephole, target_displacement, ..) = self;
 
         let PeepholeContext {
-            peephole_subsystem,
-            peephole_window,
-            ..
+            peephole_window, ..
         } = &**target_peephole;
         let target_count = target_buffer.len();
 
@@ -1023,14 +993,8 @@ impl Foreign<u8> {
             //   writable for `target_count` bytes.
             //
             // * The local destination allocation and foreign peephole mapping cannot overlap.
-            let target_outcome = unsafe {
-                fault::copy(
-                    *peephole_subsystem,
-                    target_address,
-                    target_source,
-                    target_count,
-                )
-            };
+            let target_outcome =
+                unsafe { fault::copy(target_address, target_source, target_count) };
 
             let (target_copied, copy_state) = match target_outcome {
                 Ok(()) => (target_count, ByteCopyStatus::Complete),

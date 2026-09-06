@@ -40,7 +40,7 @@ pub mod prelude {
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
         peephole::{
             ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole,
-            PrimitiveLiftError, Stabilize, StabilizeError, Subsystem, Window,
+            PrimitiveLiftError, Stabilize, StabilizeError, Window,
         },
         pointer::{Pointer, Pointer32, Pointer64},
         target::Target,

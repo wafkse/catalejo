@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /**
- * The states of the atomic initialization word for the signal handler.
+ * The states of the atomic initialization word for the sealed accessor image.
  */
 typedef enum catalejo_initialize_state {
     CATALEJO_INITIALIZE_STATE_UNINITIALIZED,
@@ -22,14 +22,6 @@ typedef enum catalejo_initialize_state {
     CATALEJO_INITIALIZE_STATE_FAILED,
     NR_CATALEJO_INITIALIZE_STATES
 } catalejo_initialize_state_t;
-
-/**
- * The primary initialization function.
- *
- * NOTE(invariant): This is required to be called before any protected read or
- * write is performed.
- */
-extern catalejo_faultable_outcome_t catalejo_fault_initialize();
 
 /**
  * The available hardware monitor implementations.
@@ -84,9 +76,9 @@ catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
 /* NOTE: Individual protected-read routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(              \
-        catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source,   \
-                                         CATALEJO_UNUSED target_type *target_value);
+    extern catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(    \
+        CATALEJO_UNUSED const target_type *target_source,                                    \
+        CATALEJO_UNUSED target_type *target_value);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
@@ -94,9 +86,9 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 /* NOTE: Individual protected-write routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t CATALEJO_CONCAT(              \
-        catalejo_write_, target_typename)(CATALEJO_UNUSED target_type * target_value,        \
-                                          CATALEJO_UNUSED const target_type *target_source);
+    extern catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(   \
+        CATALEJO_UNUSED target_type * target_value,                                          \
+        CATALEJO_UNUSED const target_type *target_source);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
@@ -113,33 +105,33 @@ typedef struct catalejo_faultable_instruction_outcome {
     catalejo_faultable_outcome_t outcome_status;
 
     /**
-     * The signal raised by a faulting instruction.
+     * The signal-compatible exception code supplied by Mirilla.
      */
-    // NOTE(invariant): This should be contained in the `%rax` register.
+    // NOTE(invariant): This is returned in the `%rdx` register.
     size_t fault_signal;
 } catalejo_faultable_instruction_outcome_t;
 
 /**
  * Arm an Intel user monitor with fault protection.
  */
-extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+extern catalejo_faultable_instruction_outcome_t
 catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with Intel user wait support for a bounded interval.
  */
-extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
+extern catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
 
 /**
  * Arm an AMD extended monitor with fault protection.
  */
-extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
+extern catalejo_faultable_instruction_outcome_t
 catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with AMD extended wait support for a bounded interval.
  */
-extern CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
+extern catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
 
 /**
  * Structure to be used to report back after a bulk read-write operation.
@@ -161,9 +153,9 @@ typedef struct catalejo_faultable_copy_outcome {
 /**
  * Perform a bulk-copy that is fault-protected.
  */
-extern CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
-catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
-              CATALEJO_UNUSED size_t target_count);
+extern catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
+                                                       CATALEJO_UNUSED const uint8_t *target_source,
+                                                       CATALEJO_UNUSED size_t target_count);
 
 #ifdef __cplusplus
 }

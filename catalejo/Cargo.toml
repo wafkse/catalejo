@@ -7,10 +7,9 @@ repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
 [features]
-default = ["default-device-path", "read", "write"]
+default = ["default-device-path", "write"]
 default-device-path = ["catalejo-sys/default-device-path"]
 stealth-mode = ["catalejo-fault/stealth-mode", "catalejo-sys/stealth-mode"]
-read = []
 write = []
 
 [dependencies]

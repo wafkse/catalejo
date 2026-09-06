@@ -18,10 +18,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         current_dir.join(C_INCLUDE_RELATIVE_DIRECTORY),
         current_dir.join(C_SOURCE_RELATIVE_DIRECTORY),
     );
+    let mirilla_include = current_dir.join("../mirilla/include");
 
     let mut build_context = cc::Build::new();
 
     build_context.include(&include);
+    build_context.include(&mirilla_include);
 
     for target_value in WalkDir::new(source) {
         let target_value = target_value?;
@@ -29,6 +31,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let file_type = target_value.file_type();
 
         let is_candidate = file_type.is_file() || file_type.is_symlink();
+
+        if is_candidate {
+            println!("cargo:rerun-if-changed={}", target_value.path().display());
+        }
 
         if is_candidate
             && let Some("C" | "c") = target_value.path().extension().and_then(OsStr::to_str)
@@ -54,6 +60,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
     }
+
+    println!(
+        "cargo:rerun-if-changed={}",
+        mirilla_include.join("mirilla-except.h").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        mirilla_include.join("mirilla-miscellaneous.h").display()
+    );
+
+    bind_context = bind_context.clang_arg(format!("-I{}", mirilla_include.display()));
 
     for target_value in WalkDir::new(include) {
         let target_value = target_value?;

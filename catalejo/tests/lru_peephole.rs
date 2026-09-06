@@ -19,7 +19,6 @@ use catalejo::{
     peephole::Peephole,
     target::Target,
 };
-use catalejo_fault::ffi::Subsystem;
 use catalejo_sys::ffi;
 
 /// The environment marker selecting the child role of this integration-test binary.
@@ -168,9 +167,6 @@ fn target_child() {
 #[test]
 #[ignore = "requires the mirilla device and foreign-process engagement"]
 fn lru_preserves_recency_and_peephole_lifetime() {
-    // SAFETY: This test binary installs no competing synchronous fault handlers while it runs.
-    let _ = unsafe { Subsystem::initialize() }.expect("the fault subsystem should initialize");
-
     let target_child = ForeignTarget::spawn();
     let target_a = ForeignTarget::address(&target_child, 0);
     let target_b = ForeignTarget::address(&target_child, 1);

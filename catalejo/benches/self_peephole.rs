@@ -27,8 +27,6 @@ use catalejo::{
     target::Target,
 };
 
-use catalejo_fault::ffi::Subsystem;
-
 use catalejo_sys::ffi;
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
@@ -100,10 +98,6 @@ impl Region {
 
 /// Engage the current process as a target, returning [`None`] when the environment is unavailable.
 fn engage_self() -> Option<Target> {
-    // SAFETY: The benchmark binary installs no competing `SIGSEGV`/`SIGBUS` handlers, and no other
-    // thread registers one while this runs, so the subsystem may claim them.
-    let _ = unsafe { Subsystem::initialize() }?;
-
     Target::engage(std::process::id() as libc::pid_t).ok()
 }
 
@@ -167,7 +161,7 @@ fn bench_copy<const N: usize>(
 fn self_peephole(criterion: &mut Criterion) {
     let Some(target_engaged) = engage_self() else {
         eprintln!(
-            "skipping self-peephole benchmarks: the mirilla device or fault subsystem is unavailable"
+            "skipping self-peephole benchmarks: the mirilla device or exception image is unavailable"
         );
 
         return;

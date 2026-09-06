@@ -119,6 +119,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "catalejo-memory",
+ "catalejo-sys",
  "cc",
  "libc",
  "tokel",

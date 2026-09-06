@@ -29,8 +29,6 @@ use catalejo::{
     target::Target,
 };
 
-use catalejo_fault::ffi::Subsystem;
-
 use catalejo_sys::ffi;
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, measurement::WallTime,
@@ -174,13 +172,9 @@ impl Drop for ForeignTarget {
 
 /// Engage a foreign target, returning [`None`] when the environment forbids it.
 ///
-/// A [`None`] means the fault subsystem could not initialize, or the mirilla device is absent, or
+/// A [`None`] means the sealed image could not initialize, or the mirilla device is absent, or
 /// the caller lacks the `CAP_SYS_PTRACE` that engaging a foreign address space demands.
 fn engage_foreign(target_child: &ForeignTarget) -> Option<Target> {
-    // SAFETY: The benchmark binary installs no competing `SIGSEGV`/`SIGBUS` handlers, and no other
-    // thread registers one while this runs, so the subsystem may claim them.
-    let _ = unsafe { Subsystem::initialize() }?;
-
     Target::engage(target_child.pid()).ok()
 }
 
@@ -249,7 +243,7 @@ fn foreign_peephole(criterion: &mut Criterion) {
 
     let Some(target_engaged) = engage_foreign(&target_child) else {
         eprintln!(
-            "skipping foreign-peephole benchmarks: the mirilla device or fault subsystem is \
+            "skipping foreign-peephole benchmarks: the mirilla device or exception image is \
              unavailable, or engaging a foreign process is not permitted (CAP_SYS_PTRACE)"
         );
 

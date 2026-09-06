@@ -7,18 +7,12 @@
 
 #include <cpuid.h>
 #include <signal.h>
-#include <sched.h>
 
 #include "catalejo-macro.h"
 #include "catalejo-section.h"
 #include "catalejo-fault.h"
 #include "catalejo-fixup.h"
-#include "catalejo-signal.h"
-
-/**
- * The atomic word initialization state for the fault-catching subsystem.
- */
-static atomic_int catalejo_initialize_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
+#include "catalejo-image.h"
 
 /**
  * The cached runtime monitor backend.
@@ -35,94 +29,6 @@ static atomic_int catalejo_monitor_backend = -1;
  */
 #define CATALEJO_CPUID_WAITPKG (1U << 5)
 #define CATALEJO_CPUID_MONITORX (1U << 29)
-
-/**
- * Initialize the catalejo-fault environment.
- *
- * This attempts to initialize the environment in which the fault-handling semantics are to be performed.
- *
- * Particularly, this sets up the signal handlers in a lazy yet thread-safe manner.
- */
-catalejo_faultable_outcome_t catalejo_fault_initialize()
-{
-    if (atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire) ==
-        CATALEJO_INITIALIZE_STATE_INITIALIZED)
-        return CATALEJO_OUTCOME_SUCCESS;
-
-    int expected_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
-
-    if (atomic_compare_exchange_strong_explicit(&catalejo_initialize_state, &expected_state,
-                                                CATALEJO_INITIALIZE_STATE_INITIALIZING,
-                                                memory_order_acq_rel, memory_order_acquire)) {
-        struct sigaction install_signal;
-
-        {
-            // NOTE: Use the signal handler for catalejo.
-            install_signal.sa_sigaction = catalejo_signal_handle;
-
-            // NOTE: Do not mask any individual signal during handling.
-            sigemptyset(&install_signal.sa_mask);
-
-            // NOTE: Flag rationale:
-            //
-            // * SA_SIGINFO: we need the three-argument form to reach the
-            //   `ucontext_t`, whose `mcontext` we rewrite to simulate the
-            //   faulting routine returning CATALEJO_OUTCOME_ERROR.
-            //
-            // * SA_NODEFER: the same signal must not be masked while we handle
-            //   it. The chaining path re-`raise()`s the signal against the
-            //   default disposition, and a nested fault must still be deliverable.
-            //
-            // * SA_ONSTACK: the fault path itself needs no alternate stack, as the
-            //   naked routines touch no stack, so the faulting `%rsp` points
-            //   straight at the return address and the kernel builds the signal
-            //   frame harmlessly below it. We deliberately install no altstack of
-            //   our own. We keep this flag only to honor a host-provided altstack
-            //   (e.g. one installed for stack-overflow detection) so that the
-            //   *chaining* path remains deliverable when the main stack is exhausted.
-            install_signal.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
-        }
-
-        int r0 = sigaction(SIGSEGV, &install_signal, &saved_segmentation_violation_signal_actor);
-        int r1 = sigaction(SIGBUS, &install_signal, &saved_bus_signal_actor);
-        int r2 = sigaction(SIGILL, &install_signal, &saved_illegal_instruction_signal_actor);
-
-        if (r0 == 0 && r1 == 0 && r2 == 0) {
-            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_INITIALIZED,
-                                  memory_order_release);
-
-            return CATALEJO_OUTCOME_SUCCESS;
-        } else {
-            // NOTE Preserve every action that was replaced before a later install failed.
-            if (r0 == 0)
-                sigaction(SIGSEGV, &saved_segmentation_violation_signal_actor, NULL);
-            if (r1 == 0)
-                sigaction(SIGBUS, &saved_bus_signal_actor, NULL);
-            if (r2 == 0)
-                sigaction(SIGILL, &saved_illegal_instruction_signal_actor, NULL);
-
-            atomic_store_explicit(&catalejo_initialize_state, CATALEJO_INITIALIZE_STATE_FAILED,
-                                  memory_order_release);
-
-            return CATALEJO_OUTCOME_ERROR;
-        }
-    } else
-        while (true) {
-            int target_state =
-                atomic_load_explicit(&catalejo_initialize_state, memory_order_acquire);
-
-            switch (target_state) {
-            case CATALEJO_INITIALIZE_STATE_INITIALIZED:
-                return CATALEJO_OUTCOME_SUCCESS;
-            case CATALEJO_INITIALIZE_STATE_FAILED:
-                return CATALEJO_OUTCOME_ERROR;
-            default:
-                sched_yield();
-            }
-        }
-
-    return CATALEJO_OUTCOME_SUCCESS;
-}
 
 /**
  * Detect the available hardware monitor implementation.
@@ -244,7 +150,7 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
 // held off across the macro definitions.
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
     CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
-        CATALEJO_CONCAT(catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
+        CATALEJO_CONCAT(catalejo_image_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
                                                          CATALEJO_UNUSED target_type *target_value)  \
     {                                                                                                \
         __asm__ volatile(                                                                            \
@@ -275,7 +181,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
     CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
-        CATALEJO_CONCAT(catalejo_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
+        CATALEJO_CONCAT(catalejo_image_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
                                                           CATALEJO_UNUSED const target_type *target_source) \
     {                                                                                                \
         __asm__ volatile(                                                                            \
@@ -306,7 +212,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 // clang-format on
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
-catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
+catalejo_image_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     // clang-format off
     __asm__ volatile(
@@ -323,7 +229,7 @@ catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by the handler in %rdx. */
+        /* Report the fault signal supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
@@ -332,7 +238,7 @@ catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_monitor_intel_wait()
 {
     // clang-format off
     __asm__ volatile(
@@ -352,7 +258,7 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by the handler in %rdx. */
+        /* Report the fault signal supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
@@ -362,7 +268,7 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
 }
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
-catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
+catalejo_image_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     // clang-format off
     __asm__ volatile(
@@ -381,7 +287,7 @@ catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by the handler in %rdx. */
+        /* Report the fault signal supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
@@ -390,7 +296,7 @@ catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_monitor_amd_wait()
 {
     // clang-format off
     __asm__ volatile(
@@ -414,7 +320,7 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Restore RBX and report the fault signal supplied by the handler in %rdx. */
+        /* Restore RBX and report the fault signal supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movq %r8, %rbx\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
@@ -424,9 +330,9 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
-catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
-              CATALEJO_UNUSED size_t target_count)
+CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_image_copy(
+    CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
+    CATALEJO_UNUSED size_t target_count)
 {
     // clang-format off
     __asm__ volatile(
