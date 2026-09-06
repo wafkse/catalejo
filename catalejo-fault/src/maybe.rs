@@ -2,14 +2,19 @@
 
 use core::{
     marker,
+    mem::{self, MaybeUninit},
     num::NonZero,
     ops::{Deref, DerefMut},
     ptr,
 };
 
-use catalejo_memory::prelude::{Primitive, Unassociated};
+use catalejo_memory::{
+    prelude::{Primitive, Unassociated},
+    primitive::PrimitiveUnion,
+};
+use catalejo_sys::{access, exception::Image, ffi::binding};
 
-use crate::{behavior::Faultable, ffi};
+use crate::behavior::Faultable;
 
 /// An opaque probe.
 ///
@@ -69,38 +74,77 @@ impl<F> MaybeFault<F>
 where
     F: Faultable,
 {
-    /// Read from the maybe-fault pointer.
+    /// Read from the maybe-fault pointer through an initialized exception image.
     ///
     /// # Safety
     ///
-    /// See [`ffi::read`] for safety concerns.
+    /// The address must be aligned for `F` and must name ordinary memory suitable for a protected
+    /// hardware access. `image` must be registered for the current address space through a live
+    /// Mirilla session before the access can fault.
     #[inline]
-    pub unsafe fn read(&self) -> Option<F> {
+    pub unsafe fn read(&self, image: &Image) -> Option<F> {
         let &Self(target_source, ..) = self;
 
-        // SAFETY: Safety constraints are delegated to the caller.
-        unsafe {
-            ffi::read(ptr::with_exposed_provenance_mut(NonZero::<usize>::get(
+        let target_source = ptr::with_exposed_provenance::<PrimitiveUnion>(target_source.get());
+
+        let mut target_value =
+            // SAFETY:
+            // `PrimitiveUnion` is composed entirely of integer primitives.
+            unsafe { MaybeUninit::<PrimitiveUnion>::zeroed().assume_init() };
+
+        // SAFETY:
+        // The caller supplies the pointer contract and `image` proves successful image setup.
+        let target_outcome = unsafe {
+            access::read(
+                image,
                 target_source,
-            )))
+                ptr::from_mut(&mut target_value),
+                F::PRIMITIVE,
+            )
+        };
+
+        match target_outcome {
+            binding::CATALEJO_OUTCOME_SUCCESS => Some(
+                // SAFETY:
+                // `Faultable` guarantees that `F` has the selected primitive representation.
+                unsafe { mem::transmute_copy::<PrimitiveUnion, F>(&target_value) },
+            ),
+            binding::CATALEJO_OUTCOME_ERROR => None,
+            #[cfg(not(feature = "stealth-mode"))]
+            _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 
-    /// Write to the maybe-fault pointer. Returns *true* if the write did *not fault*, *false* otherwise.
+    /// Write to the maybe-fault pointer through an initialized exception image.
     ///
     /// # Safety
     ///
-    /// See [`ffi::write`] for safety concerns.
+    /// The address must be aligned for `F` and writable as ordinary memory. `image` must be
+    /// registered for the current address space through a live Mirilla session before the access
+    /// can fault.
     #[inline]
-    pub unsafe fn write(&self, target_value: F) -> bool {
+    pub unsafe fn write(&self, image: &Image, target_value: F) -> bool {
         let &Self(target_address, ..) = self;
+        let target_address =
+            ptr::with_exposed_provenance_mut::<PrimitiveUnion>(target_address.get());
+        let target_source = (&raw const target_value).cast::<PrimitiveUnion>();
 
-        // SAFETY: Safety constraints are delegated to the caller.
-        unsafe {
-            ffi::write(
-                ptr::with_exposed_provenance_mut(NonZero::<usize>::get(target_address)),
-                target_value,
-            )
+        // SAFETY:
+        // The caller supplies the pointer contract and `image` proves successful image setup.
+        let target_outcome =
+            unsafe { access::write(image, target_address, target_source, F::PRIMITIVE) };
+
+        match target_outcome {
+            binding::CATALEJO_OUTCOME_SUCCESS => true,
+            binding::CATALEJO_OUTCOME_ERROR => false,
+            #[cfg(not(feature = "stealth-mode"))]
+            _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 }
@@ -111,6 +155,7 @@ where
 {
     type Target = NonZero<usize>;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         let Self(target_address, ..) = self;
 
@@ -122,6 +167,7 @@ impl<F> DerefMut for MaybeFault<F>
 where
     F: Faultable,
 {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         let Self(target_address, ..) = self;
 
@@ -136,8 +182,14 @@ mod test {
 
     use core::fmt::Debug;
 
+    use std::{
+        fs::OpenOptions,
+        os::fd::{AsFd, OwnedFd},
+    };
+
+    use catalejo_sys::{exception::Image, ffi};
+
     use crate::behavior::Faultable;
-    use crate::ffi::{image as fault_image, register_test_image};
 
     use super::MaybeFault;
 
@@ -147,9 +199,22 @@ mod test {
     const FAULTING_ADDRESS: NonZero<usize> =
         NonZero::new(0x50).expect("the faulting address must be non-zero");
 
-    /// Ensure the sealed accessor image exists for a non-faulting unit test.
-    fn image() {
-        fault_image().expect("the sealed accessor image must initialize");
+    /// Open one Mirilla session and register the initialized image for this test process.
+    fn registration() -> (OwnedFd, &'static Image) {
+        let image = Image::retrieve().expect("the sealed accessor image must initialize");
+        let target_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mirilla")
+            .expect("the Mirilla test device must open");
+        let target_device = OwnedFd::from(target_file);
+
+        // SAFETY:
+        // The descriptor was opened from Mirilla and remains live in the returned owner.
+        unsafe { ffi::command::register_exception_image(target_device.as_fd(), image) }
+            .expect("the exception image must register");
+
+        (target_device, image)
     }
 
     /// The size of a single page, in bytes.
@@ -231,8 +296,8 @@ mod test {
         let maybe = MaybeFault::<u64>::new(address(&raw const target_value));
 
         // SAFETY: The address is a live, aligned `u64` for the duration of the read.
-        image();
-        let target_outcome = unsafe { maybe.read() };
+        let image = Image::retrieve().expect("the sealed accessor image must initialize");
+        let target_outcome = unsafe { maybe.read(image) };
 
         assert_eq!(target_outcome, Some(0xDEAD_BEEF_u64));
     }
@@ -240,11 +305,11 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn read_of_a_faulting_address_yields_none() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         let maybe = MaybeFault::<u64>::new(FAULTING_ADDRESS);
 
         // SAFETY: The address is aligned and the device-backed test environment registers the image.
-        let target_outcome = unsafe { maybe.read() };
+        let target_outcome = unsafe { maybe.read(image) };
 
         assert_eq!(target_outcome, None);
     }
@@ -256,8 +321,8 @@ mod test {
         let maybe = MaybeFault::<u64>::new(address((&raw mut target_slot).cast_const()));
 
         // SAFETY: The address is a live, aligned, exclusively-borrowed `u64`.
-        image();
-        let target_outcome = unsafe { maybe.write(0xC0FF_EE00) };
+        let image = Image::retrieve().expect("the sealed accessor image must initialize");
+        let target_outcome = unsafe { maybe.write(image, 0xC0FF_EE00) };
 
         assert!(target_outcome);
         assert_eq!(target_slot, 0xC0FF_EE00);
@@ -266,11 +331,11 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn write_to_a_faulting_address_reports_failure() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         let maybe = MaybeFault::<u64>::new(FAULTING_ADDRESS);
 
         // SAFETY: The address is aligned and the device-backed test environment registers the image.
-        let target_outcome = unsafe { maybe.write(0xFF) };
+        let target_outcome = unsafe { maybe.write(image, 0xFF) };
 
         assert!(!target_outcome);
     }
@@ -281,7 +346,7 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn read_tracks_a_pages_lifecycle() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         const SENTINEL: u64 = 0x1234_5678_9ABC_DEF0;
 
         let target_page = map(libc::PROT_READ | libc::PROT_WRITE);
@@ -289,17 +354,15 @@ mod test {
         // A page is page-aligned, hence trivially `8`-aligned for a `u64`.
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        image();
-
         // SAFETY: The page is mapped read-write and aligned for the duration of the call.
         assert!(
-            unsafe { maybe.write(SENTINEL) },
+            unsafe { maybe.write(image, SENTINEL) },
             "writing through a live mapping must succeed",
         );
 
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             Some(SENTINEL),
             "reading a live mapping must yield the written sentinel",
         );
@@ -315,7 +378,7 @@ mod test {
         //
         // SAFETY: The address is aligned and the device-backed test environment registers the image.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             None,
             "reading the now-inaccessible page must fault to `None`",
         );
@@ -328,24 +391,22 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn write_to_a_readonly_page_faults_while_reads_succeed() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         let target_page = map(libc::PROT_READ);
 
         // A freshly-mapped anonymous page reads back as zero.
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        image();
-
         // SAFETY: The page is mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             Some(0),
             "a fresh read-only page must read back as zero",
         );
 
         // SAFETY: The address is aligned; the write faults on the read-only page.
         assert!(
-            !unsafe { maybe.write(0xDEAD_BEEF) },
+            !unsafe { maybe.write(image, 0xDEAD_BEEF) },
             "writing to a read-only page must fault to `false`",
         );
 
@@ -353,7 +414,7 @@ mod test {
         //
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             Some(0),
             "a faulting write must leave the memory untouched",
         );
@@ -366,18 +427,16 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn revoking_write_permission_flips_writes_to_faulting() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         const SENTINEL: u64 = 0x0BAD_F00D_DEAD_C0DE;
 
         let target_page = map(libc::PROT_READ | libc::PROT_WRITE);
 
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        image();
-
         // SAFETY: The page is mapped read-write and aligned.
         assert!(
-            unsafe { maybe.write(SENTINEL) },
+            unsafe { maybe.write(image, SENTINEL) },
             "the initial write to a read-write page must succeed",
         );
 
@@ -385,13 +444,13 @@ mod test {
 
         // SAFETY: The address is aligned; the write now faults on the read-only page.
         assert!(
-            !unsafe { maybe.write(!SENTINEL) },
+            !unsafe { maybe.write(image, !SENTINEL) },
             "the write must fault once write permission is revoked",
         );
 
         // SAFETY: The page is still mapped readable and aligned.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             Some(SENTINEL),
             "the read must still observe the value from before the revocation",
         );
@@ -403,23 +462,21 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn an_inaccessible_page_faults_on_both_reads_and_writes() {
-        let _target_registration = register_test_image();
+        let (_target_registration, image) = registration();
         let target_page = map(libc::PROT_NONE);
 
         let maybe = MaybeFault::<u64>::new(address(target_page.cast::<u64>().cast_const()));
 
-        image();
-
         // SAFETY: The address is aligned; the read faults on the inaccessible page.
         assert_eq!(
-            unsafe { maybe.read() },
+            unsafe { maybe.read(image) },
             None,
             "reading a `PROT_NONE` page must fault to `None`",
         );
 
         // SAFETY: The address is aligned; the write faults on the inaccessible page.
         assert!(
-            !unsafe { maybe.write(0xFF) },
+            !unsafe { maybe.write(image, 0xFF) },
             "writing a `PROT_NONE` page must fault to `false`",
         );
 
@@ -428,7 +485,7 @@ mod test {
 
     /// Drive every primitive width through both a live mapping (round-trip) and
     /// the unmapped bottom page (fault), so each per-width routine is covered.
-    fn exercise_width<F>(target_value: F)
+    fn exercise_width<F>(image: &Image, target_value: F)
     where
         F: Faultable + Copy + PartialEq + Debug,
     {
@@ -439,14 +496,14 @@ mod test {
 
         // SAFETY: The page is mapped read-write and aligned for `F`.
         assert!(
-            unsafe { live.write(target_value) },
+            unsafe { live.write(image, target_value) },
             "a width-{} write to a live mapping must succeed",
             size_of::<F>() * 8,
         );
 
         // SAFETY: The page is still mapped readable and aligned for `F`.
         assert_eq!(
-            unsafe { live.read() },
+            unsafe { live.read(image) },
             Some(target_value),
             "a width-{} read must yield the written value",
             size_of::<F>() * 8,
@@ -458,7 +515,7 @@ mod test {
 
         // SAFETY: `0x50` is aligned for any primitive width; the read faults.
         assert_eq!(
-            unsafe { faulting.read() },
+            unsafe { faulting.read(image) },
             None,
             "a width-{} read of an unmapped page must fault to `None`",
             size_of::<F>() * 8,
@@ -466,7 +523,7 @@ mod test {
 
         // SAFETY: `0x50` is aligned for any primitive width; the write faults.
         assert!(
-            !unsafe { faulting.write(target_value) },
+            !unsafe { faulting.write(image, target_value) },
             "a width-{} write to an unmapped page must fault to `false`",
             size_of::<F>() * 8,
         );
@@ -475,13 +532,12 @@ mod test {
     #[test]
     #[ignore = "requires a Mirilla-registered exception image"]
     fn every_primitive_width_round_trips_and_faults() {
-        let _target_registration = register_test_image();
-        image();
+        let (_target_registration, image) = registration();
 
-        exercise_width::<u8>(0xA5);
-        exercise_width::<u16>(0xA55A);
-        exercise_width::<u32>(0xDEAD_BEEF);
-        exercise_width::<u64>(0x1234_5678_9ABC_DEF0);
+        exercise_width::<u8>(image, 0xA5);
+        exercise_width::<u16>(image, 0xA55A);
+        exercise_width::<u32>(image, 0xDEAD_BEEF);
+        exercise_width::<u64>(image, 0x1234_5678_9ABC_DEF0);
     }
 
     /// A genuine stack overflow must still reach the host's ordinary overflow handler. The faulting

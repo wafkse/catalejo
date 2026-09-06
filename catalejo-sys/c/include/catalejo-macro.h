@@ -18,12 +18,12 @@
 #define CATALEJO_OUTCOME_INVALID_VALUE_VALUE -2
 
 /**
- * The outcome type for the `catalejo-fault` API.
+ * The outcome type for Catalejo userspace operations.
  */
-typedef enum catalejo_faultable_outcome {
+typedef enum catalejo_outcome {
     CATALEJO_OUTCOME_SUCCESS = CATALEJO_OUTCOME_SUCCESS_VALUE,
     CATALEJO_OUTCOME_ERROR = CATALEJO_OUTCOME_ERROR_VALUE,
     CATALEJO_OUTCOME_INVALID_VALUE = CATALEJO_OUTCOME_INVALID_VALUE_VALUE,
-} catalejo_faultable_outcome_t;
+} catalejo_outcome_t;
 
 #endif /* ifndef _CATALEJO_MACRO_H_ */

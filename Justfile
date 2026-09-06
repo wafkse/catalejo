@@ -95,18 +95,18 @@ lint-c:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Every tracked C source across the kernel module and the fault subsystem.
+    # Every tracked C source across the kernel module and the system userspace mechanism.
     sources=(
         mirilla/src/*.c mirilla/include/*.h
         mirilla/test/*.c mirilla/test/*.h
-        catalejo-fault/c/src/*.c catalejo-fault/c/include/*.h
+        catalejo-sys/c/src/*.c catalejo-sys/c/include/*.h
     )
 
     echo "==> clang-format (${#sources[@]} files)"
     clang-format --dry-run --Werror "${sources[@]}"
 
-    # clangd needs a compile database. The userspace test suite and the fault
-    # subsystem build without the kernel, so `bear` captures their commands on a
+    # clangd needs a compile database. The userspace test suite and the system
+    # mechanism build without the kernel, so `bear` captures their commands on a
     # bare host. The in-kernel module sources need kernel headers and are checked
     # when the module is built, so they are left out of this pass.
     echo "==> clangd --check (userspace translation units)"
@@ -116,7 +116,7 @@ lint-c:
     bear --output "$database/compile_commands.json" -- make -C mirilla tests >/dev/null
 
     status=0
-    for unit in mirilla/test/*.c catalejo-fault/c/src/*.c; do
+    for unit in mirilla/test/*.c catalejo-sys/c/src/*.c; do
         # clangd --check reports its own tweak self-tests as errors, so gate only
         # on genuine clang diagnostics carrying a source position.
         diagnostics=$(clangd --compile-commands-dir="$database" --check="$unit" 2>&1 |

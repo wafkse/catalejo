@@ -13,6 +13,8 @@ default-device-path = []
 stealth-mode = []
 
 [dependencies]
+catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
+tokel = "0.2.5"
 
 [build-dependencies]
 bindgen = "0.72.1"

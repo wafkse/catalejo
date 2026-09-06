@@ -28,34 +28,15 @@
 /* A pid outside any real pid range (`pid_max` caps at 1 << 22). */
 #define NONEXISTENT_PID 0x7fffffff
 
-/* Repeating the same exception-image registration on one session is idempotent. */
-static int test_exception_registration_idempotent(void)
-{
-    int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image;
-
-    ASSERT(mirilla_fd >= 0, "failed to open device");
-    ASSERT(catalejo_fault_image_initialize(&image) == 0, "failed to retrieve exception image");
-    ASSERT(MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image)), "repeated "
-                                                                                        "exception "
-                                                                                        "registrati"
-                                                                                        "on "
-                                                                                        "failed");
-
-    close(mirilla_fd);
-    return 0;
-}
-
 /* An exception image must describe complete page-aligned VMAs. */
 static int test_exception_registration_rejects_misaligned_image(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image;
+    struct mirilla_except_image image = harness_exception_runtime.image;
 
     ASSERT(mirilla_fd >= 0, "failed to open device");
-    ASSERT(catalejo_fault_image_initialize(&image) == 0, "failed to retrieve exception image");
 
-    image.table_address++;
+    image.except_table.region_address++;
     errno = 0;
     int rejection_status = expect_ioctl_rejection(
         catalejo_mirilla_except_register(mirilla_fd, &image), EINVAL, "misaligned exception table");
@@ -68,12 +49,11 @@ static int test_exception_registration_rejects_misaligned_image(void)
 static int test_exception_registration_rejects_oversized_table(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image;
+    struct mirilla_except_image image = harness_exception_runtime.image;
 
     ASSERT(mirilla_fd >= 0, "failed to open device");
-    ASSERT(catalejo_fault_image_initialize(&image) == 0, "failed to retrieve exception image");
 
-    image.table_length += (virtual_size_t)sysconf(_SC_PAGESIZE);
+    image.except_table.region_size += (virtual_size_t)sysconf(_SC_PAGESIZE);
     errno = 0;
     int rejection_status = expect_ioctl_rejection(
         catalejo_mirilla_except_register(mirilla_fd, &image), EINVAL, "oversized exception table");
@@ -82,16 +62,35 @@ static int test_exception_registration_rejects_oversized_table(void)
     return rejection_status;
 }
 
+/* One observer address space may publish only one exception image. */
+static int test_exception_registration_is_unique_per_mm(void)
+{
+    int mirilla_fd = mirilla_open_device();
+    int duplicate_fd = open(MIRILLA_DEVICE, O_RDWR);
+    struct mirilla_except_image image = harness_exception_runtime.image;
+
+    ASSERT(mirilla_fd >= 0, "failed to open registered device session");
+    ASSERT(duplicate_fd >= 0, "failed to open duplicate device session");
+
+    errno = 0;
+    int rejection_status =
+        expect_ioctl_rejection(catalejo_mirilla_except_register(duplicate_fd, &image), EEXIST,
+                               "second exception image for one address space");
+
+    close(duplicate_fd);
+    close(mirilla_fd);
+    return rejection_status;
+}
+
 /* A forked child has a distinct mm and receives protection only after its own registration. */
 static int test_exception_registration_is_scoped_to_mm(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image;
+    struct mirilla_except_image image = harness_exception_runtime.image;
     pid_t child;
     int child_status;
 
     ASSERT(mirilla_fd >= 0, "failed to open device");
-    ASSERT(catalejo_fault_image_initialize(&image) == 0, "failed to retrieve exception image");
 
     child = fork();
     ASSERT(child >= 0, "failed to fork unregistered child");
@@ -100,7 +99,7 @@ static int test_exception_registration_is_scoped_to_mm(void)
         struct rlimit target_limit = { .rlim_cur = 0, .rlim_max = 0 };
 
         setrlimit(RLIMIT_CORE, &target_limit);
-        catalejo_read_u32((const uint32_t *)0x50, &target_value);
+        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value);
         _exit(2);
     }
 
@@ -117,7 +116,8 @@ static int test_exception_registration_is_scoped_to_mm(void)
 
         if (!MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image)))
             _exit(3);
-        if (catalejo_read_u32((const uint32_t *)0x50, &target_value) != CATALEJO_OUTCOME_ERROR)
+        if (catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value) !=
+            CATALEJO_OUTCOME_ERROR)
             _exit(4);
         _exit(0);
     }
@@ -133,11 +133,9 @@ static int test_exception_registration_is_scoped_to_mm(void)
 /* Closing the final descriptor for a session retires its exception registration. */
 static int test_exception_registration_follows_session_lifetime(void)
 {
-    struct mirilla_except_image image;
+    struct mirilla_except_image image = harness_exception_runtime.image;
     pid_t child;
     int child_status;
-
-    ASSERT(catalejo_fault_image_initialize(&image) == 0, "failed to retrieve exception image");
 
     child = fork();
     ASSERT(child >= 0, "failed to fork session-lifetime child");
@@ -153,7 +151,7 @@ static int test_exception_registration_follows_session_lifetime(void)
             _exit(3);
         close(mirilla_fd);
 
-        catalejo_read_u32((const uint32_t *)0x50, &target_value);
+        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value);
         _exit(4);
     }
 
@@ -671,11 +669,12 @@ int main(int argc, char *argv[])
 
     RUN_TEST("Reject Foreign Magic", test_bad_magic);
     RUN_TEST("Reject Foreign Category", test_bad_category);
-    RUN_TEST("Exception Registration Is Idempotent", test_exception_registration_idempotent);
     RUN_TEST("Reject Misaligned Exception Image",
              test_exception_registration_rejects_misaligned_image);
     RUN_TEST("Reject Oversized Exception Table",
              test_exception_registration_rejects_oversized_table);
+    RUN_TEST("Exception Registration Is Unique Per MM",
+             test_exception_registration_is_unique_per_mm);
     RUN_TEST("Exception Registration Is Scoped To MM", test_exception_registration_is_scoped_to_mm);
     RUN_TEST("Exception Registration Follows Session Lifetime",
              test_exception_registration_follows_session_lifetime);

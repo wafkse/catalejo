@@ -117,13 +117,10 @@ dependencies = [
 name = "catalejo-fault"
 version = "0.1.0"
 dependencies = [
- "bindgen",
  "catalejo-memory",
  "catalejo-sys",
- "cc",
  "libc",
  "tokel",
- "walkdir",
 ]
 
 [[package]]
@@ -144,8 +141,10 @@ name = "catalejo-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "catalejo-memory",
  "cc",
  "libc",
+ "tokel",
  "walkdir",
 ]
 

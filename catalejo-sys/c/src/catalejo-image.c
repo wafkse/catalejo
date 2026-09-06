@@ -3,8 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <sched.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,16 +14,7 @@
 
 #include <linux/memfd.h>
 
-#include "catalejo-fixup.h"
 #include "catalejo-image.h"
-
-#ifndef MFD_EXEC
-#define MFD_EXEC 0x0010U
-#endif
-
-static atomic_int catalejo_image_state = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
-static struct catalejo_image_runtime catalejo_image_runtime;
-static int catalejo_image_error = EIO;
 
 /**
  * Round a nonzero byte count up to a page boundary.
@@ -133,31 +122,29 @@ static int catalejo_image_write_records(int target_fd, off_t target_table_offset
     uintptr_t target_original_stop = (uintptr_t)CATALEJO_FAULT_SECTION_BOUNDARY_STOP;
     uintptr_t target_record_start = (uintptr_t)CATALEJO_FAULT_FIXUP_SECTION_BOUNDARY_START;
     uintptr_t target_record_stop = (uintptr_t)CATALEJO_FAULT_FIXUP_SECTION_BOUNDARY_STOP;
-    size_t target_record_count =
+
+    size_t target_record_total =
         (target_record_stop - target_record_start) / sizeof(struct mirilla_except_record);
     size_t target_index;
 
-    for (target_index = 0; target_index < target_record_count; ++target_index) {
+    for (target_index = 0; target_index < target_record_total; ++target_index) {
         const struct mirilla_except_record *target_original_record =
             &((const struct mirilla_except_record *)target_record_start)[target_index];
         struct mirilla_except_record target_record;
-        uintptr_t target_runtime_record_address = target_runtime_table +
-                                                  sizeof(struct mirilla_except_table_header) +
-                                                  target_index * sizeof(target_record);
-        uintptr_t target_start;
-        uintptr_t target_end;
-        uintptr_t target_fixup;
+        uintptr_t target_runtime_record_address =
+            target_runtime_table + target_index * sizeof(target_record);
+        uintptr_t target_start, target_end, target_rollback;
 
         target_start = virtual_relative_resolve(&target_original_record->start_address);
         target_end = virtual_relative_resolve(&target_original_record->end_address);
-        target_fixup = virtual_relative_resolve(&target_original_record->fixup_address);
+        target_rollback = virtual_relative_resolve(&target_original_record->rollback_address);
 
         if (!catalejo_image_rebase(target_start, target_original_start, target_original_stop,
                                    target_runtime_accessor, false, &target_start) ||
             !catalejo_image_rebase(target_end, target_original_start, target_original_stop,
                                    target_runtime_accessor, true, &target_end) ||
-            !catalejo_image_rebase(target_fixup, target_original_start, target_original_stop,
-                                   target_runtime_accessor, false, &target_fixup) ||
+            !catalejo_image_rebase(target_rollback, target_original_start, target_original_stop,
+                                   target_runtime_accessor, false, &target_rollback) ||
             target_end <= target_start ||
             !catalejo_relative_encode(target_start,
                                       target_runtime_record_address +
@@ -167,18 +154,17 @@ static int catalejo_image_write_records(int target_fd, off_t target_table_offset
                                       target_runtime_record_address +
                                           offsetof(struct mirilla_except_record, end_address),
                                       &target_record.end_address) ||
-            !catalejo_relative_encode(target_fixup,
+            !catalejo_relative_encode(target_rollback,
                                       target_runtime_record_address +
-                                          offsetof(struct mirilla_except_record, fixup_address),
-                                      &target_record.fixup_address))
+                                          offsetof(struct mirilla_except_record, rollback_address),
+                                      &target_record.rollback_address))
             return -EINVAL;
 
         target_record.except_mask = target_original_record->except_mask;
 
-        int target_status = catalejo_write_all(
-            target_fd, &target_record, sizeof(target_record),
-            target_table_offset + (off_t)sizeof(struct mirilla_except_table_header) +
-                (off_t)(target_index * sizeof(target_record)));
+        int target_status =
+            catalejo_write_all(target_fd, &target_record, sizeof(target_record),
+                               target_table_offset + (off_t)(target_index * sizeof(target_record)));
         if (target_status)
             return target_status;
     }
@@ -187,7 +173,7 @@ static int catalejo_image_write_records(int target_fd, off_t target_table_offset
 }
 
 /**
- * Project one original function entry into the copied accessor mapping.
+ * Project one original function entry into the copied rollback mapping.
  */
 static void *catalejo_image_entry(void *target_accessor, const void *target_original)
 {
@@ -207,13 +193,11 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
     uintptr_t target_table_start = (uintptr_t)CATALEJO_FAULT_FIXUP_SECTION_BOUNDARY_START;
     uintptr_t target_table_stop = (uintptr_t)CATALEJO_FAULT_FIXUP_SECTION_BOUNDARY_STOP;
     size_t target_code_size = target_code_stop - target_code_start;
-    size_t target_record_table_size = target_table_stop - target_table_start;
-    size_t target_table_size;
+    size_t target_table_size = target_table_stop - target_table_start;
     size_t target_page_size;
     size_t target_accessor_length;
     size_t target_table_length;
     size_t target_backing_length;
-    size_t target_record_count;
     char target_fd_path[64];
     void *target_accessor = MAP_FAILED;
     void *target_table = MAP_FAILED;
@@ -222,14 +206,11 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
     int target_status = -EINVAL;
     long target_page_size_raw = sysconf(_SC_PAGESIZE);
 
-    if (target_page_size_raw <= 0 || !target_code_size || !target_record_table_size ||
-        target_record_table_size % sizeof(struct mirilla_except_record) ||
-        target_record_table_size > SIZE_MAX - sizeof(struct mirilla_except_table_header))
+    if (target_page_size_raw <= 0 || !target_code_size || !target_table_size ||
+        target_table_size % sizeof(struct mirilla_except_record))
         return -EINVAL;
 
     target_page_size = (size_t)target_page_size_raw;
-    target_record_count = target_record_table_size / sizeof(struct mirilla_except_record);
-    target_table_size = sizeof(struct mirilla_except_table_header) + target_record_table_size;
 
     if (!catalejo_page_align(target_code_size, target_page_size, &target_accessor_length) ||
         !catalejo_page_align(target_table_size, target_page_size, &target_table_length) ||
@@ -237,7 +218,7 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
         return -EOVERFLOW;
 
     target_backing_length = target_accessor_length + target_table_length;
-    target_fd = (int)syscall(SYS_memfd_create, "catalejo-fault",
+    target_fd = (int)syscall(SYS_memfd_create, CATALEJO_IMAGE_MEMFD_NAME,
                              MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC);
     if (target_fd < 0)
         return -errno;
@@ -279,15 +260,6 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
         goto release;
     }
 
-    struct mirilla_except_table_header target_table_header = {
-        .record_count = target_record_count,
-    };
-
-    target_status = catalejo_write_all(target_fd, &target_table_header, sizeof(target_table_header),
-                                       (off_t)target_accessor_length);
-    if (target_status)
-        goto release;
-
     target_status = catalejo_image_write_records(target_fd, (off_t)target_accessor_length,
                                                  (uintptr_t)target_table,
                                                  (uintptr_t)target_accessor);
@@ -310,10 +282,14 @@ static int catalejo_image_construct(struct catalejo_image_runtime *target_runtim
     }
 
     target_runtime->image = (struct mirilla_except_image){
-        .accessor_address = (virtual_address_t)(uintptr_t)target_accessor,
-        .accessor_length = target_accessor_length,
-        .table_address = (virtual_address_t)(uintptr_t)target_table,
-        .table_length = target_table_length,
+        .rollback_region = {
+            .region_address = (virtual_address_t)(uintptr_t)target_accessor,
+            .region_size = target_accessor_length,
+        },
+        .except_table = {
+            .region_address = (virtual_address_t)(uintptr_t)target_table,
+            .region_size = target_table_length,
+        },
     };
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
@@ -357,85 +333,67 @@ release:
     return target_status;
 }
 
-int catalejo_fault_image_initialize(struct mirilla_except_image *target_image)
+catalejo_outcome_t catalejo_fault_image_initialize(struct catalejo_image_runtime *target_runtime)
 {
-    int target_state = atomic_load_explicit(&catalejo_image_state, memory_order_acquire);
+    if (!target_runtime || catalejo_image_construct(target_runtime))
+        return CATALEJO_OUTCOME_ERROR;
 
-    if (target_state == CATALEJO_INITIALIZE_STATE_UNINITIALIZED) {
-        int target_expected = CATALEJO_INITIALIZE_STATE_UNINITIALIZED;
-
-        if (atomic_compare_exchange_strong_explicit(&catalejo_image_state, &target_expected,
-                                                    CATALEJO_INITIALIZE_STATE_INITIALIZING,
-                                                    memory_order_acq_rel, memory_order_acquire)) {
-            int target_status = catalejo_image_construct(&catalejo_image_runtime);
-
-            if (target_status) {
-                catalejo_image_error = -target_status;
-                atomic_store_explicit(&catalejo_image_state, CATALEJO_INITIALIZE_STATE_FAILED,
-                                      memory_order_release);
-            } else
-                atomic_store_explicit(&catalejo_image_state, CATALEJO_INITIALIZE_STATE_INITIALIZED,
-                                      memory_order_release);
-        }
-    }
-
-    while ((target_state = atomic_load_explicit(&catalejo_image_state, memory_order_acquire)) ==
-           CATALEJO_INITIALIZE_STATE_INITIALIZING)
-        sched_yield();
-
-    if (target_state != CATALEJO_INITIALIZE_STATE_INITIALIZED)
-        return -catalejo_image_error;
-
-    if (target_image)
-        *target_image = catalejo_image_runtime.image;
-
-    return 0;
+    return CATALEJO_OUTCOME_SUCCESS;
 }
 
-#define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(           \
-        const target_type *target_source, target_type *target_value)                         \
-    {                                                                                        \
-        return catalejo_image_runtime.entries.CATALEJO_CONCAT(read_, target_typename)(       \
-            target_source, target_value);                                                    \
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32)   \
+    catalejo_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(                       \
+        const struct catalejo_image_runtime *target_runtime, const target_type *target_source, \
+        target_type *target_value)                                                             \
+    {                                                                                          \
+        return target_runtime->entries.CATALEJO_CONCAT(read_, target_typename)(target_source,  \
+                                                                               target_value);  \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
-#define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(          \
-        target_type * target_value, const target_type *target_source)                        \
-    {                                                                                        \
-        return catalejo_image_runtime.entries.CATALEJO_CONCAT(write_, target_typename)(      \
-            target_value, target_source);                                                    \
+#define X(target_typename, target_type, target_mnemonic, target_register, target_register32)    \
+    catalejo_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(                       \
+        const struct catalejo_image_runtime *target_runtime, target_type *target_value,         \
+        const target_type *target_source)                                                       \
+    {                                                                                           \
+        return target_runtime->entries.CATALEJO_CONCAT(write_, target_typename)(target_value,   \
+                                                                                target_source); \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
-catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_arm(const uint8_t *target_address)
+catalejo_faultable_instruction_outcome_t
+catalejo_monitor_intel_arm(const struct catalejo_image_runtime *target_runtime,
+                           const uint8_t *target_address)
 {
-    return catalejo_image_runtime.entries.monitor_intel_arm(target_address);
+    return target_runtime->entries.monitor_intel_arm(target_address);
 }
 
-catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait(void)
+catalejo_faultable_instruction_outcome_t
+catalejo_monitor_intel_wait(const struct catalejo_image_runtime *target_runtime)
 {
-    return catalejo_image_runtime.entries.monitor_intel_wait();
+    return target_runtime->entries.monitor_intel_wait();
 }
 
-catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_arm(const uint8_t *target_address)
+catalejo_faultable_instruction_outcome_t
+catalejo_monitor_amd_arm(const struct catalejo_image_runtime *target_runtime,
+                         const uint8_t *target_address)
 {
-    return catalejo_image_runtime.entries.monitor_amd_arm(target_address);
+    return target_runtime->entries.monitor_amd_arm(target_address);
 }
 
-catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait(void)
+catalejo_faultable_instruction_outcome_t
+catalejo_monitor_amd_wait(const struct catalejo_image_runtime *target_runtime)
 {
-    return catalejo_image_runtime.entries.monitor_amd_wait();
+    return target_runtime->entries.monitor_amd_wait();
 }
 
-catalejo_faultable_copy_outcome_t catalejo_copy(uint8_t *target_address,
+catalejo_faultable_copy_outcome_t catalejo_copy(const struct catalejo_image_runtime *target_runtime,
+                                                uint8_t *target_address,
                                                 const uint8_t *target_source, size_t target_count)
 {
-    return catalejo_image_runtime.entries.copy(target_address, target_source, target_count);
+    return target_runtime->entries.copy(target_address, target_source, target_count);
 }

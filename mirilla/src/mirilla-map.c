@@ -1027,7 +1027,7 @@ mirilla_map_handle_command_address_space_layout(struct mirilla_device_context *d
         command_status = -ESRCH;
         MIRILLA_ERROR("map target id has no associated task");
 
-        goto release_target;
+        goto release_context;
     }
 
     down_read(&target_task->signal->exec_update_lock);
@@ -1168,7 +1168,7 @@ release_map_lock:
     mmap_read_unlock(target_space);
 
     if (!MIRILLA_COMMAND_IS_OK(command_status))
-        goto release_lists;
+        goto release_list;
 
     result->metadata = (struct mirilla_map_address_space_metadata){ environment_start,
                                                                     environment_end, argument_start,
@@ -1186,7 +1186,7 @@ release_map_lock:
         command_status = -EFAULT;
         MIRILLA_ERROR("failed to copy address space layout list");
 
-        goto release_lists;
+        goto release_list;
     }
 
     if (auxiliary_vector_population_count &&
@@ -1197,7 +1197,7 @@ release_map_lock:
         MIRILLA_ERROR("failed to copy auxiliary vector list");
     }
 
-release_lists:
+release_list:
     kfree(auxiliary_vector_list);
     kvfree(layout_list);
 
@@ -1213,7 +1213,7 @@ release_task:
      */
     put_task_struct(target_task);
 
-release_target:
+release_context:
     /*
      * NOTE(refcount): Drop acquired transient ref for the target context.
      */

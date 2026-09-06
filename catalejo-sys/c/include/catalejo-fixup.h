@@ -14,15 +14,18 @@ extern "C" {
 #endif
 
 /**
- * Signal classes accepted by a rollback record.
- *
- * These are independent of the platform's numeric signal values so the record format remains
- * simple and stable.
+ * Architectural exceptions accepted by ordinary protected memory operations.
  */
-#define CATALEJO_FAULT_SIGNAL_MEMORY \
-    (MIRILLA_EXCEPT_SIGNAL_SEGMENTATION_FAULT | MIRILLA_EXCEPT_SIGNAL_BUS_ERROR)
-#define CATALEJO_FAULT_SIGNAL_ALL \
-    (CATALEJO_FAULT_SIGNAL_MEMORY | MIRILLA_EXCEPT_SIGNAL_ILLEGAL_INSTRUCTION)
+#define CATALEJO_FAULT_EXCEPTION_MEMORY                           \
+    (MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_GENERAL_PROTECTION) | \
+     MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT) |         \
+     MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_ALIGNMENT_CHECK))
+
+/**
+ * Architectural exceptions accepted by protected operations using optional instructions.
+ */
+#define CATALEJO_FAULT_EXCEPTION_ALL \
+    (CATALEJO_FAULT_EXCEPTION_MEMORY | MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_INVALID_OPCODE))
 
 /**
  * A rollback record found inside the fixup program section.
@@ -42,13 +45,13 @@ typedef struct mirilla_except_record catalejo_rollback_record_t;
  * available to the runtime image builder even when linker garbage collection is enabled.
  */
 // clang-format off
-#define CATALEJO_ROLLBACK_RECORD(target_start, target_end, target_rollback, target_signal_mask) \
+#define CATALEJO_ROLLBACK_RECORD(target_start, target_end, target_rollback, target_exception_mask) \
     ".pushsection " CATALEJO_FAULT_FIXUP_SECTION_NAME ",\"aR\",@progbits\n\t"                   \
     ".balign 8\n\t"                                                                             \
     ".8byte " target_start " - .\n\t"                                                           \
     ".8byte " target_end " - .\n\t"                                                             \
     ".8byte " target_rollback " - .\n\t"                                                        \
-    ".8byte " CATALEJO_STR(target_signal_mask) "\n\t"                                           \
+    ".8byte " CATALEJO_STR(target_exception_mask) "\n\t"                                           \
     ".popsection\n\t"
 // clang-format on
 

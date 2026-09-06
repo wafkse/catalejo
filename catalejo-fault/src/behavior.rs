@@ -87,7 +87,7 @@ where
     let mut left_value: u64 = u64::MIN;
     let mut right_value: u64 = u64::MIN;
 
-    // SAFETY
+    // SAFETY:
     //
     // `Faultable` guarantees that `F` has one of the supported primitive representations.
     // Both destinations are initialized and each copy writes exactly the represented width.

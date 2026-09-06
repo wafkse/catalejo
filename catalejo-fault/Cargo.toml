@@ -6,8 +6,6 @@ description = "Fault-tolerant memory access primitives for Catalejo."
 repository = "https://github.com/wafkse/catalejo"
 license = "GPL-3.0-or-later"
 
-build = "build.rs"
-
 [lib]
 
 [features]
@@ -20,8 +18,3 @@ tokel = "0.2.5"
 
 [dev-dependencies]
 libc = "0.2.186"
-
-[build-dependencies]
-bindgen = "0.72.1"
-cc = "1.2.65"
-walkdir = "2.5.0"

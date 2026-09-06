@@ -5,7 +5,7 @@
  * exercises its scenarios through the helpers below, and exits nonzero
  * when any case failed so a runner can aggregate results.
  *
- * Faulting accesses ride the sealed `catalejo-fault` image end to end. Every opened Mirilla session
+ * Faulting accesses ride the sealed `catalejo-sys` image end to end. Every opened Mirilla session
  * registers the image for the current address space before protected reads begin.
  */
 
@@ -68,6 +68,7 @@ typedef struct {
 } test_results_t;
 
 static test_results_t results = { 0, 0, 0 };
+static struct catalejo_image_runtime harness_exception_runtime;
 
 /* Helper macros */
 #define TEST_START(name)                                      \
@@ -184,10 +185,8 @@ static inline int mirilla_open_device(void)
         fprintf(stderr, "Make sure the mirilla module is loaded (sudo insmod "
                         "mirilla.ko)\n");
     } else {
-        struct mirilla_except_image image;
-
-        if (catalejo_fault_image_initialize(&image) < 0 ||
-            !MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image))) {
+        if (!MIRILLA_COMMAND_IS_OK(
+                catalejo_mirilla_except_register(mirilla_fd, &harness_exception_runtime.image))) {
             perror("Failed to register the catalejo exception image");
             close(mirilla_fd);
             mirilla_fd = -1;
@@ -326,12 +325,12 @@ static inline int verify_region(void *addr, size_t size, unsigned int expected_b
 }
 
 /*
- * Construct the sealed `catalejo-fault` image for the suite.
+ * Construct the sealed `catalejo-sys` image for the suite.
  */
 static inline int harness_fault_initialize(void)
 {
-    if (catalejo_fault_image_initialize(NULL) < 0) {
-        fprintf(stderr, COLOR_RED "Failed to initialize the catalejo-fault image\n" COLOR_RESET);
+    if (catalejo_fault_image_initialize(&harness_exception_runtime) != CATALEJO_OUTCOME_SUCCESS) {
+        fprintf(stderr, COLOR_RED "Failed to initialize the catalejo-sys image\n" COLOR_RESET);
         return -1;
     }
     return 0;
@@ -343,12 +342,12 @@ static inline int harness_fault_initialize(void)
  * Returns `CATALEJO_OUTCOME_SUCCESS` and stores the value, or
  * `CATALEJO_OUTCOME_ERROR` when the registered Mirilla image recovered the access.
  */
-static inline catalejo_faultable_outcome_t faultable_probe_u32(const void *addr,
-                                                               unsigned int *value)
+static inline catalejo_outcome_t faultable_probe_u32(const void *addr, unsigned int *value)
 {
     uint32_t probe_value = 0;
 
-    catalejo_faultable_outcome_t outcome = catalejo_read_u32((const uint32_t *)addr, &probe_value);
+    catalejo_outcome_t outcome =
+        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)addr, &probe_value);
 
     if (outcome == CATALEJO_OUTCOME_SUCCESS && value)
         *value = probe_value;
@@ -363,8 +362,8 @@ static inline catalejo_faultable_outcome_t faultable_probe_u32(const void *addr,
  */
 static inline int faultable_read_region(void *destination, const void *source, size_t size)
 {
-    catalejo_faultable_copy_outcome_t copy_outcome =
-        catalejo_copy((uint8_t *)destination, (const uint8_t *)source, size);
+    catalejo_faultable_copy_outcome_t copy_outcome = catalejo_copy(
+        &harness_exception_runtime, (uint8_t *)destination, (const uint8_t *)source, size);
 
     return copy_outcome.outcome_status == CATALEJO_OUTCOME_SUCCESS ? 0 : -1;
 }

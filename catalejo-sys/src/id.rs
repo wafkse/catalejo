@@ -22,6 +22,7 @@ pub struct Id(pub NonZero<mirilla_id_t>);
 impl Deref for Id {
     type Target = NonZero<mirilla_id_t>;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         let Self(target_value) = self;
 
@@ -30,6 +31,7 @@ impl Deref for Id {
 }
 
 impl DerefMut for Id {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         let Self(target_value) = self;
 

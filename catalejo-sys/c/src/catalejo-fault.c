@@ -6,7 +6,6 @@
 #include <stdbool.h>
 
 #include <cpuid.h>
-#include <signal.h>
 
 #include "catalejo-macro.h"
 #include "catalejo-section.h"
@@ -83,17 +82,19 @@ static void catalejo_monitor_downgrade(catalejo_monitor_backend_t target_backend
                                             memory_order_acq_rel, memory_order_acquire);
 }
 
-catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address)
+catalejo_monitor_arm_outcome_t
+catalejo_monitor_arm(const struct catalejo_image_runtime *target_runtime,
+                     const uint8_t *target_address)
 {
     catalejo_monitor_backend_t target_backend = catalejo_monitor_select();
     catalejo_faultable_instruction_outcome_t target_outcome;
 
     switch (target_backend) {
     case CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR:
-        target_outcome = catalejo_monitor_intel_arm(target_address);
+        target_outcome = catalejo_monitor_intel_arm(target_runtime, target_address);
         break;
     case CATALEJO_MONITOR_BACKEND_AMD_MONITORX:
-        target_outcome = catalejo_monitor_amd_arm(target_address);
+        target_outcome = catalejo_monitor_amd_arm(target_runtime, target_address);
         break;
     case CATALEJO_MONITOR_BACKEND_UNSUPPORTED:
         return CATALEJO_MONITOR_ARM_UNSUPPORTED;
@@ -106,7 +107,7 @@ catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_addres
                    CATALEJO_MONITOR_ARM_INTEL_UMONITOR :
                    CATALEJO_MONITOR_ARM_AMD_MONITORX;
 
-    if (target_outcome.fault_signal == SIGILL) {
+    if (target_outcome.except_code == MIRILLA_EXCEPT_X86_INVALID_OPCODE) {
         catalejo_monitor_downgrade(target_backend);
 
         return CATALEJO_MONITOR_ARM_UNSUPPORTED;
@@ -115,7 +116,8 @@ catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_addres
     return CATALEJO_MONITOR_ARM_FAULT;
 }
 
-catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t target_backend)
+catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *target_runtime,
+                                         catalejo_monitor_backend_t target_backend)
 {
     if (target_backend != catalejo_monitor_select())
         return CATALEJO_OUTCOME_INVALID_VALUE;
@@ -124,10 +126,10 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
 
     switch (target_backend) {
     case CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR:
-        target_outcome = catalejo_monitor_intel_wait();
+        target_outcome = catalejo_monitor_intel_wait(target_runtime);
         break;
     case CATALEJO_MONITOR_BACKEND_AMD_MONITORX:
-        target_outcome = catalejo_monitor_amd_wait();
+        target_outcome = catalejo_monitor_amd_wait(target_runtime);
         break;
     case CATALEJO_MONITOR_BACKEND_UNSUPPORTED:
         return CATALEJO_OUTCOME_INVALID_VALUE;
@@ -149,7 +151,7 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
 // cannot lay out the backslash-continued `__asm__` template stably, so it is
 // held off across the macro definitions.
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
-    CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
+    CATALEJO_FAULT_ROUTINE catalejo_outcome_t                                             \
         CATALEJO_CONCAT(catalejo_image_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
                                                          CATALEJO_UNUSED target_type *target_value)  \
     {                                                                                                \
@@ -173,14 +175,14 @@ catalejo_faultable_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t ta
             "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"                         \
             "ret\n\t"                                                                                \
                                                                                                      \
-            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));            \
+            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_MEMORY));            \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
 #undef X
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
-    CATALEJO_FAULT_ROUTINE catalejo_faultable_outcome_t                                             \
+    CATALEJO_FAULT_ROUTINE catalejo_outcome_t                                             \
         CATALEJO_CONCAT(catalejo_image_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
                                                           CATALEJO_UNUSED const target_type *target_source) \
     {                                                                                                \
@@ -204,7 +206,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
             "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"                         \
             "ret\n\t"                                                                                \
                                                                                                      \
-            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));            \
+            CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_MEMORY));            \
     }
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
@@ -224,17 +226,17 @@ catalejo_image_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "umonitor %rax\n\t"
         "2:\n\t"
 
-        /* Report success with no fault signal. */
+        /* Report success with no architectural exception. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by Mirilla in %rdx. */
+        /* Report the architectural exception vector supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
     // clang-format on
 }
 
@@ -253,17 +255,17 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_m
         "umwait %ecx\n\t"
         "2:\n\t"
 
-        /* Report success with no fault signal. */
+        /* Report success with no architectural exception. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by Mirilla in %rdx. */
+        /* Report the architectural exception vector supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
     // clang-format on
 }
 
@@ -282,17 +284,17 @@ catalejo_image_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "monitorx\n\t"
         "2:\n\t"
 
-        /* Report success with no fault signal. */
+        /* Report success with no architectural exception. */
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Report the fault signal supplied by Mirilla in %rdx. */
+        /* Report the architectural exception vector supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
     // clang-format on
 }
 
@@ -314,19 +316,19 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_m
         "mwaitx\n\t"
         "2:\n\t"
 
-        /* Restore RBX and report success with no fault signal. */
+        /* Restore RBX and report success with no architectural exception. */
         "movq %r8, %rbx\n\t"
         "xorl %eax, %eax\n\t"
         "xorl %edx, %edx\n\t"
         "ret\n\t"
 
-        /* Restore RBX and report the fault signal supplied by Mirilla in %rdx. */
+        /* Restore RBX and report the architectural exception vector supplied by Mirilla in %rdx. */
         "3:\n\t"
         "movq %r8, %rbx\n\t"
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_ALL));
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
     // clang-format on
 }
 
@@ -368,6 +370,6 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_image_copy(
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_SIGNAL_MEMORY));
+        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_MEMORY));
     // clang-format on
 }

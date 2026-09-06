@@ -12,58 +12,6 @@ pub mod binding {
     include!(concat!(env!("OUT_DIR"), "/catalejo-binding.rs"));
 }
 
-/// Proof that a userspace exception image was constructed with the required immutable layout.
-///
-/// The proof is intentionally opaque to command callers. Construction is unsafe because the
-/// caller must guarantee that the described VMAs satisfy Mirilla's sealing and backing-object
-/// invariants.
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Image(binding::mirilla_except_image);
-
-impl Image {
-    /// Construct an image proof from its raw ABI representation.
-    ///
-    /// # Safety
-    ///
-    /// The raw image must describe the exact immutable accessor and exception-table VMAs that
-    /// Mirilla expects. In particular, both mappings must have their final permissions, be sealed
-    /// against VMA mutation, and share the immutable sealed backing object.
-    #[inline]
-    pub const unsafe fn from_raw(image: binding::mirilla_except_image) -> Self {
-        Self(image)
-    }
-
-    /// Return the first address of the executable accessor VMA.
-    #[inline]
-    pub const fn accessor_address(&self) -> binding::virtual_address_t {
-        self.0.accessor_address
-    }
-
-    /// Return the complete executable accessor VMA length.
-    #[inline]
-    pub const fn accessor_length(&self) -> binding::virtual_size_t {
-        self.0.accessor_length
-    }
-
-    /// Return the first address of the read-only exception-table VMA.
-    #[inline]
-    pub const fn table_address(&self) -> binding::virtual_address_t {
-        self.0.table_address
-    }
-
-    /// Return the complete exception-table VMA length.
-    #[inline]
-    pub const fn table_length(&self) -> binding::virtual_size_t {
-        self.0.table_length
-    }
-
-    #[inline]
-    const fn as_raw(&self) -> &binding::mirilla_except_image {
-        &self.0
-    }
-}
-
 pub mod command {
     //! Commands for userspace-kernel device ioctls.
     #![allow(
@@ -87,42 +35,10 @@ pub mod command {
     use core::ptr;
 
     use crate::{
-        ffi::{
-            Image,
-            binding::{self, mirilla_map_peephole_initialize_word_t, virtual_address_t},
-        },
+        exception::Image,
+        ffi::binding::{self, mirilla_map_peephole_initialize_word_t, virtual_address_t},
         id::{PeepholeId, TargetId},
     };
-
-    /// Register an immutable userspace exception image for this device session and address space.
-    ///
-    /// Repeating the same registration is idempotent. A different image for the same session and
-    /// address space is rejected. The [`Image`] argument proves that the userspace mappings were
-    /// constructed with the immutable layout expected by Mirilla.
-    ///
-    /// # Safety
-    ///
-    /// The file descriptor must come from Mirilla.
-    #[inline]
-    pub unsafe fn register_exception_image(fd: BorrowedFd, image: &Image) -> io::Result<()> {
-        // SAFETY: The caller provides the Mirilla descriptor and `Image` carries the immutable
-        // userspace image invariant.
-        let target_outcome = unsafe {
-            binding::catalejo_mirilla_except_register(fd.as_raw_fd(), ptr::from_ref(image.as_raw()))
-        };
-
-        match target_outcome {
-            binding::MIRILLA_COMMAND_OK => Ok(()),
-            target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
-                Err(io::Error::from_raw_os_error(target_errno.abs()))
-            }
-            #[cfg(not(feature = "stealth-mode"))]
-            _ => unreachable!(),
-
-            #[cfg(feature = "stealth-mode")]
-            _ => std::process::abort(),
-        }
-    }
 
     /// The canonical name of the device exposed by the kernel module.
     ///
@@ -143,6 +59,7 @@ pub mod command {
     ///
     /// A build without the `default-device-path` feature returns [`None`]. Callers must then
     /// provide a path explicitly or use an already-open device file descriptor.
+    #[inline]
     #[must_use]
     pub fn default_device_path() -> Option<&'static Path> {
         #[cfg(feature = "default-device-path")]
@@ -156,6 +73,54 @@ pub mod command {
         #[cfg(not(feature = "default-device-path"))]
         {
             None
+        }
+    }
+
+    /// Register the initialized exception image for the calling address space.
+    ///
+    /// # Safety
+    ///
+    /// The file descriptor must come from Mirilla.
+    #[inline]
+    pub unsafe fn register_exception_image(
+        target_device: BorrowedFd<'_>,
+        target_image: &Image,
+    ) -> io::Result<()> {
+        let rollback_region = target_image.rollback_region();
+        let except_table = target_image.except_table();
+
+        let rollback_region = binding::mirilla_except_region {
+            region_address: rollback_region.address(),
+            region_size: rollback_region.size(),
+        };
+        let except_table = binding::mirilla_except_region {
+            region_address: except_table.address(),
+            region_size: except_table.size(),
+        };
+        let image = binding::mirilla_except_image {
+            rollback_region,
+            except_table,
+        };
+
+        // SAFETY:
+        // The caller provides a Mirilla descriptor and `Image` proves successful image setup.
+        let target_outcome = unsafe {
+            binding::catalejo_mirilla_except_register(
+                target_device.as_raw_fd(),
+                ptr::from_ref(&image),
+            )
+        };
+
+        match target_outcome {
+            binding::MIRILLA_COMMAND_OK => Ok(()),
+            target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
+                Err(io::Error::from_raw_os_error(target_errno.abs()))
+            }
+            #[cfg(not(feature = "stealth-mode"))]
+            _ => unreachable!(),
+
+            #[cfg(feature = "stealth-mode")]
+            _ => std::process::abort(),
         }
     }
 

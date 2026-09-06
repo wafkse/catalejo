@@ -40,17 +40,12 @@ PWD := $(CURDIR)
 
 # --- Test Suite Build ---
 
-# The suites read peephole views through the catalejo-fault subsystem, so
-# its C sources are compiled straight into every test binary.
-CATALEJO_FAULT_DIR := ../catalejo-fault/c
-CATALEJO_FAULT_SRCS := $(wildcard $(CATALEJO_FAULT_DIR)/src/*.c)
-
-# The layout suite uses the catalejo-sys C wrappers, which recover `-errno`
-# from the raw ioctl so negative tests can assert the returned status directly.
+# The suites use the complete catalejo-sys userspace mechanism, including the sealed exception
+# image, protected accessors, monitor instructions, and Mirilla ioctl wrappers.
 CATALEJO_SYS_DIR := ../catalejo-sys/c
 CATALEJO_SYS_SRCS := $(wildcard $(CATALEJO_SYS_DIR)/src/*.c)
 
-TEST_CFLAGS := -I. -Iinclude -I$(CATALEJO_FAULT_DIR)/include -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
+TEST_CFLAGS := -I. -Iinclude -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
 
 TEST_SUITES := test/test-suite test/test-self test/test-concurrency \
            test/test-invariants test/test-ioctl test/test-layout
@@ -61,7 +56,8 @@ clean:
 	cp $(MIRILLA_SYMBOL_LIST) $(MIRILLA_SYMBOL_LIST).preserve
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 	mv $(MIRILLA_SYMBOL_LIST).preserve $(MIRILLA_SYMBOL_LIST)
-	rm -f $(TEST_SUITES) compile_commands.json include/*.generated.h
+	rm -f $(TEST_SUITES) compile_commands.json test/compile_commands.json \
+		../catalejo-sys/compile_commands.json include/*.generated.h
 
 install:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
@@ -76,8 +72,8 @@ endif
 
 test/test-concurrency: TEST_CFLAGS += -pthread
 
-test/%: test/%.c test/test-harness.h $(wildcard include/*.h) $(CATALEJO_FAULT_SRCS) $(CATALEJO_SYS_SRCS)
-	gcc -o $@ $< $(CATALEJO_FAULT_SRCS) $(CATALEJO_SYS_SRCS) $(TEST_CFLAGS)
+test/%: test/%.c test/test-harness.h $(wildcard include/*.h) $(CATALEJO_SYS_SRCS)
+	gcc -o $@ $< $(CATALEJO_SYS_SRCS) $(TEST_CFLAGS)
 
 tests: $(TEST_SUITES)
 	@echo "Test suites built successfully!"
@@ -101,9 +97,19 @@ test: tests
 format:
 	clang-format -style=file -i $(wildcard src/*.c include/*.h test/*.c test/*.h)
 
-# Generates compile_commands.json for Clangd
+# Generate distinct clangd databases for kernel and userspace source trees.
 language-server: clean
-	bear -- $(MAKE) all
+	@set -eu; \
+	database_directory=$$(mktemp -d); \
+	trap 'rm -rf "$$database_directory"' EXIT; \
+	bear --output "$$database_directory/kernel.json" -- $(MAKE) module; \
+	bear --output "$$database_directory/userspace.json" -- $(MAKE) tests; \
+	python3 tools/clangd-database.py --input "$$database_directory/kernel.json" \
+		--output compile_commands.json --root src --sanitize-kernel; \
+	python3 tools/clangd-database.py --input "$$database_directory/userspace.json" \
+		--output test/compile_commands.json --root test; \
+	python3 tools/clangd-database.py --input "$$database_directory/userspace.json" \
+		--output ../catalejo-sys/compile_commands.json --root ../catalejo-sys/c
 
 .PHONY: all clean install test tests module format language-server FORCE
 

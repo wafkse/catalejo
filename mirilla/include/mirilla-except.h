@@ -9,7 +9,12 @@
 #include "mirilla-miscellaneous.h"
 
 /* These definitions are part of the userspace ABI. */
-#ifndef __KERNEL__
+#ifdef __KERNEL__
+
+#include <linux/list.h>
+#include <linux/mm.h>
+
+#else
 
 #include <stddef.h>
 #include <stdint.h>
@@ -40,17 +45,34 @@ __attribute__((unused)) static const char *MIRILLA_COMMAND_NAME_EXCEPT_TABLE[] =
     (MIRILLA_COMMAND_NAME_EXCEPT_TABLE[except_command])
 
 /**
- * An except signal mask.
- *
- * Used to filter the exception set in an except-fixup site.
+ * A bitset of architectural exception vectors accepted by one rollback record.
  */
-typedef uint64_t mirilla_except_signal_mask_t;
+typedef uint64_t mirilla_except_mask_t;
 
-#define MIRILLA_EXCEPT_SIGNAL_SEGMENTATION_FAULT (1U << 0)
+/** Number of architectural vectors representable by mirilla_except_mask_t. */
+#define MIRILLA_EXCEPT_VECTOR_LIMIT (64U)
 
-#define MIRILLA_EXCEPT_SIGNAL_BUS_ERROR (1U << 1)
+/** Convert one architectural exception vector into its mask bit. */
+#define MIRILLA_EXCEPT_MASK(target_vector) (1ULL << (target_vector))
 
-#define MIRILLA_EXCEPT_SIGNAL_ILLEGAL_INSTRUCTION (1U << 2)
+/** x86 invalid-opcode exception vector (#UD). */
+#define MIRILLA_EXCEPT_X86_INVALID_OPCODE (6U)
+
+/** x86 general-protection exception vector (#GP). */
+#define MIRILLA_EXCEPT_X86_GENERAL_PROTECTION (13U)
+
+/** x86 page-fault exception vector (#PF). */
+#define MIRILLA_EXCEPT_X86_PAGE_FAULT (14U)
+
+/** x86 alignment-check exception vector (#AC). */
+#define MIRILLA_EXCEPT_X86_ALIGNMENT_CHECK (17U)
+
+/** Architectural exception vectors currently accepted by Mirilla records on x86. */
+#define MIRILLA_EXCEPT_X86_SUPPORTED_MASK                         \
+    (MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_INVALID_OPCODE) |     \
+     MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_GENERAL_PROTECTION) | \
+     MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT) |         \
+     MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_ALIGNMENT_CHECK))
 
 /**
  * An exception record.
@@ -59,9 +81,14 @@ typedef uint64_t mirilla_except_signal_mask_t;
  */
 struct mirilla_except_record {
     /**
-     * The address range [@start_address, @end_address) where an exception may be caught.
+     * The first instruction address where this record may catch an exception.
      */
-    virtual_relative_t start_address, end_address;
+    virtual_relative_t start_address;
+
+    /**
+     * The first instruction address after the catchable range.
+     */
+    virtual_relative_t end_address;
 
     /**
      * The recovery address entered after an accepted exception.
@@ -69,47 +96,39 @@ struct mirilla_except_record {
     virtual_relative_t rollback_address;
 
     /**
-     * The exception signal mask in use.
+     * The architectural exception-vector mask accepted by this record.
      */
-    mirilla_except_signal_mask_t except_mask;
+    mirilla_except_mask_t except_mask;
 };
 
 /**
- * Header stored at the beginning of a self-contained exception-table VMA.
- *
- * The valid `struct mirilla_except_record` array immediately follows this header. Remaining bytes in
- * the page-aligned VMA are padding and are not part of the table.
+ * A complete userspace memory region backed by one VMA.
  */
-struct mirilla_except_table_header {
+struct mirilla_except_region {
     /**
-     * The number of valid records following this header.
+     * The first byte of the VMA.
      */
-    virtual_size_t record_count;
+    virtual_address_t region_address;
+
+    /**
+     * The complete byte length of the VMA.
+     */
+    virtual_size_t region_size;
 };
 
 /**
- * A sealed userspace accessor image and its field-relative exception records.
+ * A sealed userspace rollback image and its field-relative exception records.
  */
 struct mirilla_except_image {
     /**
-     * The first byte of the executable accessor VMA.
+     * The executable region containing protected accessors and their rollback paths.
      */
-    virtual_address_t accessor_address;
+    struct mirilla_except_region rollback_region;
 
     /**
-     * The complete length of the executable accessor VMA.
+     * The read-only region containing the exception table.
      */
-    virtual_size_t accessor_length;
-
-    /**
-     * The first byte of the read-only exception-table VMA.
-     */
-    virtual_address_t table_address;
-
-    /**
-     * The complete length of the exception-table VMA.
-     */
-    virtual_size_t table_length;
+    struct mirilla_except_region except_table;
 };
 
 struct mirilla_except_register_argument {
@@ -132,32 +151,50 @@ MIRILLA_EXCEPT_DEFINE_COMMAND_IO(register);
 
 #ifdef __KERNEL__
 
-#include <linux/list.h>
-#include <linux/mm_types.h>
-
 struct mirilla_device_context;
 
-/*
- * An absolute kernel-owned exception record.
+/** Required VMA flags for the executable rollback region. */
+#define MIRILLA_EXCEPT_ROLLBACK_REQUIRED_FLAGS (VM_READ | VM_EXEC | VM_SHARED | VM_SEALED)
+
+/** Forbidden VMA flags for the executable rollback region. */
+#define MIRILLA_EXCEPT_ROLLBACK_FORBIDDEN_FLAGS (VM_WRITE | VM_MAYWRITE)
+
+/** Required VMA flags for the read-only exception table. */
+#define MIRILLA_EXCEPT_TABLE_REQUIRED_FLAGS (VM_READ | VM_SHARED | VM_SEALED)
+
+/** Forbidden VMA flags for the read-only exception table. */
+#define MIRILLA_EXCEPT_TABLE_FORBIDDEN_FLAGS (VM_WRITE | VM_EXEC | VM_MAYWRITE)
+
+/**
+ * Required seal flags for each memfd VMA.
  */
-struct mirilla_except_kernel_record {
-    unsigned long start_address;
-    unsigned long end_address;
-    unsigned long fixup_address;
-    mirilla_except_signal_mask_t except_mask;
+#define MIRILLA_EXCEPT_MEMFD_REQUIRED_FLAGS \
+    (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE)
+
+/**
+ * The unique exception image registered for an observer address space.
+ */
+struct mirilla_except_registration {
+    /** Link in the global RCU-published registration list. */
+    struct list_head global_node;
+
+    /** Link in the owning device session's registration list. */
+    struct list_head device_node;
+
+    /** Address space whose faults may use this registration. */
+    struct mm_struct *mm;
+
+    /** Immutable userspace regions consulted directly by the exception lookup path. */
+    struct mirilla_except_image image;
 };
 
 /*
- * One immutable image registered by a device session for an observer address space.
+ * Find a registered userspace recovery address for one instruction and exception class.
+ *
+ * This is called from the ftrace exception path and therefore must not sleep or allocate.
  */
-struct mirilla_except_registration {
-    struct list_head global_node;
-    struct list_head device_node;
-    struct mm_struct *mm;
-    struct mirilla_except_image image;
-    size_t record_count;
-    struct mirilla_except_kernel_record records[];
-};
+bool mirilla_except_lookup(struct mm_struct *mm, unsigned long instruction_pointer,
+                           mirilla_except_mask_t except_mask, unsigned long *rollback_address);
 
 /*
  * Install the exception interception backend.

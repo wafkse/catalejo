@@ -1,7 +1,6 @@
 #ifndef _CATALEJO_FAULT_H_
 #define _CATALEJO_FAULT_H_
 
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -12,16 +11,7 @@
 extern "C" {
 #endif
 
-/**
- * The states of the atomic initialization word for the sealed accessor image.
- */
-typedef enum catalejo_initialize_state {
-    CATALEJO_INITIALIZE_STATE_UNINITIALIZED,
-    CATALEJO_INITIALIZE_STATE_INITIALIZING,
-    CATALEJO_INITIALIZE_STATE_INITIALIZED,
-    CATALEJO_INITIALIZE_STATE_FAILED,
-    NR_CATALEJO_INITIALIZE_STATES
-} catalejo_initialize_state_t;
+struct catalejo_image_runtime;
 
 /**
  * The available hardware monitor implementations.
@@ -50,13 +40,15 @@ extern catalejo_monitor_backend_t catalejo_monitor_select();
 /**
  * Arm monitoring for a local downstream address.
  */
-extern catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address);
+extern catalejo_monitor_arm_outcome_t
+catalejo_monitor_arm(const struct catalejo_image_runtime *target_runtime,
+                     const uint8_t *target_address);
 
 /**
  * Wait for one bounded hardware interval.
  */
-extern catalejo_faultable_outcome_t
-catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
+extern catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *target_runtime,
+                                                catalejo_monitor_backend_t target_backend);
 
 /**
  * X-macro for the fault routines.
@@ -76,7 +68,8 @@ catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
 /* NOTE: Individual protected-read routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(    \
+    extern catalejo_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(              \
+        const struct catalejo_image_runtime *target_runtime,                                 \
         CATALEJO_UNUSED const target_type *target_source,                                    \
         CATALEJO_UNUSED target_type *target_value);
 
@@ -86,8 +79,9 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 /* NOTE: Individual protected-write routines. */
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
-    extern catalejo_faultable_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(   \
-        CATALEJO_UNUSED target_type * target_value,                                          \
+    extern catalejo_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(             \
+        const struct catalejo_image_runtime *target_runtime,                                 \
+        CATALEJO_UNUSED target_type *target_value,                                           \
         CATALEJO_UNUSED const target_type *target_source);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
@@ -102,36 +96,40 @@ typedef struct catalejo_faultable_instruction_outcome {
      *
      */
     // NOTE(invariant): This should be contained in the `%rax` register.
-    catalejo_faultable_outcome_t outcome_status;
+    catalejo_outcome_t outcome_status;
 
     /**
-     * The signal-compatible exception code supplied by Mirilla.
+     * The x86 architectural exception vector supplied by Mirilla on failure.
      */
     // NOTE(invariant): This is returned in the `%rdx` register.
-    size_t fault_signal;
+    size_t except_code;
 } catalejo_faultable_instruction_outcome_t;
 
 /**
  * Arm an Intel user monitor with fault protection.
  */
 extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address);
+catalejo_monitor_intel_arm(const struct catalejo_image_runtime *target_runtime,
+                           CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with Intel user wait support for a bounded interval.
  */
-extern catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait();
+extern catalejo_faultable_instruction_outcome_t
+catalejo_monitor_intel_wait(const struct catalejo_image_runtime *target_runtime);
 
 /**
  * Arm an AMD extended monitor with fault protection.
  */
 extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address);
+catalejo_monitor_amd_arm(const struct catalejo_image_runtime *target_runtime,
+                         CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with AMD extended wait support for a bounded interval.
  */
-extern catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait();
+extern catalejo_faultable_instruction_outcome_t
+catalejo_monitor_amd_wait(const struct catalejo_image_runtime *target_runtime);
 
 /**
  * Structure to be used to report back after a bulk read-write operation.
@@ -141,7 +139,7 @@ typedef struct catalejo_faultable_copy_outcome {
     * The status of the operation.
     */
     // NOTE(invariant): This should be contained in the `%rax` register.
-    catalejo_faultable_outcome_t outcome_status;
+    catalejo_outcome_t outcome_status;
 
     /**
    * The count of affected bytes, depending on the operation performed.
@@ -153,9 +151,10 @@ typedef struct catalejo_faultable_copy_outcome {
 /**
  * Perform a bulk-copy that is fault-protected.
  */
-extern catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
-                                                       CATALEJO_UNUSED const uint8_t *target_source,
-                                                       CATALEJO_UNUSED size_t target_count);
+extern catalejo_faultable_copy_outcome_t
+catalejo_copy(const struct catalejo_image_runtime *target_runtime,
+              CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
+              CATALEJO_UNUSED size_t target_count);
 
 #ifdef __cplusplus
 }

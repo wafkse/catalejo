@@ -9,7 +9,8 @@
 !.vscode/
 !.zed/
 
-# NOTE: Keep `.editorconfig` and `.clang-format`.
+# NOTE: Keep workspace editor and Clang configuration.
 !.editorconfig
+!.clangd
 !.clang-format
 !.clang-format-ignore

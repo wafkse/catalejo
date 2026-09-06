@@ -14,6 +14,12 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+pub mod access;
+
+pub mod exception;
+
 pub mod ffi;
 
 pub mod id;
+
+pub mod monitor;

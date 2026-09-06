@@ -19,9 +19,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         current_dir.join(C_SOURCE_RELATIVE_DIRECTORY),
     );
 
+    let mirilla_include = current_dir.join("../mirilla/include");
+
     let mut build_context = cc::Build::new();
 
     build_context.include(&include);
+    build_context.include(&mirilla_include);
 
     for target_value in WalkDir::new(source) {
         let target_value = target_value?;
@@ -42,18 +45,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut bind_context =
         bindgen::Builder::default().parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
 
-    // Track canonical header targets as well as the include-tree symlinks. Cargo otherwise observes
-    // the symlink metadata and can miss edits made to Mirilla headers behind that directory link.
+    // Track every include header dependency and follow the Mirilla include symlink so edits to
+    // canonical header targets always invalidate the generated bindings.
     for target_value in WalkDir::new(&include).follow_links(true) {
         let target_value = target_value?;
+        let target_path = target_value.path();
+        let is_header = target_value.file_type().is_file()
+            && matches!(
+                target_path.extension().and_then(OsStr::to_str),
+                Some("H" | "h")
+            );
 
-        if target_value.file_type().is_file() {
+        if is_header {
             println!(
                 "cargo:rerun-if-changed={}",
-                target_value.path().canonicalize()?.display()
+                target_path.canonicalize()?.display()
             );
         }
     }
+
+    bind_context = bind_context.clang_arg(format!("-I{}", mirilla_include.display()));
 
     for target_value in WalkDir::new(include) {
         let target_value = target_value?;
@@ -88,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 pub struct MirillaCallbacks;
 
 impl ParseCallbacks for MirillaCallbacks {
+    #[inline]
     fn int_macro(&self, name: &str, _: i64) -> Option<bindgen::callbacks::IntKind> {
         // NOTE: The `outside_list` attribute integer macros should be all unsigned to match
         // the actual type alias of a full attribute set.

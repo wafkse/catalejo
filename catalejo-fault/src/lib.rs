@@ -22,8 +22,6 @@ compile_error!("not supported: a 64-bit x86 architecture is required");
 #[cfg(not(target_os = "linux"))]
 compile_error!("not supported: no non-linux kernel is supported");
 
-pub mod ffi;
-
 pub mod maybe;
 
 pub mod behavior;
