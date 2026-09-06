@@ -9,6 +9,7 @@
 #include "mirilla-log.h"
 #include "mirilla-command.h"
 #include "mirilla-device.h"
+#include "mirilla-except.h"
 #include "mirilla-map.h"
 
 #define CLASS_NAME MIRILLA_DEVICE_NAME
@@ -36,6 +37,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(device)
 
     atomic_set(&target_context->map_target_count, 0);
     xa_init(&target_context->map_target_list);
+    INIT_LIST_HEAD(&target_context->except_registration_list);
 
     return error_code;
 }
@@ -44,6 +46,8 @@ MIRILLA_CONTEXT_DESTRUCTOR(device)
 {
     unsigned long target_id = MIRILLA_ID_NONE;
     struct mirilla_map_target_context *map_target_context = NULL;
+
+    mirilla_except_remove_device(target_context);
 
     xa_for_each(&target_context->map_target_list, target_id, map_target_context)
     {
@@ -124,6 +128,9 @@ static long mirilla_ioctl(struct file *file, unsigned int ioctl_command,
     switch (MIRILLA_COMMAND_CATEGORY(ioctl_command)) {
     case MIRILLA_COMMAND_CATEGORY_MAP:
         return mirilla_map_handle_command(
+            device_context, MIRILLA_COMMAND_ENUMERATION(ioctl_command), target_argument);
+    case MIRILLA_COMMAND_CATEGORY_EXCEPT:
+        return mirilla_except_handle_command(
             device_context, MIRILLA_COMMAND_ENUMERATION(ioctl_command), target_argument);
     default:
         return -ENOTSUPP;

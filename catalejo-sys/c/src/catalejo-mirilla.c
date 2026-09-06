@@ -5,6 +5,25 @@
 
 #include "catalejo-mirilla.h"
 
+mirilla_command_status_t catalejo_mirilla_except_register(const int fd,
+                                                          const struct mirilla_except_image *image)
+{
+    union mirilla_except_register_io io;
+    mirilla_command_status_t command_code;
+
+    io.argument = (struct mirilla_except_register_argument){ .image = *image };
+
+    command_code = ioctl(fd,
+                         MIRILLA_COMMAND_ENCODE(MIRILLA_COMMAND_CATEGORY_EXCEPT,
+                                                MIRILLA_COMMAND_EXCEPT_REGISTER),
+                         &io);
+
+    if (command_code < 0)
+        return -errno;
+
+    return command_code;
+}
+
 /**
  * Engage a target process.
  *

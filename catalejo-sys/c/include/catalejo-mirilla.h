@@ -4,12 +4,19 @@
 #include "mirilla/mirilla-command.h" // IWYU pragma: export
 #include "mirilla/mirilla-context.h" // IWYU pragma: export
 #include "mirilla/mirilla-device.h" // IWYU pragma: export
+#include "mirilla/mirilla-except.h" // IWYU pragma: export
 #include "mirilla/mirilla-id.h" // IWYU pragma: export
 #include "mirilla/mirilla-map.h" // IWYU pragma: export
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * Register a sealed exception image for the calling address space and device session.
+ */
+mirilla_command_status_t catalejo_mirilla_except_register(int fd,
+                                                          const struct mirilla_except_image *image);
 
 /**
  * Engage a target process.
