@@ -68,7 +68,7 @@ typedef struct {
 } test_results_t;
 
 static test_results_t results = { 0, 0, 0 };
-static struct catalejo_image_runtime harness_exception_runtime;
+static const struct catalejo_image_runtime *harness_exception_runtime;
 
 /* Helper macros */
 #define TEST_START(name)                                      \
@@ -184,13 +184,6 @@ static inline int mirilla_open_device(void)
         perror("Failed to open mirilla device");
         fprintf(stderr, "Make sure the mirilla module is loaded (sudo insmod "
                         "mirilla.ko)\n");
-    } else {
-        if (!MIRILLA_COMMAND_IS_OK(
-                catalejo_mirilla_except_register(mirilla_fd, &harness_exception_runtime.image))) {
-            perror("Failed to register the catalejo exception image");
-            close(mirilla_fd);
-            mirilla_fd = -1;
-        }
     }
     return mirilla_fd;
 }
@@ -329,7 +322,16 @@ static inline int verify_region(void *addr, size_t size, unsigned int expected_b
  */
 static inline int harness_fault_initialize(void)
 {
-    if (catalejo_fault_image_initialize(&harness_exception_runtime) != CATALEJO_OUTCOME_SUCCESS) {
+    int mirilla_fd = mirilla_open_device();
+    int target_status;
+
+    if (mirilla_fd < 0)
+        return -1;
+
+    target_status = catalejo_fault_image_initialize(mirilla_fd, &harness_exception_runtime);
+    close(mirilla_fd);
+
+    if (target_status) {
         fprintf(stderr, COLOR_RED "Failed to initialize the catalejo-sys image\n" COLOR_RESET);
         return -1;
     }
@@ -347,7 +349,7 @@ static inline catalejo_outcome_t faultable_probe_u32(const void *addr, unsigned 
     uint32_t probe_value = 0;
 
     catalejo_outcome_t outcome =
-        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)addr, &probe_value);
+        catalejo_read_u32(harness_exception_runtime, (const uint32_t *)addr, &probe_value);
 
     if (outcome == CATALEJO_OUTCOME_SUCCESS && value)
         *value = probe_value;
@@ -363,7 +365,7 @@ static inline catalejo_outcome_t faultable_probe_u32(const void *addr, unsigned 
 static inline int faultable_read_region(void *destination, const void *source, size_t size)
 {
     catalejo_faultable_copy_outcome_t copy_outcome = catalejo_copy(
-        &harness_exception_runtime, (uint8_t *)destination, (const uint8_t *)source, size);
+        harness_exception_runtime, (uint8_t *)destination, (const uint8_t *)source, size);
 
     return copy_outcome.outcome_status == CATALEJO_OUTCOME_SUCCESS ? 0 : -1;
 }

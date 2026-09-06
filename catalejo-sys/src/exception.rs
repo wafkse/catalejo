@@ -1,32 +1,29 @@
-//! Construction and description of the immutable userspace exception image.
+//! Construction, registration and description of the immutable userspace exception image.
 //!
 //! The exception image is the userspace half of Mirilla fault recovery. Its rollback region holds
 //! the relocated protected accessors and their recovery paths. Its exception-table region records
-//! the protected instruction ranges, accepted architectural exceptions, and rollback destinations
+//! the protected instruction ranges, accepted architectural exceptions and rollback destinations
 //! consumed by Mirilla.
 //!
-//! [`Image::retrieve`] constructs these regions once, seals their common backing object, applies the
-//! final virtual-memory permissions, and seals the mappings themselves. Rust owns the one-time
-//! initialization state through a process-global cell. Possession of an [`Image`] therefore proves image
-//! construction, but not Mirilla registration. Protected execution additionally requires the same
-//! image to be registered for the current address space through a live Mirilla session.
+//! The C runtime constructs the image, registers it for the calling address space and retains the
+//! Mirilla session that owns the registration. Rust only exposes an [`Image`] after that complete
+//! sequence succeeds.
 
-use crate::ffi::binding;
-use core::mem::MaybeUninit;
 #[cfg(feature = "stealth-mode")]
 use std::process;
-use std::sync::OnceLock;
+use std::{
+    io,
+    os::fd::{AsRawFd, BorrowedFd},
+};
+
+use crate::ffi::binding;
 
 /// A virtual-memory region described by an exception image.
 ///
 /// The value carries the base address and complete byte size used by the Mirilla exception-image
-/// ABI. It does not own the mapping and does not by itself prove that the mapping exists, has the
-/// required permissions, is sealed, or belongs to a successfully constructed [`Image`]. Those
-/// guarantees come from possession of the enclosing [`Image`].
+/// ABI. It does not own the mapping. The mapping and registration guarantees come from possession
+/// of the enclosing [`Image`].
 #[derive(Debug, Copy, Clone)]
-// NOTE(invariant): The representation preserves the exact address and size supplied by the Mirilla
-// region ABI. `ImageRegion::lift` performs representation lifting only and intentionally does not
-// validate the described mapping.
 pub struct ImageRegion {
     /// The virtual address of the first byte described by the region.
     base_address: binding::virtual_address_t,
@@ -38,10 +35,10 @@ pub struct ImageRegion {
 impl ImageRegion {
     /// Lift a bare Mirilla region descriptor into the Rust representation.
     ///
-    /// This preserves the address and size exactly as supplied by the ABI. No mapping lookup,
-    /// permission check, sealing check, or relationship to an [`Image`] is established here.
+    /// This preserves the address and size exactly as supplied by the ABI. No independent mapping
+    /// or registration claim is created by this conversion.
     #[inline]
-    pub const fn lift(target_value: binding::mirilla_except_region) -> Self {
+    const fn lift(target_value: binding::mirilla_except_region) -> Self {
         let binding::mirilla_except_region {
             region_address: base_address,
             region_size,
@@ -56,96 +53,106 @@ impl ImageRegion {
     /// Return the virtual address of the first byte described by this region.
     #[inline]
     pub const fn address(&self) -> binding::virtual_address_t {
-        let &Self {
-            base_address: address,
-            ..
-        } = self;
+        let &Self { base_address, .. } = self;
 
-        address
+        base_address
     }
 
     /// Return the complete byte size described by this region.
     #[inline]
     pub const fn size(&self) -> binding::virtual_size_t {
-        let &Self {
-            region_size: length,
-            ..
-        } = self;
+        let &Self { region_size, .. } = self;
 
-        length
+        region_size
     }
 }
 
-/// The process-global immutable image that defines Catalejo protected execution to Mirilla.
+/// The process-global immutable image registered with Mirilla.
 ///
-/// An image describes the two userspace mappings that participate in architectural exception
-/// recovery. The rollback region contains the relocated protected accessors together with the code
-/// reached after a protected instruction faults. The exception-table region contains the
-/// field-relative records that identify each protected instruction range, its rollback destination,
-/// and the architectural exception vectors accepted for that range. Mirilla consumes both regions
-/// as one image when the current address space is registered.
+/// The C layer owns the runtime, its one-time state machine and a dedicated Mirilla session that
+/// owns the registration. It publishes the runtime only after the mappings are immutable and
+/// registration for the calling address space succeeds. Possession of an `Image` therefore proves
+/// both image construction and Mirilla registration for the process that retrieved it.
 ///
-/// The image is constructed from the retained Catalejo accessor and exception-table sections. The C
-/// constructor copies those sections into one dedicated backing object, rebases the exception
-/// records against their runtime addresses, maps the rollback region read-execute and the table
-/// read-only, seals the backing object against writes and resizing, then seals both VMAs against
-/// later virtual-memory changes. [`Image::retrieve`] publishes the Rust value only after that complete
-/// sequence succeeds. The mappings therefore remain immutable at stable addresses for the lifetime
-/// of the process.
-///
-/// Possession of an `Image` proves that this userspace construction completed. It does not prove
-/// that Mirilla is currently prepared to recover exceptions from the image. Protected access also
-/// requires registration through [`crate::ffi::command::register_exception_image`] for the current
-/// address space, with the Mirilla session that owns that registration kept alive. A process created
-/// through `fork` inherits the immutable mappings but has a distinct address space and therefore
-/// requires its own registration before using protected accessors.
+/// A process created through `fork` inherits the mappings and Rust references but receives a new
+/// address space. Inherited references must not be used in the child. Call [`Image::register`]
+/// through `Target::register_current_address_space` before reacquiring the image in that process.
+#[repr(transparent)]
 #[derive(Debug)]
-// NOTE(invariant): `Image::setup` is the only constructor of `Image`. It publishes a value only
-// after the complete C runtime, both final mappings, and their shared backing object have been
-// constructed and sealed. The private fields prevent callers from assembling a trusted image from
-// independently lifted `ImageRegion` descriptors or raw runtime state.
-pub struct Image {
-    /// The C runtime containing the sealed-image descriptor and relocated callable entry points.
-    image_runtime: binding::catalejo_image_runtime,
-
-    /// The read-execute mapping containing relocated protected accessors and their rollback paths.
-    rollback_region: ImageRegion,
-
-    /// The read-only mapping containing the exception records consumed by Mirilla.
-    except_table: ImageRegion,
-}
+// NOTE(invariant): C owns the only allocation with this representation. It publishes the pointer
+// with release ordering only after immutable construction and Mirilla registration succeed. Rust
+// acquires the C state before lifting that process-lifetime allocation into this opaque type.
+pub struct Image(binding::catalejo_image_runtime);
 
 impl Image {
-    /// Construct the exception image once and return its process-global proof value.
+    /// Register and publish the exception image through a Mirilla session.
     ///
-    /// The first call invokes the C constructor to relocate the retained accessors and exception
-    /// records into their final VMAs, make their shared backing object immutable, seal both
-    /// mappings, and return the resulting Mirilla region descriptors. Rust stores that construction
-    /// result in the process-global cell. Later calls return the same result without invoking the C constructor
-    /// again.
-    /// Return the initialized image or terminate when its one-time construction failed.
+    /// The first successful call constructs the sealed mappings, registers them for the calling
+    /// address space and retains a dedicated registration session opened through the supplied
+    /// descriptor. Later calls in the same process return the published image. A child created
+    /// through `fork` uses this operation to register the inherited immutable image for its new
+    /// address space.
     ///
-    /// A regular build treats construction failure as unreachable. A stealth-mode build aborts so
-    /// it does not expose an unexpected runtime value to callers.
-    /// This operation does not register the image with Mirilla. Registration is a separate
-    /// address-space operation performed through [`crate::ffi::command::register_exception_image`].
-    /// Callers that execute protected accessors must keep the Mirilla session owning that
-    /// registration alive for the duration of those accesses.
+    /// # Safety
     ///
-    /// # Failure
+    /// `target_device` must be a descriptor created by Mirilla.
     ///
-    /// This returns [`binding::CATALEJO_OUTCOME_ERROR`] when the C constructor cannot complete the
-    /// immutable runtime image. The process-global cell retains that failure result, so construction
-    /// is never attempted a second time.
+    /// # Errors
+    ///
+    /// This returns the operating-system error reported while constructing or registering the
+    /// image.
     #[inline]
-    pub fn retrieve() -> Result<&'static Self, binding::catalejo_outcome_t> {
-        match IMAGE.get_or_init(Self::construct) {
-            Ok(image) => Ok(image),
-            Err(target_outcome) => Err(*target_outcome),
-        }
+    pub unsafe fn register(target_device: BorrowedFd<'_>) -> io::Result<&'static Self> {
+        let mut target_runtime = core::ptr::null();
+
+        // SAFETY: The caller guarantees that the descriptor belongs to Mirilla. C initializes the
+        // output pointer only after construction and registration succeed.
+        let target_status = unsafe {
+            binding::catalejo_fault_image_initialize(
+                target_device.as_raw_fd(),
+                core::ptr::from_mut(&mut target_runtime),
+            )
+        };
+
+        Self::lift_registered(target_status, target_runtime)
     }
 
-    /// TODO: Document this
+    /// Retrieve the image registered for the calling address space.
+    ///
+    /// This operation never constructs or registers an image. It succeeds only after
+    /// [`Self::register`] has published the process-global runtime for the current process. A child
+    /// created through `fork` receives an error until it registers its distinct address space.
+    ///
+    /// # Errors
+    ///
+    /// This returns an operating-system error when no image is registered for the calling address
+    /// space.
+    #[inline]
+    pub fn retrieve() -> io::Result<&'static Self> {
+        let mut target_runtime = core::ptr::null();
+
+        // SAFETY: C either leaves the pointer null and returns an error or publishes its
+        // process-lifetime immutable runtime through the output pointer.
+        let target_status = unsafe {
+            binding::catalejo_fault_image_retrieve(core::ptr::from_mut(&mut target_runtime))
+        };
+
+        Self::lift_registered(target_status, target_runtime)
+    }
+
+    /// Return the registered image or terminate on an invariant violation.
+    ///
+    /// Low-level callers use this after their owning context has established the registration. A
+    /// regular build treats a missing registration as unreachable. A stealth-mode build aborts
+    /// without formatting a diagnostic.
+    ///
+    /// # Panics
+    ///
+    /// Without `stealth-mode`, this panics when the image is not registered for the calling process.
+    ///
+    /// # Aborts
+    ///
+    /// With `stealth-mode`, this aborts when the image is not registered for the calling process.
     #[inline]
     pub fn infallible() -> &'static Self {
         match Self::retrieve() {
@@ -157,80 +164,82 @@ impl Image {
         }
     }
 
-    /// Construct the sealed runtime image through the C image builder.
-    fn construct() -> Result<Self, binding::catalejo_outcome_t> {
-        let mut target_runtime = MaybeUninit::<binding::catalejo_image_runtime>::uninit();
+    /// Return the registered image using the configured failure policy.
+    ///
+    /// Regular builds retain a descriptive failure for invariant violations. Stealth-mode builds
+    /// delegate to [`Self::infallible`] so diagnostic text is excluded at compile time.
+    ///
+    /// # Panics
+    ///
+    /// Without `stealth-mode`, this panics when the image is not registered for the calling process.
+    ///
+    /// # Aborts
+    ///
+    /// With `stealth-mode`, this aborts when the image is not registered for the calling process.
+    #[inline]
+    pub fn preferred() -> &'static Self {
+        #[cfg(not(feature = "stealth-mode"))]
+        {
+            Self::retrieve().expect("exception image is not registered for this process")
+        }
 
-        // SAFETY:
-        // The C constructor receives writable storage and initializes the complete runtime on success.
-        let initialize_status =
-            unsafe { binding::catalejo_fault_image_initialize(target_runtime.as_mut_ptr()) };
-
-        match initialize_status {
-            binding::CATALEJO_OUTCOME_SUCCESS => {
-                // SAFETY: A successful outcome guarantees that the C constructor wrote the complete runtime.
-                let image_runtime = unsafe { MaybeUninit::assume_init(target_runtime) };
-
-                let rollback_region = ImageRegion::lift(image_runtime.image.rollback_region);
-                let except_table = ImageRegion::lift(image_runtime.image.except_table);
-
-                Ok(Self {
-                    image_runtime,
-                    rollback_region,
-                    except_table,
-                })
-            }
-            binding::CATALEJO_OUTCOME_ERROR => Err(initialize_status),
-            #[cfg(not(feature = "stealth-mode"))]
-            _ => unreachable!(),
-
-            #[cfg(feature = "stealth-mode")]
-            _ => std::process::abort(),
+        #[cfg(feature = "stealth-mode")]
+        {
+            Self::infallible()
         }
     }
 
+    /// Lift a successful C publication into the opaque Rust proof type.
+    fn lift_registered(
+        target_status: core::ffi::c_int,
+        target_runtime: *const binding::catalejo_image_runtime,
+    ) -> io::Result<&'static Self> {
+        if target_status < 0 {
+            return Err(io::Error::from_raw_os_error(target_status.saturating_abs()));
+        }
+
+        if target_status != 0 || target_runtime.is_null() {
+            #[cfg(not(feature = "stealth-mode"))]
+            return Err(io::Error::from(io::ErrorKind::Other));
+
+            #[cfg(feature = "stealth-mode")]
+            process::abort();
+        }
+
+        // SAFETY: A zero status means C published a non-null pointer to its process-lifetime,
+        // immutable `catalejo_image_runtime`. `Image` is transparent over that exact type.
+        Ok(unsafe { &*target_runtime.cast::<Self>() })
+    }
+
     /// Return the C runtime backing the protected accessor shims.
-    ///
-    /// The runtime contains the same Mirilla image descriptor represented by this [`Image`] together
-    /// with the relocated callable entry points projected into the executable rollback mapping.
     #[inline]
     pub const fn runtime(&self) -> &binding::catalejo_image_runtime {
-        let Self {
-            image_runtime: runtime,
-            ..
-        } = self;
+        let &Self(ref target_runtime) = self;
 
-        runtime
+        target_runtime
     }
 
     /// Return the immutable region containing relocated protected accessors and rollback code.
-    ///
-    /// The region is mapped read-execute. Mirilla validates it as the only address range from which
-    /// protected instruction ranges and rollback destinations may be resolved.
     #[inline]
-    pub const fn rollback_region(&self) -> &ImageRegion {
-        let Self {
-            rollback_region, ..
-        } = self;
+    pub const fn rollback_region(&self) -> ImageRegion {
+        let &Self(binding::catalejo_image_runtime {
+            image: binding::mirilla_except_image {
+                rollback_region, ..
+            },
+            ..
+        }) = self;
 
-        rollback_region
+        ImageRegion::lift(rollback_region)
     }
 
     /// Return the immutable region containing the architectural exception table.
-    ///
-    /// The table is mapped read-only and contains field-relative [`binding::mirilla_except_record`]
-    /// entries. Each populated record relates a protected instruction range to one rollback address
-    /// and the set of architectural exception vectors accepted for that range.
     #[inline]
-    pub const fn except_table(&self) -> &ImageRegion {
-        let Self { except_table, .. } = self;
+    pub const fn except_table(&self) -> ImageRegion {
+        let &Self(binding::catalejo_image_runtime {
+            image: binding::mirilla_except_image { except_table, .. },
+            ..
+        }) = self;
 
-        except_table
+        ImageRegion::lift(except_table)
     }
 }
-
-/// The process-global result of constructing the exception image.
-///
-/// [`Image::retrieve`] is the only initialization path. The first construction result is retained for
-/// the lifetime of the process, so the C constructor is invoked exactly once.
-static IMAGE: OnceLock<Result<Image, binding::catalejo_outcome_t>> = OnceLock::new();

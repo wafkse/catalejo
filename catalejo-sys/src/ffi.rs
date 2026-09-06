@@ -35,7 +35,6 @@ pub mod command {
     use core::ptr;
 
     use crate::{
-        exception::Image,
         ffi::binding::{self, mirilla_map_peephole_initialize_word_t, virtual_address_t},
         id::{PeepholeId, TargetId},
     };
@@ -73,54 +72,6 @@ pub mod command {
         #[cfg(not(feature = "default-device-path"))]
         {
             None
-        }
-    }
-
-    /// Register the initialized exception image for the calling address space.
-    ///
-    /// # Safety
-    ///
-    /// The file descriptor must come from Mirilla.
-    #[inline]
-    pub unsafe fn register_exception_image(
-        target_device: BorrowedFd<'_>,
-        target_image: &Image,
-    ) -> io::Result<()> {
-        let rollback_region = target_image.rollback_region();
-        let except_table = target_image.except_table();
-
-        let rollback_region = binding::mirilla_except_region {
-            region_address: rollback_region.address(),
-            region_size: rollback_region.size(),
-        };
-        let except_table = binding::mirilla_except_region {
-            region_address: except_table.address(),
-            region_size: except_table.size(),
-        };
-        let image = binding::mirilla_except_image {
-            rollback_region,
-            except_table,
-        };
-
-        // SAFETY:
-        // The caller provides a Mirilla descriptor and `Image` proves successful image setup.
-        let target_outcome = unsafe {
-            binding::catalejo_mirilla_except_register(
-                target_device.as_raw_fd(),
-                ptr::from_ref(&image),
-            )
-        };
-
-        match target_outcome {
-            binding::MIRILLA_COMMAND_OK => Ok(()),
-            target_errno @ binding::mirilla_command_status_t::MIN..binding::MIRILLA_COMMAND_OK => {
-                Err(io::Error::from_raw_os_error(target_errno.abs()))
-            }
-            #[cfg(not(feature = "stealth-mode"))]
-            _ => unreachable!(),
-
-            #[cfg(feature = "stealth-mode")]
-            _ => std::process::abort(),
         }
     }
 

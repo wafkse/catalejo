@@ -11,8 +11,8 @@ use catalejo_sys::{exception::Image, ffi, id::TargetId};
 
 /// A handle to an actively targeted process.
 #[derive(Debug)]
-// NOTE(invariant): The first field owns the Mirilla session that registered the process-global
-// exception image for this address space. Cloned targets keep that same open file description alive.
+// NOTE(invariant): Construction registers the process-global exception image before engagement.
+// The C runtime retains a dedicated Mirilla session that owns that registration.
 pub struct Target(OwnedFd, TargetId);
 
 impl Target {
@@ -105,11 +105,9 @@ impl Target {
     /// Ensure the sealed accessor image is registered for this session and observer address space.
     #[inline]
     fn register_exception_image(target_device: BorrowedFd<'_>) -> io::Result<()> {
-        let image = Image::retrieve().map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
-
         // SAFETY: `target_device` is opened from the configured Mirilla path or supplied under the
-        // matching unsafe contract. `Image` proves the immutable VMA construction invariant.
-        unsafe { ffi::command::register_exception_image(target_device, image) }
+        // matching unsafe contract. C retains its dedicated session only after registration.
+        unsafe { Image::register(target_device) }.map(|_| ())
     }
 
     /// Determine the device file descriptor that is in-use by the [`Target`].
@@ -130,8 +128,8 @@ impl Target {
 
     /// Register the immutable exception image for the calling address space.
     ///
-    /// A child created with `fork` has a distinct address space and must call this before using
-    /// inherited protected accessors.
+    /// A child created with `fork` has a distinct address space and must call this before using or
+    /// reacquiring inherited protected accessors.
     #[inline]
     pub fn register_current_address_space(&self) -> io::Result<()> {
         let Self(target_device, _) = self;

@@ -32,7 +32,7 @@
 static int test_exception_registration_rejects_misaligned_image(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image = harness_exception_runtime.image;
+    struct mirilla_except_image image = harness_exception_runtime->image;
 
     ASSERT(mirilla_fd >= 0, "failed to open device");
 
@@ -49,7 +49,7 @@ static int test_exception_registration_rejects_misaligned_image(void)
 static int test_exception_registration_rejects_oversized_table(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image = harness_exception_runtime.image;
+    struct mirilla_except_image image = harness_exception_runtime->image;
 
     ASSERT(mirilla_fd >= 0, "failed to open device");
 
@@ -67,7 +67,7 @@ static int test_exception_registration_is_unique_per_mm(void)
 {
     int mirilla_fd = mirilla_open_device();
     int duplicate_fd = open(MIRILLA_DEVICE, O_RDWR);
-    struct mirilla_except_image image = harness_exception_runtime.image;
+    struct mirilla_except_image image = harness_exception_runtime->image;
 
     ASSERT(mirilla_fd >= 0, "failed to open registered device session");
     ASSERT(duplicate_fd >= 0, "failed to open duplicate device session");
@@ -86,7 +86,6 @@ static int test_exception_registration_is_unique_per_mm(void)
 static int test_exception_registration_is_scoped_to_mm(void)
 {
     int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image = harness_exception_runtime.image;
     pid_t child;
     int child_status;
 
@@ -95,11 +94,14 @@ static int test_exception_registration_is_scoped_to_mm(void)
     child = fork();
     ASSERT(child >= 0, "failed to fork unregistered child");
     if (child == 0) {
+        const struct catalejo_image_runtime *child_runtime = NULL;
         uint32_t target_value = 0;
         struct rlimit target_limit = { .rlim_cur = 0, .rlim_max = 0 };
 
         setrlimit(RLIMIT_CORE, &target_limit);
-        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value);
+        if (catalejo_fault_image_retrieve(&child_runtime) != -ESTALE || child_runtime)
+            _exit(3);
+        catalejo_read_u32(harness_exception_runtime, (const uint32_t *)0x50, &target_value);
         _exit(2);
     }
 
@@ -112,11 +114,12 @@ static int test_exception_registration_is_scoped_to_mm(void)
     child = fork();
     ASSERT(child >= 0, "failed to fork registered child");
     if (child == 0) {
+        const struct catalejo_image_runtime *child_runtime = NULL;
         uint32_t target_value = 0;
 
-        if (!MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image)))
+        if (catalejo_fault_image_initialize(mirilla_fd, &child_runtime) || !child_runtime)
             _exit(3);
-        if (catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value) !=
+        if (catalejo_read_u32(child_runtime, (const uint32_t *)0x50, &target_value) !=
             CATALEJO_OUTCOME_ERROR)
             _exit(4);
         _exit(0);
@@ -133,7 +136,7 @@ static int test_exception_registration_is_scoped_to_mm(void)
 /* Closing the final descriptor for a session retires its exception registration. */
 static int test_exception_registration_follows_session_lifetime(void)
 {
-    struct mirilla_except_image image = harness_exception_runtime.image;
+    struct mirilla_except_image image = harness_exception_runtime->image;
     pid_t child;
     int child_status;
 
@@ -151,7 +154,7 @@ static int test_exception_registration_follows_session_lifetime(void)
             _exit(3);
         close(mirilla_fd);
 
-        catalejo_read_u32(&harness_exception_runtime, (const uint32_t *)0x50, &target_value);
+        catalejo_read_u32(harness_exception_runtime, (const uint32_t *)0x50, &target_value);
         _exit(4);
     }
 

@@ -187,7 +187,7 @@ mod test {
         os::fd::{AsFd, OwnedFd},
     };
 
-    use catalejo_sys::{exception::Image, ffi};
+    use catalejo_sys::exception::Image;
 
     use crate::behavior::Faultable;
 
@@ -201,7 +201,6 @@ mod test {
 
     /// Open one Mirilla session and register the initialized image for this test process.
     fn registration() -> (OwnedFd, &'static Image) {
-        let image = Image::retrieve().expect("the sealed accessor image must initialize");
         let target_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -210,9 +209,9 @@ mod test {
         let target_device = OwnedFd::from(target_file);
 
         // SAFETY:
-        // The descriptor was opened from Mirilla and remains live in the returned owner.
-        unsafe { ffi::command::register_exception_image(target_device.as_fd(), image) }
-            .expect("the exception image must register");
+        // The descriptor was opened from Mirilla. C retains a dedicated registration session.
+        let image = unsafe { Image::register(target_device.as_fd()) }
+            .expect("the exception image must initialize and register");
 
         (target_device, image)
     }
@@ -290,13 +289,14 @@ mod test {
     }
 
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn read_of_a_valid_address_yields_the_value() {
         let target_value = 0xDEAD_BEEF_u64;
 
         let maybe = MaybeFault::<u64>::new(address(&raw const target_value));
 
         // SAFETY: The address is a live, aligned `u64` for the duration of the read.
-        let image = Image::retrieve().expect("the sealed accessor image must initialize");
+        let (_target_registration, image) = registration();
         let target_outcome = unsafe { maybe.read(image) };
 
         assert_eq!(target_outcome, Some(0xDEAD_BEEF_u64));
@@ -315,13 +315,14 @@ mod test {
     }
 
     #[test]
+    #[ignore = "requires a Mirilla-registered exception image"]
     fn write_to_a_valid_address_succeeds_and_takes_effect() {
         let mut target_slot = 0_u64;
 
         let maybe = MaybeFault::<u64>::new(address((&raw mut target_slot).cast_const()));
 
         // SAFETY: The address is a live, aligned, exclusively-borrowed `u64`.
-        let image = Image::retrieve().expect("the sealed accessor image must initialize");
+        let (_target_registration, image) = registration();
         let target_outcome = unsafe { maybe.write(image, 0xC0FF_EE00) };
 
         assert!(target_outcome);

@@ -3,10 +3,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -15,6 +18,31 @@
 #include <linux/memfd.h>
 
 #include "catalejo-image.h"
+#include "catalejo-mirilla.h"
+
+enum catalejo_image_state {
+    CATALEJO_IMAGE_STATE_UNINITIALIZED,
+    CATALEJO_IMAGE_STATE_INITIALIZING,
+    CATALEJO_IMAGE_STATE_INITIALIZED,
+};
+
+/**
+ * The process-lifetime image and the Mirilla session that owns its registrations.
+ */
+struct catalejo_registered_image {
+    struct catalejo_image_runtime runtime;
+    int registration_fd;
+    pid_t registered_process;
+};
+
+/**
+ * Publish the global image pointer and registration metadata.
+ *
+ * NOTE(invariant): A successful release transition to INITIALIZED publishes every field reachable
+ * through catalejo_registered_image. Readers acquire the state before dereferencing the pointer.
+ */
+static atomic_int catalejo_image_state = CATALEJO_IMAGE_STATE_UNINITIALIZED;
+static struct catalejo_registered_image *catalejo_registered_image;
 
 /**
  * Round a nonzero byte count up to a page boundary.
@@ -333,12 +361,182 @@ release:
     return target_status;
 }
 
-catalejo_outcome_t catalejo_fault_image_initialize(struct catalejo_image_runtime *target_runtime)
+/**
+ * Open a dedicated device session through an existing descriptor.
+ */
+static int catalejo_image_open_registration(int target_device)
 {
-    if (!target_runtime || catalejo_image_construct(target_runtime))
-        return CATALEJO_OUTCOME_ERROR;
+    char target_fd_path[64];
+    int target_path_length =
+        snprintf(target_fd_path, sizeof(target_fd_path), "/proc/self/fd/%d", target_device);
 
-    return CATALEJO_OUTCOME_SUCCESS;
+    if (target_path_length < 0 || (size_t)target_path_length >= sizeof(target_fd_path))
+        return -EOVERFLOW;
+
+    int target_registration_fd = open(target_fd_path, O_RDWR | O_CLOEXEC);
+
+    return target_registration_fd < 0 ? -errno : target_registration_fd;
+}
+
+/**
+ * Construct the image once, then register it through a dedicated Mirilla session.
+ *
+ * The caller holds the initialization state while this function runs.
+ */
+static int catalejo_image_register_initial(int target_device)
+{
+    struct catalejo_registered_image *target_image = catalejo_registered_image;
+    int target_registration_fd;
+    int target_status;
+
+    if (!target_image) {
+        target_image = calloc(1, sizeof(*target_image));
+        if (!target_image)
+            return -ENOMEM;
+
+        target_image->registration_fd = -1;
+        target_status = catalejo_image_construct(&target_image->runtime);
+        if (target_status) {
+            free(target_image);
+            return target_status;
+        }
+
+        catalejo_registered_image = target_image;
+    }
+
+    target_registration_fd = catalejo_image_open_registration(target_device);
+    if (target_registration_fd < 0)
+        return target_registration_fd;
+
+    target_status =
+        catalejo_mirilla_except_register(target_registration_fd, &target_image->runtime.image);
+    if (target_status) {
+        close(target_registration_fd);
+        return target_status;
+    }
+
+    target_image->registration_fd = target_registration_fd;
+    target_image->registered_process = getpid();
+    return 0;
+}
+
+/**
+ * Register the inherited image for a child address space through the retained session.
+ *
+ * The caller holds the initialization state while this function runs.
+ */
+static int catalejo_image_register_inherited(void)
+{
+    struct catalejo_registered_image *target_image = catalejo_registered_image;
+    int target_status;
+
+    if (!target_image || target_image->registration_fd < 0)
+        return -ENODEV;
+
+    target_status = catalejo_mirilla_except_register(target_image->registration_fd,
+                                                     &target_image->runtime.image);
+    if (target_status)
+        return target_status;
+
+    target_image->registered_process = getpid();
+    return 0;
+}
+
+int catalejo_fault_image_initialize(int target_device,
+                                    const struct catalejo_image_runtime **target_runtime)
+{
+    pid_t target_process = getpid();
+
+    if (!target_runtime || target_device < 0)
+        return -EINVAL;
+
+    *target_runtime = NULL;
+
+    for (;;) {
+        int target_state = atomic_load_explicit(&catalejo_image_state, memory_order_acquire);
+        int target_expected;
+        int target_status;
+
+        switch (target_state) {
+        case CATALEJO_IMAGE_STATE_UNINITIALIZED:
+            target_expected = CATALEJO_IMAGE_STATE_UNINITIALIZED;
+            if (!atomic_compare_exchange_strong_explicit(
+                    &catalejo_image_state, &target_expected, CATALEJO_IMAGE_STATE_INITIALIZING,
+                    memory_order_acq_rel, memory_order_acquire))
+                continue;
+
+            target_status = catalejo_image_register_initial(target_device);
+            atomic_store_explicit(&catalejo_image_state,
+                                  target_status ? CATALEJO_IMAGE_STATE_UNINITIALIZED :
+                                                  CATALEJO_IMAGE_STATE_INITIALIZED,
+                                  memory_order_release);
+            if (target_status)
+                return target_status;
+
+            *target_runtime = &catalejo_registered_image->runtime;
+            return 0;
+
+        case CATALEJO_IMAGE_STATE_INITIALIZING:
+            sched_yield();
+            continue;
+
+        case CATALEJO_IMAGE_STATE_INITIALIZED:
+            if (catalejo_registered_image->registered_process == target_process) {
+                *target_runtime = &catalejo_registered_image->runtime;
+                return 0;
+            }
+
+            target_expected = CATALEJO_IMAGE_STATE_INITIALIZED;
+            if (!atomic_compare_exchange_strong_explicit(
+                    &catalejo_image_state, &target_expected, CATALEJO_IMAGE_STATE_INITIALIZING,
+                    memory_order_acq_rel, memory_order_acquire))
+                continue;
+
+            target_status = catalejo_image_register_inherited();
+            atomic_store_explicit(&catalejo_image_state, CATALEJO_IMAGE_STATE_INITIALIZED,
+                                  memory_order_release);
+            if (target_status)
+                return target_status;
+
+            *target_runtime = &catalejo_registered_image->runtime;
+            return 0;
+
+        default:
+            return -EIO;
+        }
+    }
+}
+
+int catalejo_fault_image_retrieve(const struct catalejo_image_runtime **target_runtime)
+{
+    if (!target_runtime)
+        return -EINVAL;
+
+    *target_runtime = NULL;
+
+    for (;;) {
+        int target_state = atomic_load_explicit(&catalejo_image_state, memory_order_acquire);
+
+        switch (target_state) {
+        case CATALEJO_IMAGE_STATE_UNINITIALIZED:
+            return -ENODEV;
+
+        case CATALEJO_IMAGE_STATE_INITIALIZING:
+            sched_yield();
+            continue;
+
+        case CATALEJO_IMAGE_STATE_INITIALIZED:
+            if (!catalejo_registered_image ||
+                catalejo_registered_image->registered_process != getpid())
+                return -ESTALE;
+
+            *target_runtime = &catalejo_registered_image->runtime;
+            return 0;
+
+        default:
+            return -EIO;
+        }
+    }
 }
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)   \

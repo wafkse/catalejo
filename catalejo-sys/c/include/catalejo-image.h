@@ -43,10 +43,11 @@ struct catalejo_image_entries {
 };
 
 /**
- * The initialized runtime image retained by the Rust image proof.
+ * The immutable runtime image registered with Mirilla by this layer.
  *
  * NOTE(invariant): The image and every entry point are populated only after both VMAs and their
- * common backing object are immutable.
+ * common backing object are immutable. A pointer is published only while a retained Mirilla
+ * session owns the registration for the calling address space.
  */
 struct catalejo_image_runtime {
     /** Immutable accessor and exception-table VMAs registered with Mirilla. */
@@ -91,12 +92,24 @@ extern CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
 catalejo_image_copy(uint8_t *target_address, const uint8_t *target_source, size_t target_count);
 
 /**
- * Construct one sealed accessor runtime into caller-owned storage.
+ * Construct, register and publish the process-global exception image.
  *
- * No process-global initialization state is maintained by this layer. The caller owns both the
- * one-time construction policy and the returned runtime storage.
+ * The descriptor must belong to Mirilla. This layer opens and retains a dedicated registration
+ * session through the supplied descriptor so the returned image remains registered without
+ * extending the lifetime of unrelated map commands. A child created through fork must call this
+ * again before retrieving or using the inherited image.
+ *
+ * Returns zero on success and a negative errno value on failure.
  */
-extern catalejo_outcome_t
-catalejo_fault_image_initialize(struct catalejo_image_runtime *target_runtime);
+extern int catalejo_fault_image_initialize(int target_device,
+                                           const struct catalejo_image_runtime **target_runtime);
+
+/**
+ * Retrieve the image registered for the calling address space.
+ *
+ * Returns zero on success and a negative errno value when initialization has not completed or the
+ * calling process inherited an image that has not been registered after fork.
+ */
+extern int catalejo_fault_image_retrieve(const struct catalejo_image_runtime **target_runtime);
 
 #endif /* _CATALEJO_IMAGE_H_ */

@@ -6,7 +6,7 @@ use std::{
 
 use catalejo_sys::{
     exception::Image,
-    ffi::{self, binding},
+    ffi::binding,
     monitor::{self, MonitorError},
 };
 
@@ -21,7 +21,6 @@ fn resolve(target_field: *const binding::virtual_relative_t) -> usize {
 }
 
 fn registered_image() -> (OwnedFd, &'static Image) {
-    let image = Image::retrieve().expect("the sealed accessor image must initialize");
     let target_file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -30,16 +29,17 @@ fn registered_image() -> (OwnedFd, &'static Image) {
     let target_device = OwnedFd::from(target_file);
 
     // SAFETY:
-    // The descriptor was opened from Mirilla and remains live in the returned owner.
-    unsafe { ffi::command::register_exception_image(target_device.as_fd(), image) }
-        .expect("the exception image must register");
+    // The descriptor was opened from Mirilla. C retains a dedicated registration session.
+    let image = unsafe { Image::register(target_device.as_fd()) }
+        .expect("the exception image must initialize and register");
 
     (target_device, image)
 }
 
 #[test]
+#[ignore = "requires a Mirilla-registered exception image"]
 fn image_records_resolve_inside_the_rollback_region() {
-    let image = Image::retrieve().expect("the sealed accessor image must initialize");
+    let (_target_registration, image) = registered_image();
     let rollback_region = image.rollback_region();
     let except_table = image.except_table();
     let rollback_start = rollback_region.address() as usize;
@@ -79,8 +79,9 @@ fn image_records_resolve_inside_the_rollback_region() {
 }
 
 #[test]
+#[ignore = "requires a Mirilla-registered exception image"]
 fn image_regions_reject_permission_changes() {
-    let image = Image::retrieve().expect("the sealed accessor image must initialize");
+    let (_target_registration, image) = registered_image();
 
     // SAFETY:
     // This attempts to change permissions on the exact sealed rollback region.
