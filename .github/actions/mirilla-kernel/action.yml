@@ -36,7 +36,7 @@ runs:
           with:
               path: linux
               # The cache key follows the tag, the vng release, and the config.
-              key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ inputs.tag }}-vng-${{ inputs.vng-version }}-${{ hashFiles('.github/kernel.config') }}
+              key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ inputs.tag }}-vng-${{ inputs.vng-version }}-${{ hashFiles('ci/kernel-mirilla.config') }}
 
         - name: Build kernel
           if: steps.kernel-cache.outputs.cache-hit != 'true'
