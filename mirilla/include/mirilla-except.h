@@ -154,13 +154,13 @@ MIRILLA_EXCEPT_DEFINE_COMMAND_IO(register);
 struct mirilla_device_context;
 
 /** Required VMA flags for the executable rollback region. */
-#define MIRILLA_EXCEPT_ROLLBACK_REQUIRED_FLAGS (VM_READ | VM_EXEC | VM_SHARED | VM_SEALED)
+#define MIRILLA_EXCEPT_ROLLBACK_REQUIRED_FLAGS (VM_READ | VM_EXEC | VM_MAYSHARE | VM_SEALED)
 
 /** Forbidden VMA flags for the executable rollback region. */
 #define MIRILLA_EXCEPT_ROLLBACK_FORBIDDEN_FLAGS (VM_WRITE | VM_MAYWRITE)
 
 /** Required VMA flags for the read-only exception table. */
-#define MIRILLA_EXCEPT_TABLE_REQUIRED_FLAGS (VM_READ | VM_SHARED | VM_SEALED)
+#define MIRILLA_EXCEPT_TABLE_REQUIRED_FLAGS (VM_READ | VM_MAYSHARE | VM_SEALED)
 
 /** Forbidden VMA flags for the read-only exception table. */
 #define MIRILLA_EXCEPT_TABLE_FORBIDDEN_FLAGS (VM_WRITE | VM_EXEC | VM_MAYWRITE)
