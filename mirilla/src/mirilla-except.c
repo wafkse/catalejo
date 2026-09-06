@@ -61,8 +61,8 @@ static notrace void mirilla_except_ftrace(unsigned long instruction_pointer,
 /* Permanent IP-modifying hook installed on the x86 userspace exception-fixup choke point. */
 static struct ftrace_ops mirilla_except_ftrace_operations = {
     .func = mirilla_except_ftrace,
-    .flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY | FTRACE_OPS_FL_RECURSION | FTRACE_OPS_FL_RCU |
-             FTRACE_OPS_FL_PERMANENT,
+    .flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY | FTRACE_OPS_FL_RECURSION |
+             FTRACE_OPS_FL_RCU | FTRACE_OPS_FL_PERMANENT,
 };
 
 int mirilla_except_initialize(void)

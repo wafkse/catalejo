@@ -340,8 +340,8 @@ bool mirilla_except_lookup(struct mm_struct *mm, unsigned long instruction_point
         if (except_registration->mm != mm)
             continue;
 
-        if (!mirilla_except_registration_lookup(except_registration, instruction_pointer, except_mask,
-                                                rollback_address))
+        if (!mirilla_except_registration_lookup(except_registration, instruction_pointer,
+                                                except_mask, rollback_address))
             continue;
 
         is_found = true;

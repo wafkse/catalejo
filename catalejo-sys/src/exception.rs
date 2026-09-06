@@ -214,7 +214,7 @@ impl Image {
     /// Return the C runtime backing the protected accessor shims.
     #[inline]
     pub const fn runtime(&self) -> &binding::catalejo_image_runtime {
-        let &Self(ref target_runtime) = self;
+        let Self(target_runtime) = self;
 
         target_runtime
     }
