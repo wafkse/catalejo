@@ -11,7 +11,6 @@
 #include "catalejo-section.h"
 #include "catalejo-fault.h"
 #include "catalejo-fixup.h"
-#include "catalejo-image.h"
 
 /**
  * The cached runtime monitor backend.
@@ -19,7 +18,7 @@
 static atomic_int catalejo_monitor_backend = -1;
 
 /**
- * The maximum cycle interval used by one hardware wait.
+ * The maximum cycle interval used by a hardware wait.
  */
 #define CATALEJO_MONITOR_WAIT_CYCLES 65536
 
@@ -28,6 +27,10 @@ static atomic_int catalejo_monitor_backend = -1;
  */
 #define CATALEJO_CPUID_WAITPKG (1U << 5)
 #define CATALEJO_CPUID_MONITORX (1U << 29)
+
+void catalejo_fault_routines_retain(void)
+{
+}
 
 /**
  * Detect the available hardware monitor implementation.
@@ -82,19 +85,17 @@ static void catalejo_monitor_downgrade(catalejo_monitor_backend_t target_backend
                                             memory_order_acq_rel, memory_order_acquire);
 }
 
-catalejo_monitor_arm_outcome_t
-catalejo_monitor_arm(const struct catalejo_image_runtime *target_runtime,
-                     const uint8_t *target_address)
+catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address)
 {
     catalejo_monitor_backend_t target_backend = catalejo_monitor_select();
     catalejo_faultable_instruction_outcome_t target_outcome;
 
     switch (target_backend) {
     case CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR:
-        target_outcome = catalejo_monitor_intel_arm(target_runtime, target_address);
+        target_outcome = catalejo_monitor_intel_arm(target_address);
         break;
     case CATALEJO_MONITOR_BACKEND_AMD_MONITORX:
-        target_outcome = catalejo_monitor_amd_arm(target_runtime, target_address);
+        target_outcome = catalejo_monitor_amd_arm(target_address);
         break;
     case CATALEJO_MONITOR_BACKEND_UNSUPPORTED:
         return CATALEJO_MONITOR_ARM_UNSUPPORTED;
@@ -116,8 +117,7 @@ catalejo_monitor_arm(const struct catalejo_image_runtime *target_runtime,
     return CATALEJO_MONITOR_ARM_FAULT;
 }
 
-catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *target_runtime,
-                                         catalejo_monitor_backend_t target_backend)
+catalejo_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t target_backend)
 {
     if (target_backend != catalejo_monitor_select())
         return CATALEJO_OUTCOME_INVALID_VALUE;
@@ -126,10 +126,10 @@ catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *ta
 
     switch (target_backend) {
     case CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR:
-        target_outcome = catalejo_monitor_intel_wait(target_runtime);
+        target_outcome = catalejo_monitor_intel_wait();
         break;
     case CATALEJO_MONITOR_BACKEND_AMD_MONITORX:
-        target_outcome = catalejo_monitor_amd_wait(target_runtime);
+        target_outcome = catalejo_monitor_amd_wait();
         break;
     case CATALEJO_MONITOR_BACKEND_UNSUPPORTED:
         return CATALEJO_OUTCOME_INVALID_VALUE;
@@ -152,7 +152,7 @@ catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *ta
 // held off across the macro definitions.
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
     CATALEJO_FAULT_ROUTINE catalejo_outcome_t                                             \
-        CATALEJO_CONCAT(catalejo_image_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
+        CATALEJO_CONCAT(catalejo_read_, target_typename)(CATALEJO_UNUSED const target_type *target_source, \
                                                          CATALEJO_UNUSED target_type *target_value)  \
     {                                                                                                \
         __asm__ volatile(                                                                            \
@@ -183,7 +183,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32)         \
     CATALEJO_FAULT_ROUTINE catalejo_outcome_t                                             \
-        CATALEJO_CONCAT(catalejo_image_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
+        CATALEJO_CONCAT(catalejo_write_, target_typename)(CATALEJO_UNUSED target_type *target_value, \
                                                           CATALEJO_UNUSED const target_type *target_source) \
     {                                                                                                \
         __asm__ volatile(                                                                            \
@@ -214,7 +214,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 // clang-format on
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
-catalejo_image_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
+catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     // clang-format off
     __asm__ volatile(
@@ -236,11 +236,11 @@ catalejo_image_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
+        CATALEJO_MONITOR_RECOVERY);
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_monitor_intel_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait()
 {
     // clang-format off
     __asm__ volatile(
@@ -265,12 +265,12 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_m
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
+        CATALEJO_MONITOR_RECOVERY);
     // clang-format on
 }
 
 CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t
-catalejo_image_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
+catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
 {
     // clang-format off
     __asm__ volatile(
@@ -294,11 +294,11 @@ catalejo_image_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address)
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
+        CATALEJO_MONITOR_RECOVERY);
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_monitor_amd_wait()
+CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait()
 {
     // clang-format off
     __asm__ volatile(
@@ -328,13 +328,13 @@ CATALEJO_FAULT_ROUTINE catalejo_faultable_instruction_outcome_t catalejo_image_m
         "movl $" CATALEJO_STR(CATALEJO_OUTCOME_ERROR_VALUE) ", %eax\n\t"
         "ret\n\t"
 
-        CATALEJO_ROLLBACK_RECORD("1b", "2b", "3b", CATALEJO_FAULT_EXCEPTION_ALL));
+        CATALEJO_MONITOR_RECOVERY);
     // clang-format on
 }
 
-CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t catalejo_image_copy(
-    CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
-    CATALEJO_UNUSED size_t target_count)
+CATALEJO_FAULT_ROUTINE catalejo_faultable_copy_outcome_t
+catalejo_copy(CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
+              CATALEJO_UNUSED size_t target_count)
 {
     // clang-format off
     __asm__ volatile(

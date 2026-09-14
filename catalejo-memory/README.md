@@ -63,8 +63,10 @@ When a read tears, the resulting permutation of bytes is mathematically arbitrar
 * A torn pointer (`&T`, `Box<T>`) will point to unmapped memory, resulting in a segmentation fault upon dereference.
 * A torn `enum` may materialize an illegal discriminant.
 
-To enforce type-level safety, this crate provides the [`Unassociated`] marker trait.
+To enforce type-level safety, this crate provides the
+[`Unassociated`](crate::behavior::Unassociated) marker trait.
 
 ### The `Unassociated` Contract
 
-Types passed through the peephole must implement the [`Unassociated`] trait. This trait mathematically proves that the type is an unassociated (immortal, devoid of lifetimes), trivially-copiable structure that possesses **no restricted safety invariants**. It must be mathematically valid for all possible bit-permutations, ensuring that an arbitrary, mixed-coherence chimera can materialize in memory without violating the Rust compiler's type-safety guarantees.
+Types passed through the peephole must implement the
+[`Unassociated`](crate::behavior::Unassociated) trait. This trait mathematically proves that the type is an unassociated (immortal, devoid of lifetimes), trivially-copiable structure that possesses **no restricted safety invariants**. It must be mathematically valid for all possible bit-permutations, ensuring that an arbitrary, mixed-coherence chimera can materialize in memory without violating the Rust compiler's type-safety guarantees.

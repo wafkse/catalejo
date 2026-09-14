@@ -11,8 +11,6 @@
 extern "C" {
 #endif
 
-struct catalejo_image_runtime;
-
 /**
  * The available hardware monitor implementations.
  */
@@ -40,15 +38,12 @@ extern catalejo_monitor_backend_t catalejo_monitor_select();
 /**
  * Arm monitoring for a local downstream address.
  */
-extern catalejo_monitor_arm_outcome_t
-catalejo_monitor_arm(const struct catalejo_image_runtime *target_runtime,
-                     const uint8_t *target_address);
+extern catalejo_monitor_arm_outcome_t catalejo_monitor_arm(const uint8_t *target_address);
 
 /**
  * Wait for one bounded hardware interval.
  */
-extern catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runtime *target_runtime,
-                                                catalejo_monitor_backend_t target_backend);
+extern catalejo_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t target_backend);
 
 /**
  * X-macro for the fault routines.
@@ -69,7 +64,6 @@ extern catalejo_outcome_t catalejo_monitor_wait(const struct catalejo_image_runt
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
     extern catalejo_outcome_t CATALEJO_CONCAT(catalejo_read_, target_typename)(              \
-        const struct catalejo_image_runtime *target_runtime,                                 \
         CATALEJO_UNUSED const target_type *target_source,                                    \
         CATALEJO_UNUSED target_type *target_value);
 
@@ -80,8 +74,7 @@ CATALEJO_FAULT_ROUTINE_SPECIFICATION
 
 #define X(target_typename, target_type, target_mnemonic, target_register, target_register32) \
     extern catalejo_outcome_t CATALEJO_CONCAT(catalejo_write_, target_typename)(             \
-        const struct catalejo_image_runtime *target_runtime,                                 \
-        CATALEJO_UNUSED target_type *target_value,                                           \
+        CATALEJO_UNUSED target_type * target_value,                                          \
         CATALEJO_UNUSED const target_type *target_source);
 
 CATALEJO_FAULT_ROUTINE_SPECIFICATION
@@ -109,27 +102,23 @@ typedef struct catalejo_faultable_instruction_outcome {
  * Arm an Intel user monitor with fault protection.
  */
 extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_intel_arm(const struct catalejo_image_runtime *target_runtime,
-                           CATALEJO_UNUSED const uint8_t *target_address);
+catalejo_monitor_intel_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with Intel user wait support for a bounded interval.
  */
-extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_intel_wait(const struct catalejo_image_runtime *target_runtime);
+extern catalejo_faultable_instruction_outcome_t catalejo_monitor_intel_wait(void);
 
 /**
  * Arm an AMD extended monitor with fault protection.
  */
 extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_amd_arm(const struct catalejo_image_runtime *target_runtime,
-                         CATALEJO_UNUSED const uint8_t *target_address);
+catalejo_monitor_amd_arm(CATALEJO_UNUSED const uint8_t *target_address);
 
 /**
  * Wait with AMD extended wait support for a bounded interval.
  */
-extern catalejo_faultable_instruction_outcome_t
-catalejo_monitor_amd_wait(const struct catalejo_image_runtime *target_runtime);
+extern catalejo_faultable_instruction_outcome_t catalejo_monitor_amd_wait(void);
 
 /**
  * Structure to be used to report back after a bulk read-write operation.
@@ -151,10 +140,9 @@ typedef struct catalejo_faultable_copy_outcome {
 /**
  * Perform a bulk-copy that is fault-protected.
  */
-extern catalejo_faultable_copy_outcome_t
-catalejo_copy(const struct catalejo_image_runtime *target_runtime,
-              CATALEJO_UNUSED uint8_t *target_address, CATALEJO_UNUSED const uint8_t *target_source,
-              CATALEJO_UNUSED size_t target_count);
+extern catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
+                                                       CATALEJO_UNUSED const uint8_t *target_source,
+                                                       CATALEJO_UNUSED size_t target_count);
 
 #ifdef __cplusplus
 }

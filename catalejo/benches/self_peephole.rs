@@ -161,7 +161,7 @@ fn bench_copy<const N: usize>(
 fn self_peephole(criterion: &mut Criterion) {
     let Some(target_engaged) = engage_self() else {
         eprintln!(
-            "skipping self-peephole benchmarks: the mirilla device or exception image is unavailable"
+            "skipping self-peephole benchmarks: the mirilla device or fault backend is unavailable"
         );
 
         return;

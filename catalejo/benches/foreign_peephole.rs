@@ -172,7 +172,7 @@ impl Drop for ForeignTarget {
 
 /// Engage a foreign target, returning [`None`] when the environment forbids it.
 ///
-/// A [`None`] means the sealed image could not initialize, or the mirilla device is absent, or
+/// A [`None`] means the fault backend could not initialize, or the mirilla device is absent, or
 /// the caller lacks the `CAP_SYS_PTRACE` that engaging a foreign address space demands.
 fn engage_foreign(target_child: &ForeignTarget) -> Option<Target> {
     Target::engage(target_child.pid()).ok()
@@ -243,7 +243,7 @@ fn foreign_peephole(criterion: &mut Criterion) {
 
     let Some(target_engaged) = engage_foreign(&target_child) else {
         eprintln!(
-            "skipping foreign-peephole benchmarks: the mirilla device or exception image is \
+            "skipping foreign-peephole benchmarks: the mirilla device or fault backend is \
              unavailable, or engaging a foreign process is not permitted (CAP_SYS_PTRACE)"
         );
 

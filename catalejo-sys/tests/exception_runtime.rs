@@ -1,165 +1,232 @@
-use core::{mem::size_of, time::Duration};
-use std::{
-    fs::OpenOptions,
-    os::fd::{AsFd, OwnedFd},
+use std::{fs::OpenOptions, os::fd::AsFd};
+
+use catalejo_sys::exception::{
+    Context, InvalidSlabSize, InvalidSoftSlabLimit, SlabAllocationError, SlabSize, SoftSlabLimit,
+    backend::Backend,
 };
 
-use catalejo_sys::{
-    exception::Image,
-    ffi::binding,
-    monitor::{self, MonitorError},
-};
-
-fn resolve(target_field: *const binding::virtual_relative_t) -> usize {
-    let target_field_address = target_field.expose_provenance();
-
-    // SAFETY:
-    // The field belongs to a live immutable runtime record.
-    let target_displacement = unsafe { target_field.read() } as usize;
-
-    target_field_address.wrapping_add(target_displacement)
+#[test]
+fn slab_sizes_preserve_kernel_constraints() {
+    assert_eq!(SlabSize::new(0), Err(InvalidSlabSize::Zero));
+    assert_eq!(SlabSize::new(4096), Err(InvalidSlabSize::Misaligned));
+    assert_eq!(SlabSize::new(12 * 1024), Ok(SlabSize::DEFAULT));
+    assert_eq!(SlabSize::DEFAULT.record_capacity(), 256);
+    assert_eq!(
+        SlabSize::new(2 * 1024 * 1024 + 4096),
+        Err(InvalidSlabSize::TooLarge)
+    );
 }
 
-fn registered_image() -> (OwnedFd, &'static Image) {
-    let target_file = OpenOptions::new()
+#[test]
+fn soft_limits_preserve_kernel_bound() {
+    assert_eq!(SoftSlabLimit::new(0), Err(InvalidSoftSlabLimit::Zero));
+    assert_eq!(SoftSlabLimit::new(1), Ok(SoftSlabLimit::DEFAULT));
+    assert_eq!(
+        SoftSlabLimit::new(17),
+        Err(InvalidSoftSlabLimit::AboveKernelLimit)
+    );
+}
+
+fn device() -> std::fs::File {
+    OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/mirilla")
-        .expect("the Mirilla test device must open");
-    let target_device = OwnedFd::from(target_file);
-
-    // SAFETY:
-    // The descriptor was opened from Mirilla. C retains a dedicated registration session.
-    let image = unsafe { Image::register(target_device.as_fd()) }
-        .expect("the exception image must initialize and register");
-
-    (target_device, image)
+        .expect("the Mirilla integration device must open")
 }
 
 #[test]
-#[ignore = "requires a Mirilla-registered exception image"]
-fn image_records_resolve_inside_the_rollback_region() {
-    let (_target_registration, image) = registered_image();
-    let rollback_region = image.rollback_region();
-    let except_table = image.except_table();
-    let rollback_start = rollback_region.address() as usize;
-    let rollback_end = rollback_start + rollback_region.size() as usize;
-    let record_capacity =
-        except_table.size() as usize / size_of::<binding::mirilla_except_record>();
-    let table = except_table.address() as *const binding::mirilla_except_record;
-    let mut record_seen = 0;
+#[ignore = "requires a loaded Mirilla module"]
+fn empty_slab_toggles_between_protection_states() {
+    let device = device();
+    // SAFETY: The descriptor was opened from the Mirilla device.
+    let context =
+        unsafe { Context::create(device.as_fd(), SlabSize::DEFAULT, SoftSlabLimit::DEFAULT) }
+            .expect("the exception context must be created");
 
-    for target_index in 0..record_capacity {
-        // SAFETY:
-        // The image proof covers the complete immutable table VMA.
-        let target_record = unsafe { &*table.add(target_index) };
-        let record_empty = target_record.start_address == 0
-            && target_record.end_address == 0
-            && target_record.rollback_address == 0
-            && target_record.except_mask == 0;
+    let mut target_slab = context.map().expect("the slab must map");
+    assert_eq!(context.allocated(), 1);
+    assert!(!target_slab.is_published());
+    target_slab.publish().expect("an empty table is valid");
+    assert!(target_slab.is_published());
+    assert_eq!(target_slab.record_list().len(), 256);
+    assert!(target_slab.record_list_mut().is_none());
+    target_slab.edit().expect("the slab must return to editing");
+    assert!(!target_slab.is_published());
+    assert!(target_slab.record_list_mut().is_some());
+    drop(target_slab);
+    assert_eq!(context.allocated(), 0);
+}
 
-        if record_empty {
-            continue;
+#[test]
+#[ignore = "requires a loaded Mirilla module"]
+fn publication_error_preserves_editable_state() {
+    let device = device();
+    // SAFETY: The descriptor was opened from the Mirilla device.
+    let context =
+        unsafe { Context::create(device.as_fd(), SlabSize::DEFAULT, SoftSlabLimit::DEFAULT) }
+            .expect("the exception context must be created");
+    let mut target_slab = context.map().expect("the slab must map");
+    target_slab
+        .record_list_mut()
+        .expect("a new slab is editable")[0]
+        .boundary
+        .base_address = 1;
+
+    let error = target_slab
+        .publish()
+        .expect_err("the incomplete record must fail validation");
+    assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+    assert!(!target_slab.is_published());
+    target_slab
+        .record_list_mut()
+        .expect("failed publication preserves editability")[0] =
+        // SAFETY: The all-zero record is the ABI-defined unused record value.
+        unsafe { core::mem::zeroed() };
+    target_slab
+        .publish()
+        .expect("the repaired empty table is valid");
+    drop(target_slab);
+    assert_eq!(context.allocated(), 0);
+}
+
+#[test]
+#[ignore = "requires a loaded Mirilla module"]
+fn soft_allocation_limit_is_reusable() {
+    let device = device();
+    // SAFETY: The descriptor was opened from the Mirilla device.
+    let context =
+        unsafe { Context::create(device.as_fd(), SlabSize::DEFAULT, SoftSlabLimit::DEFAULT) }
+            .expect("the exception context must be created");
+    let first = context.map().expect("the first slab must map");
+    assert!(matches!(
+        context.map(),
+        Err(SlabAllocationError::SoftLimitReached)
+    ));
+    drop(first);
+    let replacement = context.map().expect("dropping returns the soft slot");
+    drop(replacement);
+}
+
+#[test]
+#[ignore = "requires a loaded Mirilla module"]
+fn sealed_slab_keeps_its_soft_allocation_slot() {
+    let device = device();
+
+    // SAFETY: fork creates a child with one calling thread. The child exits without running the
+    // inherited Rust destructors after testing a process-permanent sealed mapping.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork must succeed");
+    if child == 0 {
+        // SAFETY: The descriptor was opened from the Mirilla device.
+        let context = match unsafe {
+            Context::create(device.as_fd(), SlabSize::DEFAULT, SoftSlabLimit::DEFAULT)
+        } {
+            Ok(context) => context,
+            Err(_) => unsafe { libc::_exit(2) },
+        };
+        let mut target_slab = match context.map() {
+            Ok(target_slab) => target_slab,
+            Err(_) => unsafe { libc::_exit(3) },
+        };
+
+        if target_slab.publish().is_err() {
+            // SAFETY: _exit terminates the isolated child without inherited destructor activity.
+            unsafe { libc::_exit(4) };
         }
 
-        record_seen += 1;
-        let target_start = resolve(&raw const target_record.start_address);
-        let target_end = resolve(&raw const target_record.end_address);
-        let target_rollback = resolve(&raw const target_record.rollback_address);
+        let record_pointer = target_slab
+            .record_list()
+            .as_ptr()
+            .cast::<core::ffi::c_void>();
+        let slab_size = SlabSize::DEFAULT.get();
 
-        assert!((rollback_start..rollback_end).contains(&target_start));
-        assert!((target_start + 1..=rollback_end).contains(&target_end));
-        assert!((rollback_start..rollback_end).contains(&target_rollback));
+        // SAFETY: record_pointer and slab_size identify the exact published slab VMA. A successful
+        // seal intentionally makes the mapping process-permanent.
+        let seal_status = unsafe { libc::syscall(libc::SYS_mseal, record_pointer, slab_size, 0) };
+        if seal_status < 0 {
+            let seal_error = std::io::Error::last_os_error();
+
+            match seal_error.raw_os_error() {
+                Some(libc::ENOSYS) => unsafe { libc::_exit(0) },
+                _ => unsafe { libc::_exit(5) },
+            }
+        }
+
+        drop(target_slab);
+        if context.allocated() != 1 {
+            // SAFETY: _exit terminates the isolated child with its sealed mapping.
+            unsafe { libc::_exit(6) };
+        }
+
+        // SAFETY: _exit releases the process-permanent sealed mapping with the child address space.
+        unsafe { libc::_exit(0) };
     }
 
-    assert!(
-        record_seen > 0,
-        "the image must carry protected instructions"
-    );
-}
+    let mut child_status = 0;
 
-#[test]
-#[ignore = "requires a Mirilla-registered exception image"]
-fn image_regions_reject_permission_changes() {
-    let (_target_registration, image) = registered_image();
-
-    // SAFETY:
-    // This attempts to change permissions on the exact sealed rollback region.
-    let status = unsafe {
-        libc::mprotect(
-            image.rollback_region().address() as *mut libc::c_void,
-            image.rollback_region().size() as usize,
-            libc::PROT_READ,
-        )
-    };
-
-    assert_eq!(status, -1, "the rollback region must reject mprotect");
+    // SAFETY: child is the live pid returned by fork and child_status points to local storage.
     assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EPERM),
+        unsafe { libc::waitpid(child, &raw mut child_status, 0) },
+        child
     );
+    assert!(libc::WIFEXITED(child_status));
+    assert_eq!(libc::WEXITSTATUS(child_status), 0);
 }
 
 #[test]
-#[ignore = "requires a Mirilla-registered exception image"]
-fn monitor_selection_and_wait_are_runtime_safe() {
-    let (_target_registration, image) = registered_image();
-    let target_value = 0_u64;
+#[ignore = "requires a loaded Mirilla module"]
+fn zz_backend_reuse_and_postfork_rebuild() {
+    let device = device();
+    // SAFETY: The descriptor was opened from the Mirilla device.
+    let left = unsafe { Backend::initialize(device.as_fd()) }.expect("backend initialization");
+    let right = Backend::retrieve().expect("backend retrieval");
 
-    // SAFETY:
-    // The address names a live aligned local word and the image registration remains live.
-    let target_arm = unsafe { monitor::arm(image, (&raw const target_value).cast::<u8>()) };
+    assert_eq!(left, right);
 
-    match target_arm {
-        Ok(target_backend) => {
-            assert_eq!(monitor::backend(), Some(target_backend));
-            let target_start = std::time::Instant::now();
-
-            // SAFETY:
-            // The backend was armed on this thread and the image registration remains live.
-            let target_wait = unsafe { monitor::wait(image, target_backend) };
-
-            assert!(
-                target_wait.is_ok() || target_wait == Err(MonitorError::Unsupported),
-                "a protected hardware wait must complete or downgrade",
-            );
-            assert!(
-                target_start.elapsed() < Duration::from_secs(1),
-                "one hardware wait interval must remain finite",
-            );
+    // SAFETY: fork creates a child with one calling thread. The child uses async-signal-safe exit
+    // after exercising only the dedicated integration path.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork must succeed");
+    if child == 0 {
+        let inherited = left
+            .validate()
+            .expect_err("the inherited proof must be stale");
+        if inherited.raw_os_error() != Some(libc::ESTALE) {
+            // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
+            unsafe { libc::_exit(2) };
         }
-        Err(MonitorError::Unsupported) => assert_eq!(monitor::backend(), None),
-        Err(MonitorError::Fault) => {
-            panic!("arming a live local word must not report a mapping fault");
+
+        let stale = Backend::retrieve().expect_err("the inherited backend must be stale");
+        if stale.raw_os_error() != Some(libc::ESTALE) {
+            // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
+            unsafe { libc::_exit(3) };
         }
-    }
-}
 
-#[test]
-fn sigill_outside_the_fault_section_is_chained() {
-    use std::os::unix::process::ExitStatusExt;
+        // SAFETY: The inherited descriptor still belongs to Mirilla and initialization creates a
+        // new child context and VM_DONTCOPY slab.
+        let child_backend = match unsafe { Backend::initialize(device.as_fd()) } {
+            Ok(child_backend) => child_backend,
+            Err(_) => {
+                // SAFETY: _exit terminates the fork child without running inherited destructors.
+                unsafe { libc::_exit(4) };
+            }
+        };
+        if child_backend.validate().is_err() {
+            // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
+            unsafe { libc::_exit(5) };
+        }
 
-    const CHILD_VARIABLE: &str = "CATALEJO_SIGILL_CHILD";
-
-    if std::env::var_os(CHILD_VARIABLE).is_some() {
-        // SAFETY:
-        // The child intentionally raises an unregistered SIGILL.
-        unsafe { libc::raise(libc::SIGILL) };
-
-        panic!("the default SIGILL action must terminate the child");
+        // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
+        unsafe { libc::_exit(0) };
     }
 
-    let target_executable =
-        std::env::current_exe().expect("the test executable path must be available");
-    let target_status = std::process::Command::new(target_executable)
-        .args(["--exact", "sigill_outside_the_fault_section_is_chained"])
-        .env(CHILD_VARIABLE, "1")
-        .status()
-        .expect("the SIGILL child must run");
-
+    let mut child_status = 0;
+    // SAFETY: child is the live pid returned by fork and child_status points to local storage.
     assert_eq!(
-        target_status.signal(),
-        Some(libc::SIGILL),
-        "SIGILL must retain its default behavior",
+        unsafe { libc::waitpid(child, &raw mut child_status, 0) },
+        child
     );
+    assert!(libc::WIFEXITED(child_status));
+    assert_eq!(libc::WEXITSTATUS(child_status), 0);
 }

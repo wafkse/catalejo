@@ -4,7 +4,10 @@ pub mod binding {
     #![allow(
         nonstandard_style,
         missing_docs,
-        reason = "bindgen-generated bindings have largely non-standard style and missing documentation"
+        unsafe_op_in_unsafe_fn,
+        improper_ctypes,
+        clippy::missing_safety_doc,
+        reason = "bindgen-generated bindings have non-standard style and generated unsafe helper methods"
     )]
     //! Bare automatically-generated bindings to the C-based subsystem.
 

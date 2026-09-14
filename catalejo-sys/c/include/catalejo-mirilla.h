@@ -13,12 +13,6 @@ extern "C" {
 #endif
 
 /**
- * Register a sealed exception image for the calling address space and device session.
- */
-mirilla_command_status_t catalejo_mirilla_except_register(int fd,
-                                                          const struct mirilla_except_image *image);
-
-/**
  * Engage a target process.
  *
  * The provided file descriptor must be of the `mirilla` kernel module.

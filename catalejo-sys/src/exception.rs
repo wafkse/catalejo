@@ -1,245 +1,529 @@
-//! Construction, registration and description of the immutable userspace exception image.
+//! Exception contexts, slabs, actions, and the process fault backend.
 //!
-//! The exception image is the userspace half of Mirilla fault recovery. Its rollback region holds
-//! the relocated protected accessors and their recovery paths. Its exception-table region records
-//! the protected instruction ranges, accepted architectural exceptions and rollback destinations
-//! consumed by Mirilla.
-//!
-//! The C runtime constructs the image, registers it for the calling address space and retains the
-//! Mirilla session that owns the registration. Rust only exposes an [`Image`] after that complete
-//! sequence succeeds.
+//! A context owns the kernel exception file descriptor. Each mapped slab is edited while writable
+//! and published by changing the whole mapping to read only. Publication installs an immutable
+//! kernel snapshot. Returning the mapping to writable removes that snapshot before editing resumes.
 
-#[cfg(feature = "stealth-mode")]
-use std::process;
+use core::{
+    num::NonZero,
+    ptr::NonNull,
+    slice,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use std::{
     io,
-    os::fd::{AsRawFd, BorrowedFd},
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
 };
+
+use fack::prelude::Error;
 
 use crate::ffi::binding;
 
-/// A virtual-memory region described by an exception image.
-///
-/// The value carries the base address and complete byte size used by the Mirilla exception-image
-/// ABI. It does not own the mapping. The mapping and registration guarantees come from possession
-/// of the enclosing [`Image`].
-#[derive(Debug, Copy, Clone)]
-pub struct ImageRegion {
-    /// The virtual address of the first byte described by the region.
-    base_address: binding::virtual_address_t,
+pub mod action;
+pub mod backend;
 
-    /// The complete byte size of the described region.
-    region_size: binding::virtual_size_t,
+/// The reason an exception slab size is invalid.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum InvalidSlabSize {
+    /// Zero cannot describe a mapping.
+    #[error("exception slab size cannot be zero")]
+    Zero,
+
+    /// The size is not aligned to both a base page and the record stride.
+    #[error("exception slab size is not aligned")]
+    Misaligned,
+
+    /// The size exceeds the kernel ABI ceiling.
+    #[error("exception slab size exceeds the kernel limit")]
+    TooLarge,
 }
 
-impl ImageRegion {
-    /// Lift a bare Mirilla region descriptor into the Rust representation.
-    ///
-    /// This preserves the address and size exactly as supplied by the ABI. No independent mapping
-    /// or registration claim is created by this conversion.
-    #[inline]
-    const fn lift(target_value: binding::mirilla_except_region) -> Self {
-        let binding::mirilla_except_region {
-            region_address: base_address,
-            region_size,
-        } = target_value;
+/// A validated fixed exception slab size in bytes.
+///
+/// NOTE(invariant): The private value is nonzero, aligned to the x86 Linux base-page size and the
+/// 48-byte record stride, and no larger than the kernel slab-size ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlabSize(
+    /// The validated slab size in bytes.
+    NonZero<usize>,
+);
 
-        Self {
-            base_address,
-            region_size,
+impl SlabSize {
+    /// The built-in backend slab size.
+    pub const DEFAULT: Self = Self(
+        NonZero::new(binding::MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE as usize)
+            .expect("the default slab size is nonzero"),
+    );
+
+    /// Validate a slab size.
+    #[inline]
+    pub const fn new(value: usize) -> Result<Self, InvalidSlabSize> {
+        match NonZero::new(value) {
+            None => Err(InvalidSlabSize::Zero),
+            Some(target_size) => {
+                let size_value = target_size.get();
+                let page_aligned = size_value.is_multiple_of(4096);
+                let record_aligned = size_value
+                    .is_multiple_of(core::mem::size_of::<binding::mirilla_except_record>());
+                let within_limit = size_value <= binding::MIRILLA_EXCEPT_SLAB_SIZE_LIMIT as usize;
+
+                match (page_aligned, record_aligned, within_limit) {
+                    (true, true, true) => Ok(Self(target_size)),
+                    (_, _, false) => Err(InvalidSlabSize::TooLarge),
+                    _ => Err(InvalidSlabSize::Misaligned),
+                }
+            }
         }
     }
 
-    /// Return the virtual address of the first byte described by this region.
+    /// Return the byte size.
     #[inline]
-    pub const fn address(&self) -> binding::virtual_address_t {
-        let &Self { base_address, .. } = self;
+    pub const fn get(self) -> usize {
+        let Self(value) = self;
 
-        base_address
+        value.get()
     }
 
-    /// Return the complete byte size described by this region.
+    /// Return the number of fixed-stride records in one slab.
     #[inline]
-    pub const fn size(&self) -> binding::virtual_size_t {
-        let &Self { region_size, .. } = self;
+    pub const fn record_capacity(self) -> usize {
+        let Self(target_size) = self;
 
-        region_size
+        target_size.get() / core::mem::size_of::<binding::mirilla_except_record>()
     }
 }
 
-/// The process-global immutable image registered with Mirilla.
-///
-/// The C layer owns the runtime, its one-time state machine and a dedicated Mirilla session that
-/// owns the registration. It publishes the runtime only after the mappings are immutable and
-/// registration for the calling address space succeeds. Possession of an `Image` therefore proves
-/// both image construction and Mirilla registration for the process that retrieved it.
-///
-/// A process created through `fork` inherits the mappings and Rust references but receives a new
-/// address space. Inherited references must not be used in the child. Call [`Image::register`]
-/// through `Target::register_current_address_space` before reacquiring the image in that process.
-#[repr(transparent)]
-#[derive(Debug)]
-// NOTE(invariant): C owns the only allocation with this representation. It publishes the pointer
-// with release ordering only after immutable construction and Mirilla registration succeed. Rust
-// acquires the C state before lifting that process-lifetime allocation into this opaque type.
-pub struct Image(binding::catalejo_image_runtime);
+/// The reason a userspace soft slab limit is invalid.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum InvalidSoftSlabLimit {
+    /// Zero would prohibit every allocation.
+    #[error("exception slab limit cannot be zero")]
+    Zero,
 
-impl Image {
-    /// Register and publish the exception image through a Mirilla session.
-    ///
-    /// The first successful call constructs the sealed mappings, registers them for the calling
-    /// address space and retains a dedicated registration session opened through the supplied
-    /// descriptor. Later calls in the same process return the published image. A child created
-    /// through `fork` uses this operation to register the inherited immutable image for its new
-    /// address space.
+    /// The requested limit exceeds the kernel hard limit.
+    #[error("exception slab limit exceeds the kernel limit")]
+    AboveKernelLimit,
+}
+
+/// A userspace allocation limit bounded by the kernel hard limit.
+///
+/// NOTE(invariant): The private value is in the inclusive range from one through the kernel slab
+/// limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SoftSlabLimit(
+    /// The validated userspace allocation count.
+    NonZero<usize>,
+);
+
+impl SoftSlabLimit {
+    /// The default policy permits one slab.
+    pub const DEFAULT: Self = Self(NonZero::<usize>::MIN);
+
+    /// Validate a userspace soft limit.
+    #[inline]
+    pub const fn new(value: usize) -> Result<Self, InvalidSoftSlabLimit> {
+        match NonZero::new(value) {
+            None => Err(InvalidSoftSlabLimit::Zero),
+            Some(value) => match value.get() <= binding::MIRILLA_EXCEPT_SLAB_LIMIT as usize {
+                true => Ok(Self(value)),
+                false => Err(InvalidSoftSlabLimit::AboveKernelLimit),
+            },
+        }
+    }
+
+    /// Return the allocation count.
+    #[inline]
+    pub const fn get(self) -> usize {
+        let Self(value) = self;
+
+        value.get()
+    }
+}
+
+/// A nonzero kernel exception-context identifier.
+///
+/// NOTE(invariant): Only a successful CREATE result can construct this private nonzero value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExceptionId(
+    /// The nonzero identifier returned by Mirilla CREATE.
+    NonZero<binding::mirilla_except_id_t>,
+);
+
+impl ExceptionId {
+    /// Lift a successful kernel result.
+    #[inline]
+    const fn from_raw(target_id: binding::mirilla_except_id_t) -> Option<Self> {
+        match NonZero::new(target_id) {
+            Some(target_id) => Some(Self(target_id)),
+            None => None,
+        }
+    }
+
+    /// Return the kernel identifier.
+    #[inline]
+    pub const fn get(self) -> binding::mirilla_except_id_t {
+        let Self(value) = self;
+
+        value.get()
+    }
+}
+
+/// A failure while allocating an exception slab.
+#[derive(Debug, Error)]
+pub enum SlabAllocationError {
+    /// The context already owns its configured number of userspace slabs.
+    #[error("exception slab allocation limit reached")]
+    SoftLimitReached,
+
+    /// The operating system rejected or malformed the slab mapping.
+    #[error("exception slab mapping failed with {0}")]
+    #[error(source(0))]
+    System(
+        /// The underlying mapping error.
+        io::Error,
+    ),
+}
+
+/// An fd-owned exception context bound to its creating address space.
+///
+// NOTE(invariant): The descriptor owns the kernel exception context. The identifier and slab size
+// come from the same successful create operation. The allocation count never exceeds the soft
+// limit through safe Rust allocation paths.
+#[derive(Debug)]
+pub struct Context(
+    /// The anonymous exception file descriptor capability.
+    OwnedFd,
+    /// The kernel identifier for the exception context.
+    ExceptionId,
+    /// The exact byte size required by every slab mapping.
+    SlabSize,
+    /// The userspace admission control limit for live slabs.
+    SoftSlabLimit,
+    /// The number of live slab mappings owned through this context.
+    AtomicUsize,
+);
+
+impl Context {
+    /// Create the one exception context allowed for the current address space.
     ///
     /// # Safety
     ///
-    /// `target_device` must be a descriptor created by Mirilla.
+    /// `device` must be a descriptor created by Mirilla.
     ///
     /// # Errors
     ///
-    /// This returns the operating-system error reported while constructing or registering the
-    /// image.
+    /// This returns a kernel error or an invalid successful result from the foreign interface.
     #[inline]
-    pub unsafe fn register(target_device: BorrowedFd<'_>) -> io::Result<&'static Self> {
-        let mut target_runtime = core::ptr::null();
+    pub unsafe fn create(
+        device: BorrowedFd<'_>,
+        slab_size: SlabSize,
+        soft_limit: SoftSlabLimit,
+    ) -> io::Result<Self> {
+        let mut target_id = 0 as binding::mirilla_except_id_t;
+        let mut target_fd = -1 as RawFd;
 
-        // SAFETY: The caller guarantees that the descriptor belongs to Mirilla. C initializes the
-        // output pointer only after construction and registration succeed.
+        // SAFETY: The caller supplies the Mirilla descriptor contract. Both output pointers name
+        // live local storage for the duration of the foreign call.
         let target_status = unsafe {
-            binding::catalejo_fault_image_initialize(
-                target_device.as_raw_fd(),
-                core::ptr::from_mut(&mut target_runtime),
+            binding::catalejo_mirilla_except_create(
+                device.as_raw_fd(),
+                slab_size.get() as binding::virtual_size_t,
+                &raw mut target_id,
+                &raw mut target_fd,
             )
         };
 
-        Self::lift_registered(target_status, target_runtime)
+        status(target_status)?;
+
+        let target_id = ExceptionId::from_raw(target_id);
+        let target_fd = match target_fd {
+            0.. => {
+                // SAFETY: A successful create transfers ownership of one nonnegative descriptor.
+                Some(unsafe { OwnedFd::from_raw_fd(target_fd) })
+            }
+            _ => None,
+        };
+
+        match (target_id, target_fd) {
+            (Some(target_id), Some(target_fd)) => {
+                let allocated_count = AtomicUsize::new(0);
+
+                Ok(Self(
+                    target_fd,
+                    target_id,
+                    slab_size,
+                    soft_limit,
+                    allocated_count,
+                ))
+            }
+            (_, Some(target_fd)) => {
+                drop(target_fd);
+
+                Err(io::Error::from(io::ErrorKind::InvalidData))
+            }
+            _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
+        }
     }
 
-    /// Retrieve the image registered for the calling address space.
-    ///
-    /// This operation never constructs or registers an image. It succeeds only after
-    /// [`Self::register`] has published the process-global runtime for the current process. A child
-    /// created through `fork` receives an error until it registers its distinct address space.
+    /// Return the kernel identifier.
+    #[inline]
+    pub const fn id(&self) -> ExceptionId {
+        let &Self(_, target_id, ..) = self;
+
+        target_id
+    }
+
+    /// Return the configured slab size.
+    #[inline]
+    pub const fn slab_size(&self) -> SlabSize {
+        let &Self(_, _, slab_size, ..) = self;
+
+        slab_size
+    }
+
+    /// Return the configured userspace slab limit.
+    #[inline]
+    pub const fn soft_limit(&self) -> SoftSlabLimit {
+        let &Self(_, _, _, soft_limit, ..) = self;
+
+        soft_limit
+    }
+
+    /// Return the number of currently mapped slabs.
+    #[inline]
+    pub fn allocated(&self) -> usize {
+        let Self(_, _, _, _, allocated_count) = self;
+
+        allocated_count.load(Ordering::Acquire)
+    }
+
+    /// Map one editable exception slab.
     ///
     /// # Errors
     ///
-    /// This returns an operating-system error when no image is registered for the calling address
-    /// space.
+    /// This fails when the userspace soft limit is reached or the operating system rejects the
+    /// mapping.
     #[inline]
-    pub fn retrieve() -> io::Result<&'static Self> {
-        let mut target_runtime = core::ptr::null();
+    pub fn map(&self) -> Result<Slab<'_>, SlabAllocationError> {
+        Self::reserve_slab(self)?;
 
-        // SAFETY: C either leaves the pointer null and returns an error or publishes its
-        // process-lifetime immutable runtime through the output pointer.
+        let Self(target_fd, _, slab_size, ..) = self;
+        let mut record_list = core::ptr::null_mut();
+
+        // SAFETY: The context descriptor is a live exception descriptor. The output pointer names
+        // local storage and the C helper maps exactly one configured slab on success.
         let target_status = unsafe {
-            binding::catalejo_fault_image_retrieve(core::ptr::from_mut(&mut target_runtime))
+            binding::catalejo_except_slab_map(
+                target_fd.as_raw_fd(),
+                slab_size.get() as binding::virtual_size_t,
+                &raw mut record_list,
+            )
         };
 
-        Self::lift_registered(target_status, target_runtime)
-    }
+        let map_result = status(target_status)
+            .map_err(SlabAllocationError::System)
+            .and_then(|()| {
+                NonNull::new(record_list).ok_or_else(|| {
+                    SlabAllocationError::System(io::Error::from(io::ErrorKind::InvalidData))
+                })
+            });
 
-    /// Return the registered image or terminate on an invariant violation.
-    ///
-    /// Low-level callers use this after their owning context has established the registration. A
-    /// regular build treats a missing registration as unreachable. A stealth-mode build aborts
-    /// without formatting a diagnostic.
-    ///
-    /// # Panics
-    ///
-    /// Without `stealth-mode`, this panics when the image is not registered for the calling process.
-    ///
-    /// # Aborts
-    ///
-    /// With `stealth-mode`, this aborts when the image is not registered for the calling process.
-    #[inline]
-    pub fn infallible() -> &'static Self {
-        match Self::retrieve() {
-            Ok(target_image) => target_image,
-            #[cfg(not(feature = "stealth-mode"))]
-            Err(..) => unreachable!(),
-            #[cfg(feature = "stealth-mode")]
-            Err(..) => process::abort(),
+        match map_result {
+            Ok(record_list) => Ok(Slab(self, record_list, SlabState::Editable)),
+            Err(target_error) => {
+                Self::release_slab(self);
+
+                Err(target_error)
+            }
         }
     }
 
-    /// Return the registered image using the configured failure policy.
-    ///
-    /// Regular builds retain a descriptive failure for invariant violations. Stealth-mode builds
-    /// delegate to [`Self::infallible`] so diagnostic text is excluded at compile time.
-    ///
-    /// # Panics
-    ///
-    /// Without `stealth-mode`, this panics when the image is not registered for the calling process.
-    ///
-    /// # Aborts
-    ///
-    /// With `stealth-mode`, this aborts when the image is not registered for the calling process.
-    #[inline]
-    pub fn preferred() -> &'static Self {
-        #[cfg(not(feature = "stealth-mode"))]
-        {
-            Self::retrieve().expect("exception image is not registered for this process")
-        }
+    /// Reserve one userspace slab allocation slot.
+    fn reserve_slab(&self) -> Result<(), SlabAllocationError> {
+        let Self(_, _, _, soft_limit, allocated_count) = self;
+        let limit_count = soft_limit.get();
+        let update_result =
+            allocated_count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |allocated_count| {
+                match allocated_count < limit_count {
+                    true => Some(allocated_count + 1),
+                    false => None,
+                }
+            });
 
-        #[cfg(feature = "stealth-mode")]
-        {
-            Self::infallible()
+        match update_result {
+            Ok(_) => Ok(()),
+            Err(_) => Err(SlabAllocationError::SoftLimitReached),
         }
     }
 
-    /// Lift a successful C publication into the opaque Rust proof type.
-    fn lift_registered(
-        target_status: core::ffi::c_int,
-        target_runtime: *const binding::catalejo_image_runtime,
-    ) -> io::Result<&'static Self> {
-        if target_status < 0 {
-            return Err(io::Error::from_raw_os_error(target_status.saturating_abs()));
-        }
+    /// Return one userspace slab allocation slot.
+    fn release_slab(&self) {
+        let Self(_, _, _, _, allocated_count) = self;
+        let previous_count = allocated_count.fetch_sub(1, Ordering::AcqRel);
 
-        if target_status != 0 || target_runtime.is_null() {
-            #[cfg(not(feature = "stealth-mode"))]
-            return Err(io::Error::from(io::ErrorKind::Other));
-
-            #[cfg(feature = "stealth-mode")]
-            process::abort();
-        }
-
-        // SAFETY: A zero status means C published a non-null pointer to its process-lifetime,
-        // immutable `catalejo_image_runtime`. `Image` is transparent over that exact type.
-        Ok(unsafe { &*target_runtime.cast::<Self>() })
-    }
-
-    /// Return the C runtime backing the protected accessor shims.
-    #[inline]
-    pub const fn runtime(&self) -> &binding::catalejo_image_runtime {
-        let Self(target_runtime) = self;
-
-        target_runtime
-    }
-
-    /// Return the immutable region containing relocated protected accessors and rollback code.
-    #[inline]
-    pub const fn rollback_region(&self) -> ImageRegion {
-        let &Self(binding::catalejo_image_runtime {
-            image: binding::mirilla_except_image {
-                rollback_region, ..
-            },
-            ..
-        }) = self;
-
-        ImageRegion::lift(rollback_region)
-    }
-
-    /// Return the immutable region containing the architectural exception table.
-    #[inline]
-    pub const fn except_table(&self) -> ImageRegion {
-        let &Self(binding::catalejo_image_runtime {
-            image: binding::mirilla_except_image { except_table, .. },
-            ..
-        }) = self;
-
-        ImageRegion::lift(except_table)
+        debug_assert!(previous_count != 0);
     }
 }
+
+/// The userspace protection state tracked for one slab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlabState {
+    /// The slab is writable and contributes no immutable kernel table.
+    Editable,
+    /// The slab is read only and contributes its immutable kernel snapshot.
+    Published,
+}
+
+/// One complete exception slab mapping owned by a [`Context`].
+///
+// NOTE(invariant): The pointer names one exact mapping from the borrowed context. The tracked state
+// changes only after successful whole-VMA protection transitions. Drop unmaps the mapping before
+// returning the context allocation slot.
+#[derive(Debug)]
+pub struct Slab<'context>(
+    /// The context that owns the file descriptor used to create this slab.
+    &'context Context,
+    /// The first exception record in the complete slab mapping.
+    NonNull<binding::mirilla_except_record>,
+    /// The last protection state established through this safe wrapper.
+    SlabState,
+);
+
+impl Slab<'_> {
+    /// Return whether the slab currently contributes a published kernel snapshot.
+    #[inline]
+    pub const fn is_published(&self) -> bool {
+        let Self(_, _, slab_state) = self;
+
+        matches!(slab_state, SlabState::Published)
+    }
+
+    /// Return read-only access to the complete record list.
+    #[inline]
+    pub const fn record_list(&self) -> &[binding::mirilla_except_record] {
+        let Self(target_context, record_list, _) = self;
+        let record_count = target_context.slab_size().record_capacity();
+
+        // SAFETY: The slab invariant owns the complete live mapping for this lifetime. The mapping
+        // always contains exactly record_count fixed-size records.
+        unsafe { slice::from_raw_parts(record_list.as_ptr(), record_count) }
+    }
+
+    /// Return mutable access to the complete record list while the slab is editable.
+    #[inline]
+    pub const fn record_list_mut(&mut self) -> Option<&mut [binding::mirilla_except_record]> {
+        let Self(target_context, record_list, slab_state) = self;
+        let record_count = target_context.slab_size().record_capacity();
+
+        match slab_state {
+            SlabState::Editable => {
+                // SAFETY: Editable state proves the VMA is writable. Exclusive access to the slab
+                // prevents a second Rust reference to the returned record list.
+                Some(unsafe { slice::from_raw_parts_mut(record_list.as_ptr(), record_count) })
+            }
+            SlabState::Published => None,
+        }
+    }
+
+    /// Publish the complete record list as an immutable kernel snapshot.
+    ///
+    /// A successful call leaves the slab read only. A failed call leaves the slab editable and
+    /// owned by the caller.
+    ///
+    /// # Errors
+    ///
+    /// This returns the operating system or kernel validation error from the protection change.
+    #[inline]
+    pub fn publish(&mut self) -> io::Result<()> {
+        let Self(target_context, record_list, slab_state) = self;
+
+        match slab_state {
+            SlabState::Published => Ok(()),
+            SlabState::Editable => {
+                // SAFETY: The slab owns this exact complete mapping. No mutable record borrow can
+                // coexist with this exclusive slab borrow.
+                let target_status = unsafe {
+                    binding::catalejo_except_slab_publish(
+                        record_list.as_ptr(),
+                        target_context.slab_size().get() as binding::virtual_size_t,
+                    )
+                };
+
+                status(target_status)?;
+                *slab_state = SlabState::Published;
+
+                Ok(())
+            }
+        }
+    }
+
+    /// Remove the active kernel snapshot and return the slab to editable memory.
+    ///
+    /// A successful call leaves the slab writable. A failed call preserves the published state.
+    ///
+    /// # Errors
+    ///
+    /// This returns the operating system error from the protection change.
+    #[inline]
+    pub fn edit(&mut self) -> io::Result<()> {
+        let Self(target_context, record_list, slab_state) = self;
+
+        match slab_state {
+            SlabState::Editable => Ok(()),
+            SlabState::Published => {
+                // SAFETY: The slab owns this exact complete mapping and the kernel accepts only the
+                // supported whole-VMA read-only to read-write transition.
+                let target_status = unsafe {
+                    binding::catalejo_except_slab_edit(
+                        record_list.as_ptr(),
+                        target_context.slab_size().get() as binding::virtual_size_t,
+                    )
+                };
+
+                status(target_status)?;
+                *slab_state = SlabState::Editable;
+
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Drop for Slab<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        let &mut Self(target_context, record_list, _) = self;
+
+        // SAFETY: The slab invariant owns this exact complete mapping and Drop is its final Rust
+        // owner. Unmapping also detaches any published kernel snapshot.
+        let unmap_status = unsafe {
+            binding::catalejo_except_slab_unmap(
+                record_list.as_ptr(),
+                target_context.slab_size().get() as binding::virtual_size_t,
+            )
+        };
+
+        // NOTE(invariant): A failed unmap leaves the VMA and any publication active. Keep its soft
+        // allocation slot charged because Rust can no longer prove that the kernel slab vanished.
+        if unmap_status == 0 {
+            Context::release_slab(target_context);
+        }
+    }
+}
+
+/// Convert a C negative-errno status into an I/O result.
+fn status(target_status: core::ffi::c_int) -> io::Result<()> {
+    match target_status {
+        0 => Ok(()),
+        ..=-1 => Err(io::Error::from_raw_os_error(target_status.saturating_abs())),
+        _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<binding::mirilla_except_boundary>() == 16);
+    assert!(core::mem::size_of::<binding::mirilla_except_predicate>() == 16);
+    assert!(core::mem::size_of::<binding::mirilla_except_action>() == 16);
+    assert!(core::mem::size_of::<binding::mirilla_except_record>() == 48);
+    assert!(core::mem::align_of::<binding::mirilla_except_record>() == 16);
+};

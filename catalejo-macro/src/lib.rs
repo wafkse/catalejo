@@ -17,27 +17,25 @@ use quote::{ToTokens, format_ident, quote};
 
 use syn::{Data, DeriveInput, Fields};
 
-/// Derive the `catalejo` [`Field`] trait for the named fields of a type.
+/// Derive the `catalejo` `Field` trait for the named fields of a type.
 ///
 /// For a `struct` or `union` with named fields, this reifies each field as a
-/// distinct, default-constructible marker type that implements [`Field`] with its
+/// distinct, default-constructible marker type that implements `Field` with its
 /// `Structure` set to the annotated type and its offset resolved through
 /// [`offset_of!`]. Each marker is also exposed as an inherent associated constant
 /// on the annotated type, so that a field is named as `Structure::field`.
 ///
-/// An [`Unassociated`] implementation is emitted for the annotated type, gated on
-/// each of its field types being [`Unassociated`] as well. This gate is a
+/// An `Unassociated` implementation is emitted for the annotated type, gated on
+/// each of its field types being `Unassociated` as well. This gate is a
 /// soundness requirement rather than a silent opt-out. The bound ranges over the
-/// concrete field types, so deriving on a type that holds a non-[`Unassociated`]
+/// concrete field types, so deriving on a type that holds a non-`Unassociated`
 /// field is a compile error, as stable Rust rejects unsatisfiable trivial bounds
 /// (see rust-lang/rust#48214). Derive this only for types whose fields are all
-/// [`Unassociated`].
+/// `Unassociated`.
 ///
 /// A generic type is rejected. Bindgen does not emit generic types, and such a
-/// type can implement [`Field`] by hand.
+/// type can implement `Field` by hand.
 ///
-/// [`Field`]: catalejo::offset::Field
-/// [`Unassociated`]: catalejo::offset::Unassociated
 /// [`offset_of!`]: core::mem::offset_of
 #[proc_macro_derive(Field)]
 pub fn derive_field(target_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -48,7 +46,7 @@ pub fn derive_field(target_input: proc_macro::TokenStream) -> proc_macro::TokenS
         .into()
 }
 
-/// Expand the [`Field`](catalejo::offset::Field) derive, or fail with a spanned error.
+/// Expand the `Field` derive, or fail with a spanned error.
 fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
     let DeriveInput {
         ident,

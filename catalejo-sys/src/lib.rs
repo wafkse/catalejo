@@ -14,6 +14,8 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+extern crate alloc;
+
 pub mod access;
 
 pub mod exception;

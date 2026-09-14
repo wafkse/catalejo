@@ -87,6 +87,19 @@ fn address_of_pointer<T>(target_pointer: *const T) -> ViAddr {
 
 #[test]
 #[ignore = "requires the mirilla device"]
+fn independent_targets_retain_one_fault_backend() {
+    let first_target = engage_self();
+    let second_target = engage_self();
+    let nested_target = first_target
+        .engage_within(std::process::id() as libc::pid_t)
+        .expect("nested engagement should reuse the established handlers");
+
+    assert_eq!(first_target.fault_backend(), second_target.fault_backend());
+    assert_eq!(first_target.fault_backend(), nested_target.fault_backend());
+}
+
+#[test]
+#[ignore = "requires the mirilla device"]
 fn reads_a_known_word() {
     let manager = Memoize::new(engage_self());
 

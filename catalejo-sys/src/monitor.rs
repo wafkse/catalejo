@@ -3,7 +3,7 @@
 #[cfg(all(feature = "stealth-mode", not(test)))]
 use core::hint;
 
-use crate::{exception::Image, ffi::binding};
+use crate::{exception::backend::Backend, ffi::binding};
 
 /// A hardware implementation for monitoring an address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,17 +54,19 @@ pub fn backend() -> Option<MonitorBackend> {
 /// # Safety
 ///
 /// The address must name suitable local memory and remain live through the matching [`wait`] call.
-/// The image must be registered for the current address space through a live Mirilla session.
+/// The fault backend must belong to the current process.
 #[inline]
 pub unsafe fn arm(
-    image: &Image,
+    fault_backend: &Backend,
     target_address: *const u8,
 ) -> Result<MonitorBackend, MonitorError> {
-    let target_runtime = image.runtime();
+    if fault_backend.validate().is_err() {
+        return Err(MonitorError::Fault);
+    }
 
     // SAFETY:
-    // The caller supplies the monitor address contract and the image proof.
-    let target_outcome = unsafe { binding::catalejo_monitor_arm(target_runtime, target_address) };
+    // The caller supplies the monitor address contract and the current process backend.
+    let target_outcome = unsafe { binding::catalejo_monitor_arm(target_address) };
 
     match target_outcome {
         binding::CATALEJO_MONITOR_ARM_INTEL_UMONITOR => Ok(MonitorBackend::IntelUmonitor),
@@ -88,11 +90,12 @@ pub unsafe fn arm(
 /// # Safety
 ///
 /// The backend must come from the immediately preceding successful [`arm`] call on this thread.
-/// The monitored mapping must remain live. The image must remain registered for the current address
-/// space through a live Mirilla session.
+/// The monitored mapping must remain live. The fault backend must belong to the current process.
 #[inline]
-pub unsafe fn wait(image: &Image, backend: MonitorBackend) -> Result<(), MonitorError> {
-    let target_runtime = image.runtime();
+pub unsafe fn wait(fault_backend: &Backend, backend: MonitorBackend) -> Result<(), MonitorError> {
+    if fault_backend.validate().is_err() {
+        return Err(MonitorError::Fault);
+    }
 
     let backend = match backend {
         MonitorBackend::IntelUmonitor => binding::CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR,
@@ -100,8 +103,8 @@ pub unsafe fn wait(image: &Image, backend: MonitorBackend) -> Result<(), Monitor
     };
 
     // SAFETY:
-    // The caller supplies the same-thread monitor contract and the image proof.
-    let outcome = unsafe { binding::catalejo_monitor_wait(target_runtime, backend) };
+    // The caller supplies the same-thread monitor contract and the current process backend.
+    let outcome = unsafe { binding::catalejo_monitor_wait(backend) };
 
     match outcome {
         binding::CATALEJO_OUTCOME_SUCCESS => Ok(()),
