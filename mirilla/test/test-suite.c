@@ -810,7 +810,7 @@ cleanup:
     return test_status;
 }
 
-int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
+int mirilla_test_basic(void)
 {
     int pipe_parent_to_child[2];
     int pipe_child_to_parent[2];

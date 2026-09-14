@@ -365,7 +365,7 @@ static int test_target_exit_while_reading(void)
     return 0;
 }
 
-int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
+int mirilla_test_concurrency(void)
 {
     print_banner("MIRILLA CONCURRENCY SUITE");
 
@@ -383,6 +383,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
     RUN_TEST("Race - Unmap vs In-Flight Faults", test_race_unmap_vs_fault);
     RUN_TEST("Target Exit While Reading - Fault Expected", test_target_exit_while_reading);
 
+    alarm(0);
     print_summary();
 
     return suite_status();

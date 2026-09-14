@@ -54,34 +54,8 @@ jobs:
 
             - run: just lint-c
 
-    mirilla-test-suite:
-        name: Mirilla-powered Kernel Test Suite (${{ matrix.kernel.series }})
-        runs-on: ubuntu-26.04
-        timeout-minutes: 90
-        strategy:
-            fail-fast: false
-            matrix:
-                kernel:
-                    - { series: "6.18", tag: "v6.18.38" }
-                    - { series: "7.2", tag: "v7.2.2" }
-        steps:
-            - uses: actions/checkout@v7
-
-            - name: Provision mirilla kernel
-              uses: ./.github/actions/mirilla-kernel
-              with:
-                  tag: ${{ matrix.kernel.tag }}
-                  vng-version: ${{ env.VNG_VERSION }}
-
-            - uses: ./.github/actions/setup-just
-
-            - name: Build the module and run the C test suite in the VM
-              run: just mirilla-test-vm
-              env:
-                  KDIR: ${{ github.workspace }}/linux
-
-    catalejo-integration-tests:
-        name: Mirilla-powered Kernel Integration Tests (${{ matrix.kernel.series }})
+    system-tests:
+        name: Kernel Tests (${{ matrix.kernel.series }})
         runs-on: ubuntu-26.04
         timeout-minutes: 90
         strategy:
@@ -112,7 +86,12 @@ jobs:
 
             - uses: ./.github/actions/setup-just
 
-            - name: Build the module and run the Rust test suite in the VM
-              run: just catalejo-test-vm
+            - name: Run KUnit
+              run: just kunit
+              env:
+                  KDIR: ${{ github.workspace }}/linux
+
+            - name: Run userspace integration tests
+              run: just test-vm
               env:
                   KDIR: ${{ github.workspace }}/linux

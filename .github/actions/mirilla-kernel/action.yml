@@ -50,4 +50,6 @@ runs:
 
         - name: Verify kernel configuration
           shell: bash
-          run: grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config
+          run: |
+              grep -x 'CONFIG_MMU_NOTIFIER=y' linux/.config
+              grep -x 'CONFIG_KUNIT=y' linux/.config

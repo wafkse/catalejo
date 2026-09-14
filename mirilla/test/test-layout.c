@@ -21,6 +21,7 @@
  */
 
 #include "test-harness.h"
+#include "test-layout.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -46,14 +47,6 @@ static struct mirilla_outside_list make_outside_list(void *list_address, uint32_
 
     return descriptor;
 }
-
-/* Numeric VMA provenance reported by `/proc/self/maps`. */
-struct proc_mapping {
-    virtual_address_t start_address, end_address;
-    uint64_t file_offset;
-    uint32_t device_major, device_minor;
-    uint64_t inode_number;
-};
 
 /* Find the `/proc/self/maps` entry containing one process address. */
 static int read_proc_mapping(virtual_address_t target_address, struct proc_mapping *mapping)
@@ -532,7 +525,7 @@ static int test_layout_negative(void)
     return 0;
 }
 
-int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
+int mirilla_test_layout(void)
 {
     print_banner("MIRILLA ADDRESS SPACE LAYOUT SUITE");
 

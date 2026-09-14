@@ -53,6 +53,7 @@ def render(symbols: list[str], seed: str) -> str:
         "author": alias("metadata_author", seed),
         "description": alias("metadata_description", seed),
         "device_parameter": alias("metadata_device_parameter", seed),
+        "except_inode_name": alias("metadata_except_inode_name", seed),
         "peephole_inode_name": alias("metadata_peephole_inode_name", seed),
     }
 
@@ -64,6 +65,7 @@ def render(symbols: list[str], seed: str) -> str:
         f"#define MIRILLA_STEALTH_AUTHOR \"{target_metadata['author']}\"",
         f"#define MIRILLA_STEALTH_DESCRIPTION \"{target_metadata['description']}\"",
         f"#define MIRILLA_STEALTH_DEVICE_PARAMETER {target_metadata['device_parameter']}",
+        f"#define MIRILLA_STEALTH_EXCEPT_INODE_NAME \"[{target_metadata['except_inode_name']}]\"",
         f"#define MIRILLA_STEALTH_PEEPHOLE_INODE_NAME \"[{target_metadata['peephole_inode_name']}]\"",
         "",
     ]

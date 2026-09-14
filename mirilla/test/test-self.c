@@ -291,7 +291,7 @@ static int test_self_map_fixed_clobber_reflects_new(void)
     return 0;
 }
 
-int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
+int mirilla_test_self(void)
 {
     print_banner("MIRILLA SELF-OBSERVATION SUITE");
 

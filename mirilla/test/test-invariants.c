@@ -256,8 +256,7 @@ static int test_explicit_writable_mapping_updates_target(void)
     ASSERT(view != MAP_FAILED, "failed to mmap writable peephole view");
 
     uint32_t replacement = MAGIC_VALUE_5;
-    ASSERT(catalejo_write_u32(harness_exception_runtime, (uint32_t *)view, &replacement) ==
-               CATALEJO_OUTCOME_SUCCESS,
+    ASSERT(catalejo_write_u32((uint32_t *)view, &replacement) == CATALEJO_OUTCOME_SUCCESS,
            "protected write through writable peephole failed");
     ASSERT(((uint32_t *)fixture.region)[0] == replacement, "writable peephole did not update "
                                                            "target memory");
@@ -293,8 +292,7 @@ static int test_writable_mapping_respects_target_permissions(void)
         goto out;
 
     uint32_t replacement = MAGIC_VALUE_4;
-    if (catalejo_write_u32(harness_exception_runtime, (uint32_t *)view, &replacement) !=
-        CATALEJO_OUTCOME_ERROR) {
+    if (catalejo_write_u32((uint32_t *)view, &replacement) != CATALEJO_OUTCOME_ERROR) {
         fprintf(stderr, "write unexpectedly succeeded against read-only target VMA\n");
         goto restore;
     }
@@ -326,7 +324,7 @@ static int test_wellformed_mapping_still_works(void)
     return 0;
 }
 
-int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
+int mirilla_test_invariants(void)
 {
     print_banner("MIRILLA MAPPING INVARIANT SUITE");
 

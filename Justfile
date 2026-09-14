@@ -1,16 +1,10 @@
 # Catalejo task runner.
 #
-# One recipe per unit of the "test ordeal", grouped by the sub-module it drives.
-# Those are the Rust workspace, the `mirilla` kernel module, and the `catalejo`
-# crate. The recipes replace the former `ci/*.sh` drivers, so continuous
-# integration and a local checkout run the exact same commands.
+# Testing has three entry points: host-safe checks, KUnit, and the complete VM
+# integration path. The VM path runs the Mirilla C ABI coverage and Rust device
+# tests under the same loaded module. Private recipes only bridge host/guest
+# execution and are intentionally hidden from the public task surface.
 #
-# The suites are split the way the code is. `mirilla` carries the C test suite
-# and `catalejo` carries the Rust integration tests and benchmarks. Both read a
-# live `/dev/mirilla`, so their run recipes are guest-side and expect to execute
-# as root inside a `virtme-ng` VM that boots a mirilla-powered kernel. The
-# matching `*-vm` recipes are host-side, building what the guest needs before
-# launching the VM against it.
 # Run each recipe line under a strict shell so a failing command aborts the recipe.
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
@@ -23,6 +17,7 @@ kdir := env("KDIR", "/lib/modules/" + `uname -r` + "/build")
 # The built module object the guest loads.
 
 module := justfile_directory() / "mirilla" / "mirilla.ko"
+kunit_module := justfile_directory() / "mirilla" / "mirilla-kunit.ko"
 
 # VM sizing for the guest-side runs. Two gigabytes and four CPUs mirror CI.
 
@@ -98,7 +93,7 @@ lint-c:
     # Every tracked C source across the kernel module and the system userspace mechanism.
     sources=(
         mirilla/src/*.c mirilla/include/*.h
-        mirilla/test/*.c mirilla/test/*.h
+        mirilla/test/*.c mirilla/test/*.h mirilla/test/kunit/*.c
         catalejo-sys/c/src/*.c catalejo-sys/c/include/*.h
     )
 
@@ -113,7 +108,7 @@ lint-c:
     database=$(mktemp -d)
     trap 'rm -rf "$database"' EXIT
 
-    bear --output "$database/compile_commands.json" -- make -C mirilla tests >/dev/null
+    bear --output "$database/compile_commands.json" -- make -C mirilla test >/dev/null
 
     status=0
     for unit in mirilla/test/*.c catalejo-sys/c/src/*.c; do
@@ -135,82 +130,75 @@ lint-c:
 [group('lint')]
 lint: lint-rust lint-c
 
-# --- mirilla: the kernel module and its C test suite ---
+# --- Testing ---
 
 # Build the mirilla kernel module against the kernel tree at {{kdir}}.
-[group('mirilla')]
+[group('test')]
 mirilla-module:
     make -C mirilla KDIR='{{ kdir }}' module
 
-# Build the C test suites. Userspace only, so no kernel tree is needed.
-[group('mirilla')]
-mirilla-suite:
-    make -C mirilla tests
+# Run host-side checks that do not require a live Mirilla device.
+[group('test')]
+test: lint _test-build
+    cargo test --workspace
 
-# Run the C test suites against a loaded module. Guest-side, root.
-[group('mirilla')]
-mirilla-test: _mirilla-load
-    #!/usr/bin/env bash
-    set -uo pipefail
-
-    # Unload on the way out, dumping the kernel log on failure so a red run
-    # carries the module's own view of the fault.
-    trap 'code=$?; [ "$code" -eq 0 ] || dmesg | tail -n 100 >&2; rmmod mirilla || true; exit "$code"' EXIT
-
-    echo "Running the mirilla C suites under $(uname -r)"
-
-    suites=(test-suite test-self test-concurrency test-invariants test-ioctl test-layout)
-    failed=()
-
-    for suite in "${suites[@]}"; do
-        echo
-        echo "==> $suite"
-        "mirilla/test/$suite" || failed+=("$suite")
-    done
-
-    echo
-    if [ "${#failed[@]}" -ne 0 ]; then
-        echo "FAILED:${failed[*]/#/ }" >&2
-        exit 1
-    fi
-
-    echo "All mirilla C suites passed."
-
-# Build the module and run the C suites inside a mirilla-powered VM. Host-side.
-[group('mirilla')]
-mirilla-test-vm: mirilla-module mirilla-suite
+# Run the userspace ABI and Rust integration tests under the same loaded module.
+[group('test')]
+test-vm: mirilla-module _test-build
     cd '{{ kdir }}' && vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
-        {{ guest_env }} --justfile '{{ justfile() }}' mirilla-test
+        {{ guest_env }} --justfile '{{ justfile() }}' _test-guest
 
-# --- catalejo: the Rust integration tests and benchmarks ---
-
-# Build the workspace test binaries and the benchmark binary into the shared target dir.
-[group('catalejo')]
-catalejo-build:
-    cargo test --workspace --no-run
-    cargo bench --all --no-run
-
-# Run the whole Rust test suite against a loaded module. Guest-side, root.
-[group('catalejo')]
-catalejo-test: _mirilla-load
+# Build and run the kernel-side KUnit suite.
+[group('test')]
+kunit:
     #!/usr/bin/env bash
-    set -uo pipefail
-    trap 'code=$?; [ "$code" -eq 0 ] || dmesg | tail -n 100 >&2; rmmod mirilla || true; exit "$code"' EXIT
+    set -euo pipefail
 
-    echo "Running the catalejo Rust test suite under $(uname -r)"
+    grep -qx 'CONFIG_KUNIT=y' '{{ kdir }}/.config' || {
+        echo 'error: target kernel must enable CONFIG_KUNIT=y' >&2
+        exit 1
+    }
 
-    # The whole workspace runs under one live module. That is the unit tests and,
-    # with --include-ignored, the device-backed integration tests a device-less
-    # host skips. Serialize so the self-targeting suites do not contend for the device.
-    cargo test --workspace --offline -- --include-ignored --test-threads=1
+    test -x '{{ kdir }}/tools/testing/kunit/kunit.py' || {
+        echo 'error: target kernel tree does not provide tools/testing/kunit/kunit.py' >&2
+        exit 1
+    }
 
-# Build the module and run the integration tests inside a mirilla-powered VM. Host-side.
-[group('catalejo')]
-catalejo-test-vm: mirilla-module catalejo-build
-    cd '{{ kdir }}' && vng --verbose --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
-        {{ guest_env }} --justfile '{{ justfile() }}' catalejo-test
+    make -C mirilla KDIR='{{ kdir }}' MIRILLA_KUNIT=1 MIRILLA_MODULE_NAME=mirilla-kunit module
+    cd '{{ kdir }}'
+    vng --user root --memory '{{ vm_memory }}' --cpu '{{ vm_cpus }}' -- \
+        {{ guest_env }} --justfile '{{ justfile() }}' _kunit-guest
 
 # --- Shared internals ---
+
+# Build the userspace integration binaries without requiring a device.
+[private]
+_test-build:
+    make -C mirilla test
+    cargo test --workspace --no-run
+
+# Run all device-backed userspace tests under the same module instance. Guest-side, root.
+[private]
+_test-guest: _mirilla-load
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'code=$?; [ "$code" -eq 0 ] || dmesg | tail -n 100 >&2; rmmod mirilla || true; exit "$code"' EXIT
+
+    mirilla/test/mirilla-test
+    cargo test --workspace --offline -- --include-ignored --test-threads=1
+
+# Load the KUnit build and let the kernel KUnit parser determine success. Guest-side, root.
+[private]
+_kunit-guest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    name=$(modinfo -F name '{{ kunit_module }}')
+    trap 'code=$?; rmmod "$name" 2>/dev/null || true; exit "$code"' EXIT
+
+    dmesg -C
+    insmod '{{ kunit_module }}'
+    dmesg | python3 '{{ kdir }}/tools/testing/kunit/kunit.py' parse
 
 # Load the mirilla module and ensure /dev/mirilla exists. Guest-side, root.
 [private]

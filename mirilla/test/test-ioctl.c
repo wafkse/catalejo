@@ -28,145 +28,6 @@
 /* A pid outside any real pid range (`pid_max` caps at 1 << 22). */
 #define NONEXISTENT_PID 0x7fffffff
 
-/* An exception image must describe complete page-aligned VMAs. */
-static int test_exception_registration_rejects_misaligned_image(void)
-{
-    int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image = harness_exception_runtime->image;
-
-    ASSERT(mirilla_fd >= 0, "failed to open device");
-
-    image.except_table.region_address++;
-    errno = 0;
-    int rejection_status = expect_ioctl_rejection(
-        catalejo_mirilla_except_register(mirilla_fd, &image), EINVAL, "misaligned exception table");
-
-    close(mirilla_fd);
-    return rejection_status;
-}
-
-/* The declared table range may not extend beyond its immutable VMA. */
-static int test_exception_registration_rejects_oversized_table(void)
-{
-    int mirilla_fd = mirilla_open_device();
-    struct mirilla_except_image image = harness_exception_runtime->image;
-
-    ASSERT(mirilla_fd >= 0, "failed to open device");
-
-    image.except_table.region_size += (virtual_size_t)sysconf(_SC_PAGESIZE);
-    errno = 0;
-    int rejection_status = expect_ioctl_rejection(
-        catalejo_mirilla_except_register(mirilla_fd, &image), EINVAL, "oversized exception table");
-
-    close(mirilla_fd);
-    return rejection_status;
-}
-
-/* One observer address space may publish only one exception image. */
-static int test_exception_registration_is_unique_per_mm(void)
-{
-    int mirilla_fd = mirilla_open_device();
-    int duplicate_fd = open(MIRILLA_DEVICE, O_RDWR);
-    struct mirilla_except_image image = harness_exception_runtime->image;
-
-    ASSERT(mirilla_fd >= 0, "failed to open registered device session");
-    ASSERT(duplicate_fd >= 0, "failed to open duplicate device session");
-
-    errno = 0;
-    int rejection_status =
-        expect_ioctl_rejection(catalejo_mirilla_except_register(duplicate_fd, &image), EEXIST,
-                               "second exception image for one address space");
-
-    close(duplicate_fd);
-    close(mirilla_fd);
-    return rejection_status;
-}
-
-/* A forked child has a distinct mm and receives protection only after its own registration. */
-static int test_exception_registration_is_scoped_to_mm(void)
-{
-    int mirilla_fd = mirilla_open_device();
-    pid_t child;
-    int child_status;
-
-    ASSERT(mirilla_fd >= 0, "failed to open device");
-
-    child = fork();
-    ASSERT(child >= 0, "failed to fork unregistered child");
-    if (child == 0) {
-        const struct catalejo_image_runtime *child_runtime = NULL;
-        uint32_t target_value = 0;
-        struct rlimit target_limit = { .rlim_cur = 0, .rlim_max = 0 };
-
-        setrlimit(RLIMIT_CORE, &target_limit);
-        if (catalejo_fault_image_retrieve(&child_runtime) != -ESTALE || child_runtime)
-            _exit(3);
-        catalejo_read_u32(harness_exception_runtime, (const uint32_t *)0x50, &target_value);
-        _exit(2);
-    }
-
-    ASSERT(waitpid(child, &child_status, 0) == child, "failed to wait for unregistered child");
-    ASSERT(WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGSEGV, "an unregistered child "
-                                                                           "fault must retain "
-                                                                           "native SIGSEGV "
-                                                                           "behavior");
-
-    child = fork();
-    ASSERT(child >= 0, "failed to fork registered child");
-    if (child == 0) {
-        const struct catalejo_image_runtime *child_runtime = NULL;
-        uint32_t target_value = 0;
-
-        if (catalejo_fault_image_initialize(mirilla_fd, &child_runtime) || !child_runtime)
-            _exit(3);
-        if (catalejo_read_u32(child_runtime, (const uint32_t *)0x50, &target_value) !=
-            CATALEJO_OUTCOME_ERROR)
-            _exit(4);
-        _exit(0);
-    }
-
-    ASSERT(waitpid(child, &child_status, 0) == child, "failed to wait for registered child");
-    ASSERT(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0, "a child registration must "
-                                                                      "protect its distinct mm");
-
-    close(mirilla_fd);
-    return 0;
-}
-
-/* Closing the final descriptor for a session retires its exception registration. */
-static int test_exception_registration_follows_session_lifetime(void)
-{
-    struct mirilla_except_image image = harness_exception_runtime->image;
-    pid_t child;
-    int child_status;
-
-    child = fork();
-    ASSERT(child >= 0, "failed to fork session-lifetime child");
-    if (child == 0) {
-        uint32_t target_value = 0;
-        struct rlimit target_limit = { .rlim_cur = 0, .rlim_max = 0 };
-        int mirilla_fd = open(MIRILLA_DEVICE, O_RDWR);
-
-        setrlimit(RLIMIT_CORE, &target_limit);
-        if (mirilla_fd < 0)
-            _exit(2);
-        if (!MIRILLA_COMMAND_IS_OK(catalejo_mirilla_except_register(mirilla_fd, &image)))
-            _exit(3);
-        close(mirilla_fd);
-
-        catalejo_read_u32(harness_exception_runtime, (const uint32_t *)0x50, &target_value);
-        _exit(4);
-    }
-
-    ASSERT(waitpid(child, &child_status, 0) == child, "failed to wait for session-lifetime child");
-    ASSERT(WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGSEGV, "closing the final "
-                                                                           "session descriptor "
-                                                                           "must restore native "
-                                                                           "SIGSEGV behavior");
-
-    return 0;
-}
-
 /* Foreign magic must bounce off the dispatcher. */
 static int test_bad_magic(void)
 {
@@ -314,7 +175,7 @@ static int test_peephole_malformed_ranges(void)
     return rejection_status;
 }
 
-/* Send one file descriptor over an AF_UNIX socket. */
+/* Send a file descriptor over an AF_UNIX socket. */
 static int send_descriptor(int socket_fd, int descriptor)
 {
     char payload = 0;
@@ -336,7 +197,7 @@ static int send_descriptor(int socket_fd, int descriptor)
     return sendmsg(socket_fd, &message, 0) == (ssize_t)sizeof(payload) ? 0 : -1;
 }
 
-/* Receive one file descriptor sent with SCM_RIGHTS. */
+/* Receive a file descriptor sent with SCM_RIGHTS. */
 static int receive_descriptor(int socket_fd)
 {
     char payload = 0;
@@ -364,7 +225,7 @@ static int receive_descriptor(int socket_fd)
 }
 
 /*
- * Engagement targets the process identity, not one particular image. The same target id must remain
+ * Engagement targets the process identity, not a particular image. The same target id must remain
  * usable after that PID crosses exec and acquires a replacement address space.
  */
 static int test_engagement_follows_exec(void)
@@ -614,7 +475,7 @@ out:
     return status;
 }
 
-/* Disengagement is single-shot; the second one must be refused. */
+/* Disengagement is single-shot. A repeated request must be refused. */
 static int test_double_disengage(void)
 {
     int mirilla_fd = mirilla_open_device();
@@ -659,12 +520,8 @@ static int test_peephole_after_disengage(void)
     return rejection_status;
 }
 
-int main(int argc, char *argv[])
+int mirilla_test_ioctl(void)
 {
-    if (argc == 2 && strcmp(argv[1], "--exec-target") == 0)
-        for (;;)
-            pause();
-
     print_banner("MIRILLA IOCTL ERROR-PATH SUITE");
 
     if (harness_fault_initialize() < 0)
@@ -672,15 +529,6 @@ int main(int argc, char *argv[])
 
     RUN_TEST("Reject Foreign Magic", test_bad_magic);
     RUN_TEST("Reject Foreign Category", test_bad_category);
-    RUN_TEST("Reject Misaligned Exception Image",
-             test_exception_registration_rejects_misaligned_image);
-    RUN_TEST("Reject Oversized Exception Table",
-             test_exception_registration_rejects_oversized_table);
-    RUN_TEST("Exception Registration Is Unique Per MM",
-             test_exception_registration_is_unique_per_mm);
-    RUN_TEST("Exception Registration Is Scoped To MM", test_exception_registration_is_scoped_to_mm);
-    RUN_TEST("Exception Registration Follows Session Lifetime",
-             test_exception_registration_follows_session_lifetime);
     RUN_TEST("Reject Unknown Map Command", test_bad_map_command);
     RUN_TEST("Reject Unreadable Argument", test_bad_argument_pointer);
     RUN_TEST("Reject Engage of Nonexistent Pid", test_engage_nonexistent_pid);
