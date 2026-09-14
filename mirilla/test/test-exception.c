@@ -555,7 +555,20 @@ static void concurrent_backend_test(void)
     enum { WORKER_COUNT = 8 };
     struct backend_worker worker_list[WORKER_COUNT] = { 0 };
     pthread_t thread_list[WORKER_COUNT];
-    int device_fd = open(MIRILLA_DEVICE, O_RDWR | O_CLOEXEC);
+    pid_t child_pid = fork();
+    int child_status;
+    int device_fd;
+
+    /* The backend is process-lifetime state. Keep this first-time initialization race isolated
+     * from later tests that must create their own exception context in the parent address space. */
+    assert(child_pid >= 0);
+    if (child_pid != 0) {
+        assert(waitpid(child_pid, &child_status, 0) == child_pid && WIFEXITED(child_status) &&
+               WEXITSTATUS(child_status) == 0);
+        return;
+    }
+
+    device_fd = open(MIRILLA_DEVICE, O_RDWR | O_CLOEXEC);
 
     assert(device_fd >= 0);
     for (unsigned int worker_index = 0; worker_index < WORKER_COUNT; worker_index++) {
@@ -571,6 +584,7 @@ static void concurrent_backend_test(void)
     }
 
     close(device_fd);
+    _exit(0);
 }
 
 /** Verify linked protected routines succeed and recover direct memory faults. */
