@@ -141,12 +141,17 @@ static void mirilla_except_registry_reference_handoff_test(struct kunit *test)
 {
     struct mirilla_except_context *except_context = NULL;
     struct mirilla_except_context *reader_context;
+    struct mm_struct *address_space;
 
-    KUNIT_ASSERT_NOT_NULL(test, current->mm);
+    /* NOTE(lifetime): A KUnit worker is a kernel thread and has no current->mm. Its active_mm is
+     * retained by the worker while this synchronous test runs, and registry insertion acquires the
+     * independent mm_count reference owned by the exception context. */
+    address_space = current->active_mm;
+    KUNIT_ASSERT_NOT_NULL(test, address_space);
     KUNIT_ASSERT_EQ(test, mirilla_context_except_construct(&except_context), 0);
-    KUNIT_ASSERT_EQ(test, mirilla_except_test_registry_insert(except_context, current->mm), 0);
+    KUNIT_ASSERT_EQ(test, mirilla_except_test_registry_insert(except_context, address_space), 0);
 
-    reader_context = mirilla_except_test_registry_get(current->mm);
+    reader_context = mirilla_except_test_registry_get(address_space);
     KUNIT_ASSERT_PTR_EQ(test, reader_context, except_context);
     KUNIT_EXPECT_EQ(test, refcount_read(&reader_context->reference_count), 2);
 
