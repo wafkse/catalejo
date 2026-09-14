@@ -328,8 +328,10 @@ struct mirilla_auxiliary_vector_entry {
  *
  * Only asserted on `x86_64` for the time being.
  */
-static_assert(sizeof(struct mirilla_auxiliary_vector_entry) ==
-              2 * sizeof(typeof(((struct mm_struct *)NULL)->saved_auxv[AT_VECTOR_SIZE])));
+MIRILLA_ASSERT(
+    MIRILLA_SIZEOF(struct mirilla_auxiliary_vector_entry) ==
+        2 * MIRILLA_SIZEOF(typeof(((struct mm_struct *)NULL)->saved_auxv[AT_VECTOR_SIZE])),
+    "auxiliary vector entry ABI size");
 
 #endif
 
@@ -392,14 +394,19 @@ MIRILLA_MAP_DEFINE_COMMAND_IO(address_space_layout);
 
 #ifdef __KERNEL__
 
-/*
- * Declare all command handler functions.
- */
-#define X(name, val, io)                                             \
-    extern mirilla_command_status_t mirilla_map_handle_command_##io( \
-        struct mirilla_device_context *device_context, union mirilla_map_##io##_io *io);
-MIRILLA_MAP_COMMANDS
-#undef X
+extern mirilla_command_status_t
+mirilla_map_handle_command_engage(struct mirilla_device_context *device_context,
+                                  union mirilla_map_engage_io *io);
+extern mirilla_command_status_t
+mirilla_map_handle_command_disengage(struct mirilla_device_context *device_context,
+                                     union mirilla_map_disengage_io *io);
+extern mirilla_command_status_t
+mirilla_map_handle_command_peephole(struct mirilla_device_context *device_context,
+                                    union mirilla_map_peephole_io *io,
+                                    struct mirilla_fd_reservation *fd_reservation);
+extern mirilla_command_status_t
+mirilla_map_handle_command_address_space_layout(struct mirilla_device_context *device_context,
+                                                union mirilla_map_address_space_layout_io *io);
 
 MIRILLA_CONTEXT_DEFINE(
     map_target, struct {
@@ -441,7 +448,9 @@ typedef atomic_t mirilla_peephole_state_t;
 /*
  * Check against missmatching enum and state sizes.
  */
-static_assert(sizeof(mirilla_peephole_state_variant_t) == sizeof(mirilla_peephole_state_t));
+MIRILLA_ASSERT(MIRILLA_SIZEOF(mirilla_peephole_state_variant_t) ==
+                   MIRILLA_SIZEOF(mirilla_peephole_state_t),
+               "peephole state representation size");
 
 MIRILLA_CONTEXT_DEFINE(
     map_peephole, struct {

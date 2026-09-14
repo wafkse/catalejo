@@ -143,6 +143,7 @@ dependencies = [
  "bindgen",
  "catalejo-memory",
  "cc",
+ "fack",
  "libc",
  "tokel",
  "walkdir",

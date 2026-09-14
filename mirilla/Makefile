@@ -33,30 +33,36 @@ endif
 obj-m += $(MIRILLA_MODULE_NAME).o
 $(MIRILLA_MODULE_NAME)-objs := $(patsubst %.c,%.o,$(wildcard src/*.c))
 
+ifeq ($(MIRILLA_KUNIT),1)
+ccflags-y += -DMIRILLA_KUNIT
+ifneq ($(filter y m,$(CONFIG_KUNIT)),)
+$(MIRILLA_MODULE_NAME)-objs += test/kunit/test-exception.o test/kunit/test-slab.o
+endif
+endif
+
 ccflags-y += -DMIRILLA_DEVICE_DEFAULT_NAME=\"$(MIRILLA_DEVICE_NAME)\"
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(CURDIR)
 
-# --- Test Suite Build ---
+# --- Userspace Integration Test ---
 
-# The suites use the complete catalejo-sys userspace mechanism, including the sealed exception
-# image, protected accessors, monitor instructions, and Mirilla ioctl wrappers.
 CATALEJO_SYS_DIR := ../catalejo-sys/c
 CATALEJO_SYS_SRCS := $(wildcard $(CATALEJO_SYS_DIR)/src/*.c)
 
-TEST_CFLAGS := -I. -Iinclude -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11
+TEST_CFLAGS := -I. -Iinclude -I$(CATALEJO_SYS_DIR)/include -Wall -Wextra -std=c11 -pthread
+TEST_PROGRAM := test/mirilla-test
+TEST_SOURCES := test/mirilla-test.c test/test-suite.c test/test-self.c test/test-concurrency.c \
+                test/test-invariants.c test/test-ioctl.c test/test-layout.c test/test-exception.c
+TEST_OBJECTS := $(TEST_SOURCES:.c=.o)
 
-TEST_SUITES := test/test-suite test/test-self test/test-concurrency \
-           test/test-invariants test/test-ioctl test/test-layout
-
-all: module tests
+all: module test
 
 clean:
 	cp $(MIRILLA_SYMBOL_LIST) $(MIRILLA_SYMBOL_LIST).preserve
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 	mv $(MIRILLA_SYMBOL_LIST).preserve $(MIRILLA_SYMBOL_LIST)
-	rm -f $(TEST_SUITES) compile_commands.json test/compile_commands.json \
+	rm -f $(TEST_PROGRAM) $(TEST_OBJECTS) compile_commands.json test/compile_commands.json \
 		../catalejo-sys/compile_commands.json include/*.generated.h
 
 install:
@@ -70,32 +76,20 @@ else
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 endif
 
-test/test-concurrency: TEST_CFLAGS += -pthread
+$(TEST_OBJECTS): test/%.o: test/%.c $(wildcard test/*.h) $(wildcard include/*.h)
+	$(CC) $(TEST_CFLAGS) -c -o $@ $<
 
-test/%: test/%.c test/test-harness.h $(wildcard include/*.h) $(CATALEJO_SYS_SRCS)
-	gcc -o $@ $< $(CATALEJO_SYS_SRCS) $(TEST_CFLAGS)
+$(TEST_PROGRAM): $(TEST_OBJECTS) $(CATALEJO_SYS_SRCS) $(wildcard $(CATALEJO_SYS_DIR)/include/*.h)
+	$(CC) -o $@ $(TEST_OBJECTS) $(CATALEJO_SYS_SRCS) $(TEST_CFLAGS)
 
-tests: $(TEST_SUITES)
-	@echo "Test suites built successfully!"
-	@echo "  - test/test-suite          : Basic functionality tests"
-	@echo "  - test/test-self           : Self-observation tests"
-	@echo "  - test/test-concurrency    : Concurrency and race tests"
-	@echo "  - test/test-invariants     : Mapping invariant tests"
-	@echo "  - test/test-ioctl          : Ioctl error-path tests"
-	@echo "  - test/test-layout         : Address space observation tests"
-	@echo ""
-	@echo "Make sure the mirilla module is loaded first."
-
-test: tests
-
-# The suites are run from the workspace `Justfile` (see `just mirilla-test`),
-# which loads the module and drives them inside a mirilla-powered VM.
+# Build only. Running the integration test requires a loaded Mirilla module.
+test: $(TEST_PROGRAM)
 
 # --- Developer Experience (DX) Targets ---
 
 # Formats C sources and headers using clang-format
 format:
-	clang-format -style=file -i $(wildcard src/*.c include/*.h test/*.c test/*.h)
+	clang-format -style=file -i $(wildcard src/*.c include/*.h test/*.c test/*.h test/kunit/*.c)
 
 # Generate distinct clangd databases for kernel and userspace source trees.
 language-server: clean
@@ -103,7 +97,7 @@ language-server: clean
 	database_directory=$$(mktemp -d); \
 	trap 'rm -rf "$$database_directory"' EXIT; \
 	bear --output "$$database_directory/kernel.json" -- $(MAKE) module; \
-	bear --output "$$database_directory/userspace.json" -- $(MAKE) tests; \
+	bear --output "$$database_directory/userspace.json" -- $(MAKE) test; \
 	python3 tools/clangd-database.py --input "$$database_directory/kernel.json" \
 		--output compile_commands.json --root src --sanitize-kernel; \
 	python3 tools/clangd-database.py --input "$$database_directory/userspace.json" \
@@ -111,6 +105,6 @@ language-server: clean
 	python3 tools/clangd-database.py --input "$$database_directory/userspace.json" \
 		--output ../catalejo-sys/compile_commands.json --root ../catalejo-sys/c
 
-.PHONY: all clean install test tests module format language-server FORCE
+.PHONY: all clean install test module format language-server FORCE
 
 FORCE:

@@ -16,7 +16,7 @@ Aliasing live memory raises two hazards, and the design answers each one.
 
 The first hazard is tearing. The target keeps running and may mutate a value while it is read. Catalejo does not lock the target, because locking a foreign address space to read it defeats the purpose. Instead it leans on the hardware. A read of a naturally aligned machine word is serviced by the memory subsystem as one indivisible transaction, so the observed value is the exact state before or after a concurrent write and never a hybrid of the two. `catalejo-memory` formalizes this into a coherence model, and only types that are valid for every bit pattern, marked `Unassociated`, may cross a peephole.
 
-The second hazard is disappearance. The target may unmap the range, remap it elsewhere, or exit while the observer holds an alias to it. A stray load against freed memory would fault the observer. Catalejo makes that fault survivable. Every read runs through a naked assembly routine whose faults are caught by a chaining signal handler and reported as an absent read, so a dead peephole yields nothing instead of a crash. The kernel side closes the same gap from below. An MMU notifier registered on the target tears the alias down the instant the target changes its mapping, so the window is marked dead before a torn or stale frame can be observed.
+The second hazard is disappearance. The target may unmap the range, remap it elsewhere, or exit while the observer holds an alias to it. A stray load against freed memory would fault the observer. Catalejo makes that fault survivable. Every read runs through linked protected routines described by an immutable Mirilla exception slab. The kernel redirects faults from known instruction ranges to their recovery paths, so a dead peephole yields nothing instead of a crash. An MMU notifier registered on the target tears the alias down the instant the target changes its mapping, so the window is marked dead before a torn or stale frame can be observed.
 
 ## How a read works
 
@@ -234,26 +234,23 @@ already-open device descriptor.
 
 ## Testing
 
-The suites read a live `/dev/mirilla`, so they run inside a [`virtme-ng`](https://github.com/arighi/virtme-ng) VM that boots a mirilla-powered kernel. Every task is a [`just`](https://just.systems) recipe, and `just --list` shows them grouped by sub-module.
+Testing has three entry points:
 
 ```sh
-just lint              # rustfmt + clippy, and clang-format + clangd
-just mirilla-test-vm   # build the module and run the C test suite in a VM
-just catalejo-test-vm  # build the module and run the Rust test suite in a VM
+just test       # formatting/lint, build the C integration test, and run host-safe Rust tests
+just kunit      # run the kernel-side KUnit suite in a VM
+just test-vm    # run the C ABI test and Rust integration tests under the same loaded module
 ```
 
-The `*-vm` recipes are host-side, and build what the guest needs before launching the VM against the kernel tree named by `KDIR` (defaulting to the running kernel's build directory). The plain `mirilla-test`, `catalejo-test` recipes are the guest-side halves, run as root inside the VM against a loaded module.
+`KDIR` selects the kernel tree used for module and VM builds. `just kunit` requires a full kernel
+source tree with `CONFIG_KUNIT=y`. `just test-vm` uses the same tree but does not require KUnit in a
+normal module build. The userspace Mirilla coverage is a single `mirilla/test/mirilla-test` binary.
 
 ## Continuous integration
 
-Five jobs run on every push and pull request.
-
-- **Automated Linting (Rust)** runs `cargo fmt` and `clippy`.
-- **Automated Linting (C)** runs `clang-format` and `clangd`.
-- **Mirilla-powered Kernel Test Suite** runs the C suite, once per kernel series.
-- **Mirilla-powered Kernel Integration Tests** runs the Rust test suite, once per kernel series.
-
-The mirilla-powered jobs run against the latest longterm and latest stable kernel series.
+Three jobs run on every push and pull request. The Rust and C lint jobs run independently, while a
+single kernel-matrix job runs KUnit followed by the complete userspace integration path. The
+kernel-matrix job runs against the latest longterm and latest stable kernel series.
 
 ## License
 

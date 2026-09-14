@@ -23,14 +23,8 @@ mirilla-symbol.lst.preserve
 *.swp
 *.swo
 
-# Test Suite Binaries
-test-suite
-test/test-suite
-test/test-self
-test/test-concurrency
-test/test-invariants
-test/test-ioctl
-test/test-layout
+# Userspace integration test
+test/mirilla-test
 
 # Binary Ninja Databases
 *.bndb

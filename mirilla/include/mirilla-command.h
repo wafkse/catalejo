@@ -5,6 +5,8 @@
 #ifndef _MIRILLA_COMMAND_H_
 #define _MIRILLA_COMMAND_H_
 
+#include "mirilla-miscellaneous.h" // IWYU pragma: export
+
 /*
  * Mirilla ioctl magic number - chosen to avoid conflicts with standard ioctls.
  * Using 'O' (0x4F) as the magic number.
@@ -57,18 +59,86 @@ typedef unsigned long mirilla_command_argument_t;
 
 #ifdef __KERNEL__
 
+#include <linux/fdtable.h>
+#include <linux/file.h>
+
+/*
+ * A reserved descriptor and retained file awaiting atomic installation.
+ *
+ * NOTE(invariant): A reservation owns one file reference and one descriptor number. Installation
+ * transfers the file reference to the descriptor table. Lexical cleanup releases both resources
+ * when result copying or any earlier operation fails.
+ */
+struct mirilla_fd_reservation {
+    /** File reference held until the command result has been copied. */
+    struct file *target_file;
+    /** Reserved descriptor number, or a negative value when empty. */
+    int file_descriptor;
+};
+
+/** Release a pending descriptor reservation during lexical cleanup. */
+static inline void mirilla_fd_reservation_cleanup(struct mirilla_fd_reservation *reservation)
+{
+    if (reservation->file_descriptor >= 0)
+        put_unused_fd(reservation->file_descriptor);
+
+    if (reservation->target_file)
+        fput(reservation->target_file);
+
+    reservation->target_file = NULL;
+    reservation->file_descriptor = -1;
+}
+
+/** Attach descriptor-reservation cleanup to a local variable. */
+#define MIRILLA_FD_RESERVATION MIRILLA_CLEANUP(mirilla_fd_reservation_cleanup)
+
+/**
+ * Reserve a descriptor while retaining file ownership in the reservation.
+ *
+ * The reservation consumes target_file even when descriptor allocation fails. Lexical cleanup
+ * releases that file and any successful descriptor reservation unless installation consumes them.
+ */
+static inline int mirilla_fd_reservation_prepare(struct mirilla_fd_reservation *reservation,
+                                                 struct file *target_file, unsigned int file_flags)
+{
+    int file_descriptor = get_unused_fd_flags(file_flags);
+
+    reservation->target_file = target_file;
+    reservation->file_descriptor = file_descriptor;
+
+    return file_descriptor;
+}
+
+/**
+ * Install a retained file and consume its descriptor reservation.
+ *
+ * The caller must invoke this only after successful preparation and result publication to
+ * userspace.
+ */
+static inline void mirilla_fd_reservation_install(struct mirilla_fd_reservation *reservation)
+{
+    struct file *target_file = reservation->target_file;
+    int file_descriptor = reservation->file_descriptor;
+
+    reservation->target_file = NULL;
+    reservation->file_descriptor = -1;
+    fd_install(file_descriptor, target_file);
+}
+
 /*
  * NOTE(invariant): Avoid multi-page `copy_{to,from}_user` for input-output
  * intermediate structures.
  */
+/** Assert that a generated command buffer fits within one kernel page. */
 #define MIRILLA_ASSERT_IO_SIZE(name) \
-    static_assert(sizeof(union mirilla_##name##_io) <= PAGE_SIZE, "IO too large: " #name)
+    MIRILLA_ASSERT(MIRILLA_SIZEOF(union mirilla_##name##_io) <= PAGE_SIZE, "IO too large: " #name)
 
 #else
 
 /*
- * NOTE(workaround): Bindgen dislikes `static_assert`.
+ * NOTE(invariant): The command buffer page bound is a kernel implementation constraint.
  */
+/** Omit the kernel-only command-buffer assertion from userspace headers. */
 #define MIRILLA_ASSERT_IO_SIZE(name)
 
 #endif /* __KERNEL__ */

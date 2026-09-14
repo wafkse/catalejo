@@ -18,7 +18,6 @@
 #endif
 
 #ifdef __KERNEL__
-#include <linux/list.h>
 #include <linux/refcount.h>
 #include <linux/rwsem.h>
 #include <linux/xarray.h>
@@ -39,9 +38,9 @@ MIRILLA_CONTEXT_DEFINE(
         struct xarray map_target_list;
 
         /*
-         * The RCU-published exception registrations owned by this session.
+         * Monotonic exception-context identifiers allocated by this session.
          */
-        struct list_head except_registration_list;
+        mirilla_atomic_id_t except_count;
     };);
 
 MIRILLA_CONTEXT_CONSTRUCTOR(device);

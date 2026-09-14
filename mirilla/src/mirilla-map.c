@@ -778,7 +778,8 @@ mirilla_map_handle_command_disengage(struct mirilla_device_context *device_conte
 
 mirilla_command_status_t
 mirilla_map_handle_command_peephole(struct mirilla_device_context *device_context,
-                                    union mirilla_map_peephole_io *io)
+                                    union mirilla_map_peephole_io *io,
+                                    struct mirilla_fd_reservation *fd_reservation)
 {
     struct mirilla_map_peephole_argument *argument = &io->argument;
     struct mirilla_map_peephole_result *result = &io->result;
@@ -917,34 +918,21 @@ mirilla_map_handle_command_peephole(struct mirilla_device_context *device_contex
 	 */
     mmput(target_space);
 
-    int fd = get_unused_fd_flags(MIRILLA_MAP_FILE_FLAGS);
+    int file_descriptor =
+        mirilla_fd_reservation_prepare(fd_reservation, anonymous_file, MIRILLA_MAP_FILE_FLAGS);
 
-    if (fd < 0) {
+    if (file_descriptor < 0) {
         mirilla_context_map_target_reference_set(target_context);
 
-        /*
-		 * NOTE(refcount): The anon file owns the peephole reference. `fput`
-		 * destructs it, removing the notifier and dropping `mm_count`. The
-		 * `mm_users` ref was already released above.
-		 */
-        fput(anonymous_file);
-
-        MIRILLA_ERROR_AND_RETURN(fd, "failed to allocate file descriptor");
+        MIRILLA_ERROR_AND_RETURN(file_descriptor, "failed to allocate file descriptor");
     }
 
     mirilla_id_t peephole_id = atomic_inc_return(&target_context->peephole_count);
 
     peephole_context->id = result->id = peephole_id;
-    result->fd = fd;
+    result->fd = file_descriptor;
 
     MIRILLA_DEBUG("created peephole context");
-
-    /*
-     * NOTE(publication): This is the final operation involving `anonymous_file` or
-     * `peephole_context`. Once installed, another thread sharing the descriptor table may close the
-     * descriptor immediately and release the file's sole context reference.
-     */
-    fd_install(fd, anonymous_file);
 
     mirilla_context_map_target_reference_set(target_context);
 
@@ -1226,6 +1214,10 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
                                                     mirilla_command_t command,
                                                     mirilla_command_argument_t argument)
 {
+    struct mirilla_fd_reservation fd_reservation MIRILLA_FD_RESERVATION = {
+        .target_file = NULL,
+        .file_descriptor = -1,
+    };
     size_t io_size;
 
     switch (command) {
@@ -1279,8 +1271,8 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
 
         break;
     case MIRILLA_COMMAND_MAP_PEEPHOLE:
-        if (!MIRILLA_COMMAND_IS_OK(command_status =
-                                       mirilla_map_handle_command_peephole(device_context, io)))
+        if (!MIRILLA_COMMAND_IS_OK(command_status = mirilla_map_handle_command_peephole(
+                                       device_context, io, &fd_reservation)))
             MIRILLA_ERROR("failed to peephole");
 
         break;
@@ -1299,6 +1291,9 @@ mirilla_command_status_t mirilla_map_handle_command(struct mirilla_device_contex
 
             command_status = -EFAULT;
         }
+
+    if (MIRILLA_COMMAND_IS_OK(command_status) && fd_reservation.file_descriptor >= 0)
+        mirilla_fd_reservation_install(&fd_reservation);
 
     kfree(io);
 

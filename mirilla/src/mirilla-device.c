@@ -37,7 +37,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(device)
 
     atomic_set(&target_context->map_target_count, 0);
     xa_init(&target_context->map_target_list);
-    INIT_LIST_HEAD(&target_context->except_registration_list);
+    atomic_set(&target_context->except_count, 0);
 
     return error_code;
 }
@@ -46,8 +46,6 @@ MIRILLA_CONTEXT_DESTRUCTOR(device)
 {
     unsigned long target_id = MIRILLA_ID_NONE;
     struct mirilla_map_target_context *map_target_context = NULL;
-
-    mirilla_except_remove_device(target_context);
 
     xa_for_each(&target_context->map_target_list, target_id, map_target_context)
     {
