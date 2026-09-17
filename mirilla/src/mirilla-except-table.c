@@ -18,8 +18,10 @@
 /* Select the anonymous exception inode label exposed by this build mode. */
 #if defined(MIRILLA_STEALTH_MODE)
 #define MIRILLA_EXCEPT_INODE_NAME MIRILLA_STEALTH_EXCEPT_INODE_NAME
+#define MIRILLA_EXCEPT_WARN_ON_ONCE(condition) unlikely(condition)
 #else
 #define MIRILLA_EXCEPT_INODE_NAME "[mirilla-except]"
+#define MIRILLA_EXCEPT_WARN_ON_ONCE(condition) WARN_ON_ONCE(condition)
 #endif
 
 struct mirilla_except_global_context mirilla_except_context;
@@ -125,8 +127,8 @@ MIRILLA_CONTEXT_DESTRUCTOR(except)
 {
     struct mirilla_except_registry_bucket *registry_bucket;
 
-    WARN_ON_ONCE(!mirilla_slab_set_empty(&target_context->slab_set));
-    WARN_ON_ONCE(!list_empty(&target_context->table_list));
+    MIRILLA_EXCEPT_WARN_ON_ONCE(!mirilla_slab_set_empty(&target_context->slab_set));
+    MIRILLA_EXCEPT_WARN_ON_ONCE(!list_empty(&target_context->table_list));
 
     if (target_context->address_space) {
         registry_bucket = mirilla_except_registry_bucket(target_context->address_space);
@@ -412,7 +414,7 @@ mirilla_except_active_tables_get(struct mirilla_except_context *context,
         /* NOTE(lifetime): Each reference is acquired while active-table membership is protected.
          * Readers may then search the immutable table outside the lock. */
 
-        if (WARN_ON_ONCE(count >= MIRILLA_EXCEPT_SLAB_LIMIT))
+        if (MIRILLA_EXCEPT_WARN_ON_ONCE(count >= MIRILLA_EXCEPT_SLAB_LIMIT))
             break;
 
         if (mirilla_context_except_table_reference_get(table))
@@ -749,6 +751,6 @@ void mirilla_except_registry_deinitialize(void)
     unsigned int index;
 
     for (index = 0; index < MIRILLA_EXCEPT_REGISTRY_BUCKET_COUNT; index++)
-        WARN_ON_ONCE(
+        MIRILLA_EXCEPT_WARN_ON_ONCE(
             !hlist_empty(&mirilla_except_context.registry.bucket_list[index].context_list));
 }
