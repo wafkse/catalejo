@@ -219,9 +219,8 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
     int page_count = 0;
     struct page *target_page = NULL;
 
-    unsigned long is_writable = vma->vm_flags & VM_WRITE;
-
-    unsigned int gup_flags = is_writable ? FOLL_WRITE : 0;
+    /* Read acquisition populates every permitted target page independently of VMA write intent. */
+    unsigned int gup_flags = 0;
 
     int mmap_read_locked = true;
 
@@ -355,9 +354,6 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 
         unsigned int reclaim_flags;
 
-        if (gup_flags & FOLL_WRITE)
-            set_page_dirty_lock(target_page);
-
         reclaim_flags = memalloc_noreclaim_save();
         insert_outcome = vmf_insert_mixed(vma, vmf->address, page_to_pfn(target_page));
         memalloc_noreclaim_restore(reclaim_flags);
@@ -394,10 +390,6 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
                                           struct vm_area_struct *vma)
 {
     struct mm_struct *address_space = peephole_context->address_space;
-
-    /* Writable projections resolve target write permission/COW on demand. */
-    if (vma->vm_flags & VM_WRITE)
-        return;
 
     unsigned long page_span = (peephole_context->end_address - peephole_context->start_address) >>
                               PAGE_SHIFT;
@@ -530,10 +522,13 @@ vm_fault_t mirilla_map_peephole_vm_pfn_mkwrite(struct vm_fault *vmf)
 {
     struct vm_area_struct *vma = vmf->vma;
     struct mirilla_map_peephole_context *peephole_context = vma->vm_private_data;
-    struct mirilla_map_peephole_write_pte write_pte = {
-        .vma = vma,
-        .pfn = pte_pfn(vmf->orig_pte),
-    };
+    unsigned long relative_address = vmf->pgoff << PAGE_SHIFT;
+    unsigned long target_address = peephole_context->start_address + relative_address;
+    unsigned long notifier_seq;
+    struct page *target_page = NULL;
+    int mmap_read_locked = true;
+    int page_count;
+    int write_status;
 
     if (!(vma->vm_flags & VM_WRITE))
         return VM_FAULT_SIGBUS;
@@ -541,10 +536,89 @@ vm_fault_t mirilla_map_peephole_vm_pfn_mkwrite(struct vm_fault *vmf)
     if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
         return VM_FAULT_SIGBUS;
 
+    if (target_address >= peephole_context->end_address)
+        return VM_FAULT_SIGBUS;
+
+    notifier_seq = mmu_interval_read_begin(&peephole_context->interval_subscribe);
+
+    if (peephole_context->address_space == current->mm) {
+        if (vmf->flags & FAULT_FLAG_VMA_LOCK) {
+            vma_end_read(vma);
+
+            return VM_FAULT_RETRY;
+        }
+
+        if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD)
+            return VM_FAULT_SIGBUS;
+
+        page_count =
+            get_user_pages_remote(current->mm, target_address, 1, FOLL_WRITE, &target_page, NULL);
+    } else {
+        if (!mmget_not_zero(peephole_context->address_space))
+            return VM_FAULT_SIGBUS;
+
+        if (!mmap_read_trylock(peephole_context->address_space)) {
+            mmput(peephole_context->address_space);
+
+            if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+                vma_end_read(vma);
+            else
+                mmap_read_unlock(vma->vm_mm);
+
+            return VM_FAULT_RETRY;
+        }
+
+        if (atomic_read_acquire(&peephole_context->peephole_state) == MIRILLA_PEEPHOLE_STATE_DEAD) {
+            mmap_read_unlock(peephole_context->address_space);
+            mmput(peephole_context->address_space);
+
+            return VM_FAULT_SIGBUS;
+        }
+
+        page_count = get_user_pages_remote(peephole_context->address_space, target_address, 1,
+                                           FOLL_WRITE, &target_page, &mmap_read_locked);
+
+        if (mmap_read_locked)
+            mmap_read_unlock(peephole_context->address_space);
+
+        mmput(peephole_context->address_space);
+    }
+
+    if (page_count <= 0) {
+        if (page_count == -EBUSY && !mmap_read_locked) {
+            if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+                vma_end_read(vma);
+            else
+                mmap_read_unlock(vma->vm_mm);
+
+            return VM_FAULT_RETRY;
+        }
+
+        return VM_FAULT_SIGBUS;
+    }
+
+    if (mmu_interval_read_retry(&peephole_context->interval_subscribe, notifier_seq)) {
+        put_page(target_page);
+
+        return VM_FAULT_NOPAGE;
+    }
+
+    struct mirilla_map_peephole_write_pte write_pte = {
+        .vma = vma,
+        .pfn = page_to_pfn(target_page),
+    };
+
+    set_page_dirty_lock(target_page);
+
     mutex_lock(&peephole_context->install_lock);
-    apply_to_page_range(vma->vm_mm, vmf->address, PAGE_SIZE, mirilla_map_peephole_pte_mkwrite,
-                        &write_pte);
+    write_status = apply_to_page_range(vma->vm_mm, vmf->address, PAGE_SIZE,
+                                       mirilla_map_peephole_pte_mkwrite, &write_pte);
     mutex_unlock(&peephole_context->install_lock);
+
+    put_page(target_page);
+
+    if (write_status && write_status != -EAGAIN)
+        return VM_FAULT_SIGBUS;
 
     return VM_FAULT_NOPAGE;
 }
@@ -647,10 +721,17 @@ int mirilla_map_peephole_file_mmap(struct file *file, struct vm_area_struct *vma
      * capability, and `mprotect()` remains forbidden in either mode.
      */
     vm_flags_clear(vma, VM_SHARED | VM_MAYEXEC);
-    if (is_writable)
+    if (is_writable) {
         vm_flags_set(vma, VM_MAYSHARE);
-    else
+        /*
+         * NOTE(permission): A writable VMA carries maximum capability, while each target page is
+         * initially represented by a read-only special PTE. A write fault reaches `pfn_mkwrite`,
+         * which proves target write access with `FOLL_WRITE` before upgrading that one PTE.
+         */
+        vma->vm_page_prot = vm_get_page_prot(vma->vm_flags & ~VM_WRITE);
+    } else {
         vm_flags_clear(vma, VM_MAYSHARE | VM_MAYWRITE);
+    }
 
     /*
 	 * NOTE(populate): Honor the one-shot populate word by prefaulting the whole

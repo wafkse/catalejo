@@ -1,10 +1,11 @@
 /*
  * Mapping Invariant Test Suite for the Mirilla Module
  *
- * The peephole mmap declares its access intent while remaining private. Writable mappings resolve
- * the target with `FOLL_WRITE`; `pfn_mkwrite` then upgrades the mixed-PFN PTE instead of allowing
- * observer-side COW. Every view remains whole-length, non-executable, and fixed in protection after
- * creation. Shared, partial-length, and non-zero-offset mappings remain invalid.
+ * The peephole mmap declares its access intent while remaining private. Writable mappings install
+ * read-only mixed-PFN PTEs for reads. An actual write resolves the target with `FOLL_WRITE` before
+ * `pfn_mkwrite` upgrades that page instead of allowing observer-side COW. Every view remains
+ * whole-length, non-executable, and fixed in protection after creation. Shared, partial-length, and
+ * non-zero-offset mappings remain invalid.
  * - The VMA operations refuse relocation and reprotection (`EPERM`).
  * - Core mm backs the rest before the module hook is even consulted:
  *   `SB_I_NOEXEC` on the anon-inode mount blocks executable mappings
@@ -255,6 +256,15 @@ static int test_explicit_writable_mapping_updates_target(void)
     void *view = mmap(NULL, TEST_REGION_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE, peephole_fd, 0);
     ASSERT(view != MAP_FAILED, "failed to mmap writable peephole view");
 
+    uint32_t observed = 0;
+    ASSERT(catalejo_read_u32((uint32_t *)view, &observed) == CATALEJO_OUTCOME_SUCCESS, "protected "
+                                                                                       "read "
+                                                                                       "through "
+                                                                                       "writable "
+                                                                                       "peephole "
+                                                                                       "failed");
+    ASSERT(observed == MAGIC_VALUE_1, "writable peephole read the wrong target value");
+
     uint32_t replacement = MAGIC_VALUE_5;
     ASSERT(catalejo_write_u32((uint32_t *)view, &replacement) == CATALEJO_OUTCOME_SUCCESS,
            "protected write through writable peephole failed");
@@ -291,9 +301,23 @@ static int test_writable_mapping_respects_target_permissions(void)
     if (mprotect(fixture.region, TEST_REGION_SIZE, PROT_READ) != 0)
         goto out;
 
+    uint32_t observed = 0;
+    if (catalejo_read_u32((uint32_t *)view, &observed) != CATALEJO_OUTCOME_SUCCESS ||
+        observed != MAGIC_VALUE_1) {
+        fprintf(stderr, "read failed through writable view against read-only target VMA\n");
+        goto restore;
+    }
+
     uint32_t replacement = MAGIC_VALUE_4;
     if (catalejo_write_u32((uint32_t *)view, &replacement) != CATALEJO_OUTCOME_ERROR) {
         fprintf(stderr, "write unexpectedly succeeded against read-only target VMA\n");
+        goto restore;
+    }
+
+    observed = 0;
+    if (catalejo_read_u32((uint32_t *)view, &observed) != CATALEJO_OUTCOME_SUCCESS ||
+        observed != MAGIC_VALUE_1) {
+        fprintf(stderr, "failed write destroyed readable target access\n");
         goto restore;
     }
 
