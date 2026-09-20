@@ -1,10 +1,10 @@
 [package]
 name = "catalejo"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Userspace library for observing process memory through the Mirilla kernel module."
-repository = "https://github.com/wafkse/catalejo"
-license = "GPL-3.0-or-later"
+repository.workspace = true
+license.workspace = true
 
 [features]
 default = ["default-device-path", "write"]
@@ -13,22 +13,22 @@ stealth-mode = ["catalejo-fault/stealth-mode", "catalejo-sys/stealth-mode"]
 write = []
 
 [dependencies]
-catalejo-fault = { path = "../catalejo-fault", version = "0.1.0", default-features = false }
-catalejo-macro = { version = "0.1.0", path = "../catalejo-macro" }
-catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
-catalejo-sys = { path = "../catalejo-sys", version = "0.1.0", default-features = false }
-dashmap = "6.2.1"
-fack = "0.2.0"
-libc = "0.2.186"
-lru = "0.18.4"
-nix = { version = "0.31.3", features = ["mman"] }
-num-traits = { version = "0.2.19", default-features = false }
-bitflags = "2"
+bitflags.workspace = true
+catalejo-fault.workspace = true
+catalejo-macro.workspace = true
+catalejo-memory.workspace = true
+catalejo-sys.workspace = true
+dashmap.workspace = true
+fack.workspace = true
+libc.workspace = true
+lru.workspace = true
+nix = { workspace = true, features = ["mman"] }
+num-traits.workspace = true
 
 [dev-dependencies]
 # `html_reports` adds the plot and report generation on top of the default
 # `plotters` backend, so a benchmark run writes SVGs under target/criterion.
-criterion = { version = "0.8.2", features = ["html_reports"] }
+criterion.workspace = true
 
 # The peephole benchmarks drive criterion directly rather than through the built-in `libtest`
 # harness, so it is disabled and each benchmark owns `main`. The self-peephole suite hands `main` to

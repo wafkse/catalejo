@@ -1,10 +1,10 @@
 [package]
 name = "catalejo-fault"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Fault-tolerant memory access primitives for Catalejo."
-repository = "https://github.com/wafkse/catalejo"
-license = "GPL-3.0-or-later"
+repository.workspace = true
+license.workspace = true
 
 [lib]
 
@@ -12,9 +12,9 @@ license = "GPL-3.0-or-later"
 stealth-mode = ["catalejo-sys/stealth-mode"]
 
 [dependencies]
-catalejo-memory = { path = "../catalejo-memory", version = "0.1.0" }
-catalejo-sys = { path = "../catalejo-sys", version = "0.1.0", default-features = false }
-tokel = "0.2.5"
+catalejo-memory.workspace = true
+catalejo-sys.workspace = true
+tokel.workspace = true
 
 [dev-dependencies]
-libc = "0.2.186"
+libc.workspace = true

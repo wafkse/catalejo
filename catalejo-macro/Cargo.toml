@@ -1,15 +1,15 @@
 [package]
 name = "catalejo-macro"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Derive macros for the Catalejo process-memory observation library."
-repository = "https://github.com/wafkse/catalejo"
-license = "GPL-3.0-or-later"
+repository.workspace = true
+license.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0.106"
-quote = "1.0.46"
-syn = "2.0.118"
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
