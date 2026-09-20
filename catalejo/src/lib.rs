@@ -39,7 +39,7 @@ pub mod prelude {
         manage::{Memoize, Rebased, lru::Lru},
         offset::{Absolute, Field, Offset, Retrieve, Source, Unassociated},
         peephole::{
-            ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole,
+            Assemble, ByteCopy, ByteCopyStatus, Coherent, Foreign, InitializeWord, Lift, Peephole,
             PrimitiveLiftError, Stabilize, StabilizeError, Window,
         },
         pointer::{Pointer, Pointer32, Pointer64},

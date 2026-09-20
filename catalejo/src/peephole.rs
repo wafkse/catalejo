@@ -39,7 +39,7 @@ use nix::sys::mman::{MapFlags, ProtFlags};
 
 use crate::{
     address::{ViAddr, ViRange},
-    manage::Access,
+    manage::{Access, Manage},
     offset::{Field, Offset, Sparse},
     target::Target,
 };
@@ -685,7 +685,7 @@ where
     /// Create a sparse access intent for a profile-selected field of `F`.
     ///
     /// The returned intent may lie outside the current peephole. Resolve it with
-    /// [`Manage::refresh`](crate::manage::Manage::refresh) before reading so the
+    /// [`Manage::refresh`] before reading so the
     /// manager can reuse or open a window that fits the projected value.
     #[inline]
     pub fn sparse<P>(&self, target_project: impl Borrow<P>) -> Option<Access<P::Value>>
@@ -762,6 +762,31 @@ where
         L: Lift<Value = F>,
     {
         L::construct_with(self, target_context)
+    }
+
+    /// Assemble a locally managed value through this foreign handle and one access manager.
+    #[inline]
+    pub fn assemble<A, M>(self, target_manager: &M) -> Result<A, A::Error>
+    where
+        A: Assemble<Value = F>,
+        A::Context: Default,
+        M: Manage,
+    {
+        A::assemble(target_manager, self)
+    }
+
+    /// Assemble a locally managed value through this foreign handle and one access manager.
+    #[inline]
+    pub fn assemble_with<A, M>(
+        self,
+        target_manager: &M,
+        target_context: &A::Context,
+    ) -> Result<A, A::Error>
+    where
+        A: Assemble<Value = F>,
+        M: Manage,
+    {
+        A::assemble_with(target_manager, self, target_context)
     }
 
     /// Repeatedly lift the foreign structure until two sequential values compare as equal.
@@ -1103,6 +1128,45 @@ pub trait Lift: Immortal {
         Self: Sized,
     {
         Self::construct_with(target_handle, &Self::Context::default())
+    }
+}
+
+/// A trait for locally managed values that may span several managed foreign windows.
+///
+/// Unlike [Lift], assembly receives the manager that owns the starting [Foreign] handle. An
+/// implementation can derive [Access] intents from that handle and ask the same manager to
+/// refresh them when the requested representation crosses a window boundary.
+pub trait Assemble: Immortal {
+    /// The foreign structure used as the assembly origin.
+    type Value: Unassociated;
+
+    /// The context that may be used during assembly.
+    type Context;
+
+    /// The error that can arise during assembly.
+    type Error;
+
+    /// Assemble the type from one managed foreign origin with the required context.
+    fn assemble_with<M>(
+        target_manager: &M,
+        target_handle: Foreign<Self::Value>,
+        target_context: &Self::Context,
+    ) -> Result<Self, Self::Error>
+    where
+        M: Manage;
+
+    /// Assemble the type from one managed foreign origin.
+    #[inline]
+    fn assemble<M>(
+        target_manager: &M,
+        target_handle: Foreign<Self::Value>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self::Context: Default,
+        Self: Sized,
+        M: Manage,
+    {
+        Self::assemble_with(target_manager, target_handle, &Self::Context::default())
     }
 }
 
