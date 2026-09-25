@@ -1,7 +1,7 @@
 #ifndef _CATALEJO_EXCEPT_H_
 #define _CATALEJO_EXCEPT_H_
 
-#include "mirilla-except.h"
+#include "mirilla/mirilla-except.h"
 
 #ifndef __BINDGEN__
 #include <sys/types.h>

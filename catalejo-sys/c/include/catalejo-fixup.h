@@ -7,7 +7,7 @@
 
 #include "catalejo-macro.h"
 #include "catalejo-section.h"
-#include "mirilla-except.h"
+#include "mirilla/mirilla-except.h"
 
 #ifdef __cplusplus
 extern "C" {

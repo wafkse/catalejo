@@ -19,12 +19,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         current_dir.join(C_SOURCE_RELATIVE_DIRECTORY),
     );
 
-    let mirilla_include = current_dir.join("../mirilla/include");
-
     let mut build_context = cc::Build::new();
 
     build_context.include(&include);
-    build_context.include(&mirilla_include);
 
     for target_value in WalkDir::new(source) {
         let target_value = target_value?;
@@ -45,26 +42,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut bind_context =
         bindgen::Builder::default().parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
 
-    // Track every include header dependency and follow the Mirilla include symlink so edits to
-    // canonical header targets always invalidate the generated bindings.
+    // Track canonical header targets as well as include-tree symlinks so edits behind directory
+    // links always invalidate the generated bindings.
     for target_value in WalkDir::new(&include).follow_links(true) {
         let target_value = target_value?;
-        let target_path = target_value.path();
-        let is_header = target_value.file_type().is_file()
-            && matches!(
-                target_path.extension().and_then(OsStr::to_str),
-                Some("H" | "h")
-            );
 
-        if is_header {
+        let target_path = target_value.path();
+
+        let is_candidate = target_value.file_type().is_file();
+
+        if is_candidate && let Some("H" | "h") = target_path.extension().and_then(OsStr::to_str) {
             println!(
                 "cargo:rerun-if-changed={}",
                 target_path.canonicalize()?.display()
             );
         }
     }
-
-    bind_context = bind_context.clang_arg(format!("-I{}", mirilla_include.display()));
 
     for target_value in WalkDir::new(include) {
         let target_value = target_value?;
