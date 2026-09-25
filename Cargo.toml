@@ -31,6 +31,6 @@ nix = "0.31.3"
 num-traits = { version = "0.2.19", default-features = false }
 proc-macro2 = "1.0.106"
 quote = "1.0.46"
-syn = "2.0.118"
-tokel = "0.2.5"
+syn = "3.0.6"
+tokel = "0.4.0"
 walkdir = "2.5.0"
