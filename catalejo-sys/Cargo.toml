@@ -6,6 +6,7 @@ description = "System-level userspace bindings to the Mirilla kernel module."
 repository.workspace = true
 license.workspace = true
 build = "build.rs"
+exclude = ["c/include/mirilla/mirilla-symbol.generated.h"]
 
 [features]
 default = ["default-device-path"]
