@@ -79,19 +79,15 @@ impl LruRebase {
     /// Determine this level's offset basis.
     #[inline]
     const fn shift(&self) -> ffi::binding::virtual_address_t {
-        let Self {
+        let &Self {
             rebase_granule,
             rebase_level,
             ..
         } = self;
 
-        {
-            let this = *rebase_level;
-            let target_granule = *rebase_granule;
-            match this {
-                Level::L0 => 0,
-                Level::L1 => Granule::half(target_granule),
-            }
+        match rebase_level {
+            Level::L0 => 0,
+            Level::L1 => Granule::half(rebase_granule),
         }
     }
 
@@ -128,9 +124,12 @@ impl LruRebase {
         let ViAddr(target_base) = Self::base(self, target_frame);
         let target_end = target_base.wrapping_add(Granule::size(Self::granule(self)));
 
+        let start_address = ViAddr(target_base);
+        let end_address = ViAddr(target_end);
+
         ViRange {
-            start_address: ViAddr(target_base),
-            end_address: ViAddr(target_end),
+            start_address,
+            end_address,
         }
     }
 
