@@ -24,7 +24,7 @@ catalejo-sys = { path = "catalejo-sys", version = "0.2.0", default-features = fa
 cc = "1.2.65"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 dashmap = "6.2.1"
-fack = "0.2.0"
+fack = "0.4.0"
 libc = "0.2.186"
 lru = "0.18.4"
 nix = "0.31.3"
