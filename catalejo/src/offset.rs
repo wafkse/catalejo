@@ -165,7 +165,6 @@ mod test {
     /// A structure with two projection compatible words.
     #[derive(Clone, Copy)]
     #[repr(C)]
-    // NOTE(invariant): The C layout keeps both words complete and naturally aligned.
     struct DynamicStructure {
         /// The first requestable word.
         target_first: u32,
@@ -232,7 +231,6 @@ mod test {
     /// A dynamic marker for either requestable word.
     #[derive(Clone, Copy)]
     #[repr(transparent)]
-    // NOTE(invariant): Every selector maps to a complete and aligned word in `DynamicStructure`.
     struct DynamicWord(
         /// The selector that identifies one of the requestable words.
         u8,

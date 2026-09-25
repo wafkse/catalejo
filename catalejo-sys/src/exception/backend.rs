@@ -11,10 +11,6 @@ use crate::ffi::binding;
 use super::status;
 
 /// A process-local proof that Catalejo's linked fault routines are published.
-///
-/// NOTE(invariant): raw is returned only by the C singleton after it has created and published the
-/// default slab for process_id. A protected operation compares process_id with the calling process
-/// before relying on the singleton, so an inherited handle cannot prove recovery after fork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backend(
     /// The process-lifetime C singleton established for the creating PID.

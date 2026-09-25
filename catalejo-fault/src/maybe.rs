@@ -126,8 +126,10 @@ where
     #[inline]
     pub unsafe fn write(&self, fault_backend: &Backend, target_value: F) -> bool {
         let &Self(target_address, ..) = self;
+
         let target_address =
             ptr::with_exposed_provenance_mut::<PrimitiveUnion>(target_address.get());
+
         let target_source = (&raw const target_value).cast::<PrimitiveUnion>();
 
         // SAFETY:

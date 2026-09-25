@@ -39,9 +39,8 @@ pub enum InvalidSlabSize {
 }
 
 /// A validated fixed exception slab size in bytes.
-///
-/// NOTE(invariant): The private value is nonzero, aligned to the x86 Linux base-page size and the
-/// 48-byte record stride, and no larger than the kernel slab-size ceiling.
+// NOTE(invariant): The private value is nonzero, aligned to the x86 Linux base-page size and the
+// 48-byte record stride, and no larger than the kernel slab-size ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SlabSize(
     /// The validated slab size in bytes.
@@ -106,9 +105,8 @@ pub enum InvalidSoftSlabLimit {
 }
 
 /// A userspace allocation limit bounded by the kernel hard limit.
-///
-/// NOTE(invariant): The private value is in the inclusive range from one through the kernel slab
-/// limit.
+// NOTE(invariant): The private value is in the inclusive range from one through the kernel slab
+// limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SoftSlabLimit(
     /// The validated userspace allocation count.
@@ -141,8 +139,8 @@ impl SoftSlabLimit {
 }
 
 /// A nonzero kernel exception-context identifier.
-///
-/// NOTE(invariant): Only a successful CREATE result can construct this private nonzero value.
+// NOTE(invariant): The private value identifies a context returned by a successful Mirilla CREATE
+// operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExceptionId(
     /// The nonzero identifier returned by Mirilla CREATE.
@@ -185,7 +183,6 @@ pub enum SlabAllocationError {
 }
 
 /// An fd-owned exception context bound to its creating address space.
-///
 // NOTE(invariant): The descriptor owns the kernel exception context. The identifier and slab size
 // come from the same successful create operation. The allocation count never exceeds the soft
 // limit through safe Rust allocation paths.
@@ -375,10 +372,8 @@ enum SlabState {
 }
 
 /// One complete exception slab mapping owned by a [`Context`].
-///
-// NOTE(invariant): The pointer names one exact mapping from the borrowed context. The tracked state
-// changes only after successful whole-VMA protection transitions. Drop unmaps the mapping before
-// returning the context allocation slot.
+// NOTE(invariant): The pointer owns one complete mapping from the borrowed context and `SlabState`
+// matches the mapping's current protection and publication state.
 #[derive(Debug)]
 pub struct Slab<'context>(
     /// The context that owns the file descriptor used to create this slab.
@@ -503,8 +498,8 @@ impl Drop for Slab<'_> {
             )
         };
 
-        // NOTE(invariant): A failed unmap leaves the VMA and any publication active. Keep its soft
-        // allocation slot charged because Rust can no longer prove that the kernel slab vanished.
+        // A failed unmap can leave the VMA and its publication active. Keep the soft allocation
+        // slot charged because Rust can no longer prove that the kernel slab vanished.
         if unmap_status == 0 {
             Context::release_slab(target_context);
         }

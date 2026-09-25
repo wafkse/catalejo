@@ -1,13 +1,13 @@
 //! Construction of fixed-ABI immutable exception actions.
 
-use core::{mem::MaybeUninit, num::NonZero};
+use core::{
+    mem::{self, MaybeUninit},
+    num::NonZero,
+};
 
 use crate::ffi::binding;
 
 /// A complete architectural recovery policy.
-///
-/// NOTE(invariant): Each variant encodes to the fixed 16-byte action ABI with every unused context
-/// byte zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Leave the exception to native Linux handling.
@@ -26,44 +26,50 @@ pub enum Action {
 impl Action {
     /// Encode the immutable kernel ABI value.
     #[inline]
-    pub fn encode(self) -> binding::mirilla_except_action {
-        let mut raw = MaybeUninit::<binding::mirilla_except_action>::zeroed();
+    pub const fn encode(self) -> binding::mirilla_except_action {
+        let mut target_storage = MaybeUninit::<binding::mirilla_except_action>::zeroed();
 
-        let raw_pointer = raw.as_mut_ptr();
+        let target_base = target_storage.as_mut_ptr().cast::<u8>();
+        let target_tag = target_base
+            .wrapping_add(mem::offset_of!(binding::mirilla_except_action, tag))
+            .cast::<u16>();
 
         match self {
             Self::None => {
-                // SAFETY: raw_pointer names live zeroed storage and tag is an initialized field.
+                // SAFETY: The field offset locates the complete tag within live zeroed storage.
                 unsafe {
-                    (&raw mut (*raw_pointer).tag).write(binding::MIRILLA_EXCEPT_ACTION_NONE as u16);
+                    target_tag.write(binding::MIRILLA_EXCEPT_ACTION_NONE as u16);
                 }
             }
             Self::Ip(target_address) => {
-                let action_context = binding::mirilla_except_action_context {
-                    ip: binding::mirilla_except_action_ip_context {
-                        address: target_address.get() as binding::virtual_address_t,
-                    },
-                };
+                let address = target_address.get() as binding::virtual_address_t;
 
-                // SAFETY: raw_pointer names live zeroed storage and context is an initialized
-                // union field selected by the tag written below.
-                unsafe { (&raw mut (*raw_pointer).context).write(action_context) };
+                let ip = binding::mirilla_except_action_ip_context { address };
 
-                // SAFETY: raw_pointer names live zeroed storage and tag is an initialized field.
+                let action_context = binding::mirilla_except_action_context { ip };
+
+                let target_context = target_base
+                    .wrapping_add(mem::offset_of!(binding::mirilla_except_action, context))
+                    .cast::<binding::mirilla_except_action_context>();
+
+                // SAFETY: The field offset locates the complete context within live zeroed
+                // storage. The tag written below selects its initialized union member.
+                unsafe { target_context.write(action_context) };
+
+                // SAFETY: The field offset locates the complete tag within live zeroed storage.
                 unsafe {
-                    (&raw mut (*raw_pointer).tag).write(binding::MIRILLA_EXCEPT_ACTION_IP as u16);
+                    target_tag.write(binding::MIRILLA_EXCEPT_ACTION_IP as u16);
                 }
             }
             Self::Retry => {
-                // SAFETY: raw_pointer names live zeroed storage and tag is an initialized field.
+                // SAFETY: The field offset locates the complete tag within live zeroed storage.
                 unsafe {
-                    (&raw mut (*raw_pointer).tag)
-                        .write(binding::MIRILLA_EXCEPT_ACTION_RETRY as u16);
+                    target_tag.write(binding::MIRILLA_EXCEPT_ACTION_RETRY as u16);
                 }
             }
         }
 
         // SAFETY: The buffer began fully zeroed and every semantic action writes its valid tag.
-        unsafe { raw.assume_init() }
+        unsafe { target_storage.assume_init() }
     }
 }

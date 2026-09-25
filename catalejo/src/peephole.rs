@@ -61,9 +61,6 @@ bitflags! {
 
 /// The context backing a peephole into a foreign memory address space.
 #[derive(Debug)]
-// NOTE(invariant): fault_backend is copied from the Target that created this context. Every
-// protected operation therefore uses the same published exception handlers without singleton
-// retrieval or another exception-context creation attempt.
 pub struct PeepholeContext {
     /// The process fault handlers established before the target was engaged.
     fault_backend: Backend,
@@ -233,7 +230,6 @@ impl PeepholeContext {
 
 /// A handle to a peephole into a foreign memory address space.
 #[derive(Debug, Clone)]
-// NOTE(invariant): every `Peephole` owns one strong `Arc` to its context, and dropping the final strong owner destroys the mapped window and closes the peephole file descriptor.
 pub struct Peephole(pub Arc<PeepholeContext>);
 
 impl Peephole {
@@ -354,7 +350,6 @@ pub struct Window {
     region_size: NonZero<usize>,
 
     /// The virtual memory protection flags applied to the window.
-    // NOTE(invariant): This is fixed and depends on the enabled feature set.
     region_protection: ProtFlags,
 }
 
@@ -452,7 +447,6 @@ pub enum MonitorWaitOutcome {
 /// }
 /// ```
 #[derive(Debug)]
-// NOTE(invariant): The token borrows the armed handle and cannot move away from the arming thread.
 pub struct ArmedMonitor<'foreign, F>
 where
     F: Faultable,
@@ -578,7 +572,8 @@ pub enum ByteCopyStatus {
 
 /// Result of copying an arbitrary byte span from a peephole window.
 #[derive(Debug)]
-// NOTE(invariant): `bytes` is exactly the initialized destination prefix written by the protected copy, and `state` records whether that prefix covers the complete requested span.
+// NOTE(invariant): `copy_buffer` is exactly the initialized destination prefix and `copy_state`
+// records whether that prefix covers the complete requested span.
 pub struct ByteCopy<'a> {
     /// The populated copy buffer.
     copy_buffer: &'a mut [u8],
@@ -674,9 +669,6 @@ where
 
         Foreign::<P::Value>(
             peephole_state.clone(),
-            // NOTE(invariant): This remains in-bounds as `F` is guaranteed to be contained completely
-            // into the peephole window, and the `Field` trait requires that the field offset is in-bounds
-            // of the containing structure as a safety requirement.
             target_offset,
             marker::PhantomData::<P::Value>,
         )
@@ -840,9 +832,7 @@ where
 
         let target_count = mem::size_of::<F>();
 
-        // NOTE(invariant): `Self` keeps the displacement in-bounds and aligned for `F`, so the
-        // window base plus the displacement names the live foreign span and never overflows. Treat
-        // an overflow defensively as a total fault, with the whole span left uncopied.
+        // Treat address overflow as a total fault with the whole span left uncopied.
         let Some(target_source) =
             Window::address(peephole_window).checked_add(target_displacement.native())
         else {

@@ -11,9 +11,6 @@ use catalejo_sys::{exception::backend::Backend, ffi, id::TargetId};
 
 /// A handle to an actively targeted process.
 #[derive(Debug)]
-// NOTE(invariant): Construction retains the current-process fault backend established before
-// engagement. Derived target handles copy that capability and never initialize a second exception
-// context.
 pub struct Target(
     /// The Mirilla map session that owns the target identifier.
     OwnedFd,

@@ -28,7 +28,7 @@ use crate::{
 
 /// The logical rebase level that owns one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Level {
+pub enum Level {
     /// The flush rebase grid.
     L0,
 
@@ -36,25 +36,12 @@ enum Level {
     L1,
 }
 
-impl Level {
-    /// Determine this level's displacement from the flush grid.
-    #[inline]
-    const fn shift(self, target_granule: Granule) -> ffi::binding::virtual_address_t {
-        match self {
-            Self::L0 => 0,
-            Self::L1 => Granule::half(target_granule),
-        }
-    }
-}
-
 /// The global LRU identity of one logical frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// NOTE(invariant): the level distinguishes equal frame indices from the flush and shifted grids, so one key identifies exactly one rebase window.
 struct WindowKey(Level, Frame);
 
 /// One weak logical rebase level used by [`Lru`].
 #[derive(Debug)]
-// NOTE(invariant): `rebase_map` stores only weak peephole ownership keyed by frames derived from `rebase_granule` and `rebase_level`, so discovery never extends peephole lifetime.
 struct LruRebase {
     /// The weak peephole index keyed by logical frame.
     rebase_map: DashMap<Frame, Weak<PeepholeContext>>,
@@ -98,7 +85,14 @@ impl LruRebase {
             ..
         } = self;
 
-        Level::shift(*rebase_level, *rebase_granule)
+        {
+            let this = *rebase_level;
+            let target_granule = *rebase_granule;
+            match this {
+                Level::L0 => 0,
+                Level::L1 => Granule::half(target_granule),
+            }
+        }
     }
 
     /// Determine the logical frame that owns one virtual address.
@@ -299,7 +293,8 @@ impl LruRebase {
 /// Placement matches [`crate::manage::rebased::Rebased`]. Weak frame maps support concurrent
 /// discovery while the global LRU owns at most [`Lru::limit`] strong peephole references.
 #[derive(Debug)]
-// NOTE(invariant): `retained` owns at most `peephole_limit` strong peephole references, `l0` and `l1` store only weak references, and every retained key identifies one logical frame in exactly one rebase level.
+// NOTE(invariant): `cache_storage` owns at most `peephole_limit` strong references. Its keys each
+// identify one logical frame in exactly one of the weak `l0` and `l1` indices.
 pub struct Lru {
     /// The engaged target process.
     target_engaged: Target,
@@ -548,6 +543,7 @@ impl Manage for Lru {
         );
 
         let Self { l0, l1, .. } = self;
+
         let target_l0 = LruRebase::acquire::<U>(l0, self, target_address)?;
 
         match target_l0 {

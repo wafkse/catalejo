@@ -31,7 +31,8 @@ const GRANULE_BYTES: usize = 2 * 1024 * 1024;
 const GRANULE_COUNT: usize = 8;
 
 /// A granule-aligned resident region retained by the child process.
-// NOTE(invariant): `_backing` stays alive for the complete child role and `base_address` is hugepage aligned with at least `GRANULE_COUNT` complete resident granules following it.
+// NOTE(invariant): `_backing` owns at least `GRANULE_COUNT` complete resident granules beginning at
+// the hugepage-aligned `base_address`.
 struct Region {
     /// The allocation that owns every target byte used by the parent.
     _backing: Box<[u64]>,
@@ -63,7 +64,8 @@ impl Region {
 }
 
 /// A child process retaining the resident foreign target region.
-// NOTE(invariant): `target_process` remains alive while `base_address` is used, so every address derived from that base names the child address space represented by the stored process identifier.
+// NOTE(invariant): `base_address` names the retained region in the address space owned by
+// `target_process`.
 struct ForeignTarget {
     /// The child process that owns the target region.
     target_process: Child,
