@@ -1,212 +1,176 @@
-# catalejo
+# Catalejo
 
-Catalejo observes the memory of another process through the `mirilla` kernel module.
+Catalejo gives a Linux process a fault-protected, zero-copy view into another process' memory. The
+Mirilla kernel module aliases target pages into the observer, so resident reads are local loads rather
+than a syscall and copy per access.
 
-A privileged process engages a target, opens peepholes over ranges of the target's address space, and reads that memory through a local mapping. The reads are machine-word coherent and fault-protected. When the target unmaps or remaps the range the peephole goes dead and the access returns nothing rather than crashing the observer.
+The target keeps running while it is observed. Catalejo does not provide a process snapshot or make
+multi-field reads atomic.
 
-This is a work in progress. It runs on Linux and `x86_64`.
+Catalejo is under active development and currently targets Linux on `x86_64`.
 
-## Why it exists
+## Requirements
 
-Reading another live process' memory is normally done with `ptrace` or `process_vm_readv`. Both copy bytes across the kernel boundary on every access. A single read is a system call and a memcpy, and observing a region at a high rate means paying that toll again for every word. The observer never sees the target's memory directly. It sees a snapshot the kernel assembled for it a moment ago.
+- stable Rust
+- a Linux `x86_64` kernel with module support and matching build headers
+- a C toolchain, `libclang`, Make, `binutils`, and `kmod`
+- permission to open the Mirilla device
+- `CAP_SYS_PTRACE` when observing another process
 
-Catalejo removes the copy and the per-read call. Rather than asking the kernel to fetch bytes, it asks `mirilla` to alias the target's physical frames into the observer's own address space. Once a page is aliased, reading it is a plain load instruction against the observer's page table, and that page table points at the very same physical memory the target is using. There is no buffer in between and no call per read. The cost is paid once when a window opens and once more when a page is first touched, and every read after that is a bare, cache-resident load.
+Self-observation does not require `CAP_SYS_PTRACE`.
 
-Aliasing live memory raises two hazards, and the design answers each one.
+## Setup
 
-The first hazard is tearing. The target keeps running and may mutate a value while it is read. Catalejo does not lock the target, because locking a foreign address space to read it defeats the purpose. Instead it leans on the hardware. A read of a naturally aligned machine word is serviced by the memory subsystem as one indivisible transaction, so the observed value is the exact state before or after a concurrent write and never a hybrid of the two. `catalejo-memory` formalizes this into a coherence model, and only types that are valid for every bit pattern, marked `Unassociated`, may cross a peephole.
-
-The second hazard is disappearance. The target may unmap the range, remap it elsewhere, or exit while the observer holds an alias to it. A stray load against freed memory would fault the observer. Catalejo makes that fault survivable. Every read runs through linked protected routines described by an immutable Mirilla exception slab. The kernel redirects faults from known instruction ranges to their recovery paths, so a dead peephole yields nothing instead of a crash. An MMU notifier registered on the target tears the alias down the instant the target changes its mapping, so the window is marked dead before a torn or stale frame can be observed.
-
-## How a read works
-
-A peephole is a window the kernel opens from the observer onto a frame of the target's address space. A frame is a target address quantized by the granule size, analogous to a page frame number, and it names the granule-sized window an address falls into. Reading through a peephole is three layered costs, each paid lazily and each paid once.
-
-- **Resolution.** An observed address is quantized to its frame and resolved against the observer's window table, a sharded map keyed by frame. The lookup is a shift, a mask, and a map hit, and it is memoized, so a repeated read of the same granule never re-resolves and never calls into the kernel.
-- **Opening.** The first read of a fresh frame pays one `ioctl` to register the window and one `mmap` to place it in the observer's address space. A granule spans many pages, so this cost is amortized across every page the window covers. Subsequent reads of that granule reuse the mapping.
-- **Fault-in.** The first read of a window page installs its alias. Every later read of that page is resident and faults nothing.
-
-Two addresses in the same window share a frame and reuse a single peephole. Because address space layout randomization places a structure at an arbitrary offset within the granule tiling, a structure can straddle a granule boundary and fall across two windows. A `Rebased` manager therefore keeps a second grid shifted by a half granule, so a straddling access is served whole from the shifted window rather than from two halves.
-
-## How pages are initialized
-
-Opening a peephole does not pin any memory. The `mmap` produces a `VM_MIXEDMAP` VMA with no pages behind it, so the window costs address space and a little bookkeeping rather than resident frames. Pages are installed one at a time, on demand, the first time the observer reads them.
-
-The install happens in the module's page-fault handler.
-
-- The handler turns the faulting page offset back into a target virtual address and rejects the fault early when the peephole is already dead or the address is out of the window's bounds.
-- It samples the target's MMU interval notifier so it can detect an invalidation that races the fault before a page is installed.
-- It pins the target's page with `get_user_pages_remote` against the target's `mm_struct`. This walks the target's own page tables and faults the target's page in if the target had not touched it yet, so the observer never invents a frame the target does not have. A self-peephole reuses the `mmap_lock` the outer fault already holds, and a foreign peephole takes the target's `mmap_lock` under an `mmget` so the address space cannot be torn down mid-fault.
-- Under an install lock it re-checks the interval notifier. If the target invalidated the range while the page was being pinned, the fresh pin is already stale, so the handler drops it and re-faults rather than install a frame the target has moved on from.
-- Otherwise it installs the target frame's page number into the observer's page table with `vmf_insert_mixed`. The observer's page-table entry now aliases the target's physical frame, and the transient reference taken to read the frame number is dropped because the entry itself keeps the frame reachable.
-
-After the entry is installed, the observer reads that page as ordinary memory. The load resolves through the resident entry straight into the shared frame, with no fault, no call, and no copy.
-
-Teardown runs from the same notifier. When the target unmaps, remaps, or frees the range, the kernel invokes the interval notifier's invalidate callback, which marks the peephole dead, advances the notifier sequence under the install lock, and zaps the installed aliases. A later fault against a dead peephole returns a bus error, which is exactly the fault `catalejo-fault` catches and reports as an absent read.
-
-## Speed
-
-The layered costs are arranged so that the expensive ones are rare and the common one is trivial. Resolution is a memoized frame lookup with no system call. Opening is one ioctl and one mmap amortized across a whole granule. A fault-in is a single minor page fault that installs a shared frame. A hot read is then a load through a resident entry that aliases the target's frame, so it runs at memory speed rather than syscall speed.
-
-The default granule is a two-megabyte huge frame. A large granule keeps the window table small and amortizes the open across the many pages it covers, and the granule size is a power of two, so quantizing an address to its frame is a single shift. The self_peephole benchmark suite isolates each of these costs by engaging the benchmarking process as its own target, so no second process is needed. It reads a machine word out of a peephole that points back into the reader. A foreign_peephole benchmark exists, but such requires a proper setup to run.
-
-| Benchmark          | Group     | Isolates                                                          |
-| ------------------ | --------- | ----------------------------------------------------------------- |
-| resolve-only       | resolve   | The memoized window lookup, no read.                              |
-| open-cold          | resolve   | A fresh window's ioctl and mmap, no read.                         |
-| read-hot           | read      | The fault-protected read alone, over a resident page.             |
-| resolve-read-hot   | read      | The whole hot path, a memoized lookup then a resident read.       |
-| source-read-warm   | read      | The find-or-open path over an already-open, resident window.      |
-| open-read-cold     | read      | A cold open plus the first read that faults the new page in.      |
-
-The read group declares a per-iteration throughput of one machine word, so criterion reports its figures as read speeds in GiB/s alongside the latencies.
-
-Benchmarks were executed on a Ryzen 7 7700X with PBO and EXPO II enabled, utilizing DDR5 6000 MT/s CL30 32 GB RAM (2x16 GB Dual Channel) running 7.1.3-arch2. The performance analysis prioritizes small reads and bulk copies across both self and foreign targets. Note that no measurable difference in speed exists between self and foreign operations.
-
-### Read Performance
-
-![foreign-peephole read speeds](docs/benchmarks/foreign-peephole-read/report/violin.svg)
-![self-peephole read speeds](docs/benchmarks/self-peephole-read/report/violin.svg)
-
-### Copy Throughput
-
-![foreign-peephole copy throughput](docs/benchmarks/foreign-peephole-copy/report/lines_throughput.svg)
-![self-peephole copy throughput](docs/benchmarks/self-peephole-copy/report/lines_throughput.svg)
-
-### Raw Benchmark Output
-
-```text
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-Gnuplot not found, using plotters backend
-foreign-peephole-resolve/resolve-only
-                        time:   [12.959 ns 12.974 ns 12.990 ns]
-Found 3 outliers among 100 measurements (3.00%)
-  2 (2.00%) high mild
-  1 (1.00%) high severe
-foreign-peephole-resolve/open-cold
-                        time:   [3.9171 µs 4.0112 µs 4.0937 µs]
-
-foreign-peephole-read/read-hot
-                        time:   [4.1060 ns 4.1161 ns 4.1286 ns]
-                        thrpt:  [1.8046 GiB/s 1.8101 GiB/s 1.8146 GiB/s]
-Found 3 outliers among 100 measurements (3.00%)
-  1 (1.00%) high mild
-  2 (2.00%) high severe
-foreign-peephole-read/resolve-read-hot
-                        time:   [15.310 ns 15.344 ns 15.388 ns]
-                        thrpt:  [495.82 MiB/s 497.22 MiB/s 498.33 MiB/s]
-Found 8 outliers among 100 measurements (8.00%)
-  1 (1.00%) low severe
-  1 (1.00%) low mild
-  6 (6.00%) high severe
-foreign-peephole-read/source-read-warm
-                        time:   [17.526 ns 17.549 ns 17.571 ns]
-                        thrpt:  [434.20 MiB/s 434.76 MiB/s 435.31 MiB/s]
-Found 1 outliers among 100 measurements (1.00%)
-  1 (1.00%) high mild
-foreign-peephole-read/open-read-cold
-                        time:   [8.2127 µs 8.2795 µs 8.3570 µs]
-                        thrpt:  [934.84 KiB/s 943.60 KiB/s 951.27 KiB/s]
-
-foreign-peephole-copy/copy-hot/4096
-                        time:   [29.717 ns 29.747 ns 29.778 ns]
-                        thrpt:  [128.10 GiB/s 128.24 GiB/s 128.37 GiB/s]
-Found 17 outliers among 100 measurements (17.00%)
-  7 (7.00%) low severe
-  4 (4.00%) low mild
-  4 (4.00%) high mild
-  2 (2.00%) high severe
-foreign-peephole-copy/copy-hot/65536
-                        time:   [811.40 ns 812.60 ns 814.10 ns]
-                        thrpt:  [74.972 GiB/s 75.111 GiB/s 75.222 GiB/s]
-Found 20 outliers among 100 measurements (20.00%)
-  1 (1.00%) low mild
-  9 (9.00%) high mild
-  10 (10.00%) high severe
-foreign-peephole-copy/copy-hot/524288
-                        time:   [8.0915 µs 8.1165 µs 8.1409 µs]
-                        thrpt:  [59.979 GiB/s 60.159 GiB/s 60.345 GiB/s]
-foreign-peephole-copy/copy-warm
-                        time:   [836.31 ns 837.57 ns 839.16 ns]
-                        thrpt:  [72.733 GiB/s 72.872 GiB/s 72.982 GiB/s]
-Found 6 outliers among 100 measurements (6.00%)
-  3 (3.00%) high mild
-  3 (3.00%) high severe
-foreign-peephole-copy/open-copy-cold
-                        time:   [22.364 µs 22.489 µs 22.623 µs]
-                        thrpt:  [2.6979 GiB/s 2.7140 GiB/s 2.7292 GiB/s]
-Found 2 outliers among 100 measurements (2.00%)
-  2 (2.00%) high severe
-
-Gnuplot not found, using plotters backend
-self-peephole-resolve/resolve-only
-                        time:   [12.958 ns 12.981 ns 13.004 ns]
-Found 2 outliers among 100 measurements (2.00%)
-  1 (1.00%) low mild
-  1 (1.00%) high mild
-self-peephole-resolve/open-cold
-                        time:   [3.4887 µs 3.5514 µs 3.6194 µs]
-Found 4 outliers among 100 measurements (4.00%)
-  3 (3.00%) high mild
-  1 (1.00%) high severe
-
-self-peephole-read/read-hot
-                        time:   [4.1164 ns 4.1228 ns 4.1306 ns]
-                        thrpt:  [1.8038 GiB/s 1.8072 GiB/s 1.8100 GiB/s]
-Found 4 outliers among 100 measurements (4.00%)
-  2 (2.00%) high mild
-  2 (2.00%) high severe
-self-peephole-read/resolve-read-hot
-                        time:   [15.360 ns 15.394 ns 15.430 ns]
-                        thrpt:  [494.45 MiB/s 495.62 MiB/s 496.71 MiB/s]
-Found 3 outliers among 100 measurements (3.00%)
-  2 (2.00%) high mild
-  1 (1.00%) high severe
-self-peephole-read/source-read-warm
-                        time:   [17.357 ns 17.378 ns 17.400 ns]
-                        thrpt:  [438.47 MiB/s 439.02 MiB/s 439.56 MiB/s]
-Found 2 outliers among 100 measurements (2.00%)
-  1 (1.00%) low mild
-  1 (1.00%) high mild
-self-peephole-read/open-read-cold
-                        time:   [8.2991 µs 8.3738 µs 8.4517 µs]
-                        thrpt:  [924.38 KiB/s 932.97 KiB/s 941.37 KiB/s]
-Found 5 outliers among 100 measurements (5.00%)
-  5 (5.00%) high mild
-
-self-peephole-copy/4096 time:   [30.185 ns 30.289 ns 30.402 ns]
-                        thrpt:  [125.47 GiB/s 125.94 GiB/s 126.38 GiB/s]
-Found 5 outliers among 100 measurements (5.00%)
-  3 (3.00%) high mild
-  2 (2.00%) high severe
-self-peephole-copy/65536
-                        time:   [816.23 ns 817.83 ns 819.87 ns]
-                        thrpt:  [74.445 GiB/s 74.631 GiB/s 74.777 GiB/s]
-Found 8 outliers among 100 measurements (8.00%)
-  2 (2.00%) high mild
-  6 (6.00%) high severe
-self-peephole-copy/524288
-                        time:   [8.3507 µs 8.3866 µs 8.4308 µs]
-                        thrpt:  [57.916 GiB/s 58.221 GiB/s 58.472 GiB/s]
-```
-
-## Building
-
-Build the workspace with Cargo and the module with the kernel build system.
+Build against the running kernel unless `KDIR` points at another prepared kernel tree.
 
 ```sh
+export KDIR="/lib/modules/$(uname -r)/build"
+
+make -C mirilla KDIR="$KDIR" module test
 cargo build --workspace
-make -C mirilla module
+sudo insmod mirilla/mirilla.ko
 ```
 
-## Stealth Mode Builds
+Mirilla normally appears as `/dev/mirilla` through devtmpfs. The observer needs access to that device.
+For foreign targets, run it with `CAP_SYS_PTRACE`; during development that usually means running as
+root or assigning the capability to the built executable.
 
-Stealth mode produces a seeded release module without project logging, debug metadata, BTF, or
-project-identifying module metadata. The same seed deterministically derives the module name,
-module parameter name, metadata, and internal C aliases.
+```sh
+sudo setcap cap_sys_ptrace=ep target/debug/observer
+```
+
+Secure Boot or module-signature enforcement may require signing `mirilla.ko`. To unload the module:
+
+```sh
+sudo rmmod mirilla
+```
+
+## Example
+
+This reads a `u64` from the current process through a memoized peephole.
+
+```rust
+use catalejo::{
+    address::ViAddr,
+    manage::{Manage, Memoize},
+    target::Target,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let value = Box::new(0xDEAD_BEEF_CAFE_BABE_u64);
+
+    let process_id = std::process::id().try_into()?;
+    let target = Target::engage(process_id)?;
+    let manager = Memoize::new(target);
+
+    let address = core::ptr::from_ref(value.as_ref()).addr();
+    let address = ViAddr::new(address.try_into()?);
+
+    let access = manager
+        .source::<u64>(address)?
+        .ok_or_else(|| std::io::Error::other("manager cannot serve this address"))?;
+    let foreign = access
+        .foreign()
+        .ok_or_else(|| std::io::Error::other("peephole was invalidated"))?;
+
+    assert_eq!(foreign.read(), Some(*value));
+
+    Ok(())
+}
+```
+
+For a foreign process, pass its PID to `Target::engage` and use addresses from that process' address
+space.
+
+## How it works
+
+A peephole is a revocable mapping of a fixed, page-aligned range in the target. Mirilla exposes the
+range through an instance file descriptor, and Catalejo maps that descriptor into the observer.
+
+The mapping starts empty. On first touch, the module resolves the corresponding target address and
+installs an alias for the same physical frame. Once resident, reads go through the observer's own page
+table.
+
+```text
+target virtual range       shared physical frames       observer peephole VMA
+[foreign addresses]  --->  [page][page][page]  <---     [local addresses]
+```
+
+Mirilla tracks the target mapping with an MMU interval notifier. If the target unmaps, remaps, or
+exits, the peephole is invalidated and installed aliases are removed. Catalejo performs accesses
+through fault-recovery routines, so invalidation becomes an operation failure instead of a crash in
+the observer.
+
+`Foreign<F>` holds the peephole, a checked offset, and the accessed type. Managers choose and reuse
+peepholes so repeated reads do not reopen the same target range.
+
+## Memory model
+
+| Operation | Contract |
+| --- | --- |
+| `Foreign::read` | Fault-protected, machine-word-coherent read of a naturally aligned `Faultable` value. |
+| `Foreign::write` | Fault-protected store. Returns whether the store completed. Available through the default `write` feature. |
+| `Foreign::copy` | Copies an `Unassociated` value. A concurrent writer may tear the result across fields or bytes. |
+| Invalidation | Unmap, remap, and target exit invalidate affected peepholes. Protected operations report failure rather than reading a stale frame. |
+| Synchronization | No target suspension and no happens-before relationship with the target. |
+
+`Unassociated` is the type boundary for values that may be observed from arbitrary or torn bytes. It
+excludes references, owning pointers, booleans, and enums with invalid bit patterns.
+
+## Window managers
+
+| Manager | Intended use |
+| --- | --- |
+| `Memoize` | Tight page-aligned windows around arbitrary spans. Windows stay cached for the manager lifetime. |
+| `Rebased` | Fixed-granule windows with a second offset grid for values that straddle a granule boundary. |
+| `Lru` | `Rebased` placement with bounded strong peephole retention. |
+
+`Rebased` and `Lru` default to a 2 MiB granule. Values served by their two-grid placement must fit
+within half of the selected granule.
+
+## Performance
+
+The hot path is intentionally small: cached resolution stays in userspace, a fresh window costs an
+`ioctl` plus `mmap`, first touch faults in the alias, and a resident read is a protected local load.
+
+A reference run on a Ryzen 7 7700X with DDR5-6000 CL30 and Linux 7.1.3 produced these medians:
+
+| Operation | Self target | Foreign target |
+| --- | ---: | ---: |
+| Cached resolution | 12.98 ns | 12.97 ns |
+| Resident protected read | 4.12 ns | 4.12 ns |
+| Cached resolution + read | 15.39 ns | 15.34 ns |
+| Fresh window open | 3.55 µs | 4.01 µs |
+| Fresh window + first read | 8.37 µs | 8.28 µs |
+
+These numbers are workload- and machine-dependent. Full Criterion output is under
+[`docs/benchmarks`](docs/benchmarks).
+
+## Testing
+
+```sh
+just test       # host-safe Rust/C checks
+just kunit      # kernel KUnit suite in a VM
+just test-vm    # Mirilla ABI + Rust integration tests with the module loaded
+```
+
+`KDIR` selects the kernel tree for module and VM builds. `just kunit` needs `CONFIG_KUNIT=y`; the VM
+recipes use `virtme-ng`.
+
+To exercise a module already loaded on the host:
+
+```sh
+sudo mirilla/test/mirilla-test
+cargo test --workspace -- --include-ignored --test-threads=1
+```
+
+Foreign-target tests need `CAP_SYS_PTRACE`.
+
+## Stealth mode
+
+Stealth mode builds a seeded release module without project logging, debug metadata, BTF, or stable
+project-owned symbol names. The seed determines the module name, parameter name, metadata, and
+internal C aliases.
 
 ```sh
 seed=replace-with-a-release-seed
@@ -222,36 +186,20 @@ sudo insmod "$module_path" "$parameter_name=$device_name"
 cargo build -p catalejo --features stealth-mode --no-default-features
 ```
 
-The final module is processed with bare `strip --strip-unneeded`. Kbuild BTF generation is disabled
-for stealth builds, so the final artifact does not need a post-link BTF removal step.
+Set `MIRILLA_DEVICE_NAME` at module build time to embed a default device name. Without the default
+Rust device-path feature, use `Target::engage_at` or `Target::engage_with`.
 
-`MIRILLA_DEVICE_NAME` may supply a build-time device-name default. When it is nonempty, omit the
-runtime parameter from `insmod`. When it is empty, supply the generated parameter as shown above.
+## Workspace
 
-`--no-default-features` removes Catalejo's development device-path convenience. In that mode,
-callers must use `Target::engage_at` with an explicit path or `Target::engage_with` with an
-already-open device descriptor.
-
-## Testing
-
-Testing has three entry points:
-
-```sh
-just test       # formatting/lint, build the C integration test, and run host-safe Rust tests
-just kunit      # run the kernel-side KUnit suite in a VM
-just test-vm    # run the C ABI test and Rust integration tests under the same loaded module
-```
-
-`KDIR` selects the kernel tree used for module and VM builds. `just kunit` requires a full kernel
-source tree with `CONFIG_KUNIT=y`. `just test-vm` uses the same tree but does not require KUnit in a
-normal module build. The userspace Mirilla coverage is a single `mirilla/test/mirilla-test` binary.
-
-## Continuous integration
-
-Three jobs run on every push and pull request. The Rust and C lint jobs run independently, while a
-single kernel-matrix job runs KUnit followed by the complete userspace integration path. The
-kernel-matrix job runs against the latest longterm and latest stable kernel series.
+| Crate | Responsibility |
+| --- | --- |
+| [`catalejo`](catalejo) | Target engagement, peepholes, managers, typed access, copying, and monitoring. |
+| [`catalejo-memory`](catalejo-memory) | Bit-pattern validity and coherence contracts. |
+| [`catalejo-fault`](catalejo-fault) | Fault-protected linked access routines. |
+| [`catalejo-sys`](catalejo-sys) | Mirilla ABI bindings and low-level system calls. |
+| [`catalejo-macro`](catalejo-macro) | Derive support for typed field projection. |
+| [`mirilla`](mirilla) | Kernel-side target engagement, page aliasing, and invalidation. |
 
 ## License
 
-GPL-3.0-or-later. See the LICENSE file.
+Licensed under GPL-3.0-or-later. See [`LICENSE`](LICENSE).
