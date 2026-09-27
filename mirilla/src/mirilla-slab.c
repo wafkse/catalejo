@@ -1,4 +1,5 @@
 #include <linux/errno.h>
+#include <linux/err.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -6,6 +7,10 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+
+#if defined(MIRILLA_KUNIT)
+#include <kunit/test.h>
+#endif
 
 #include "mirilla-log.h"
 #include "mirilla-slab.h"
@@ -23,6 +28,10 @@ struct mirilla_slab {
     void *slab_storage;
     /** Consumer-owned immutable publication, or null while editable. */
     void *publication_handle;
+    /** mm that owns the VMA; the live VMA keeps this pointer valid. */
+    struct mm_struct *address_space;
+    /** Sole owning VMA, stable because split, relocation, and merge are forbidden. */
+    struct vm_area_struct *owner_vma;
 };
 
 /* Determine whether a slab set supplies every required consumer operation. */
@@ -32,8 +41,10 @@ static bool mirilla_slab_operations_valid(const struct mirilla_slab_operations *
     bool owner_put_present = operation_table->owner_put != NULL;
     bool publish_present = operation_table->publish != NULL;
     bool revoke_present = operation_table->revoke != NULL;
+    bool fork_present = operation_table->fork_set != NULL;
 
-    return owner_get_present && owner_put_present && publish_present && revoke_present;
+    return owner_get_present && owner_put_present && publish_present && revoke_present &&
+           fork_present;
 }
 
 /** Validate and initialize an unused slab set with immutable consumer configuration. */
@@ -177,6 +188,83 @@ static int mirilla_slab_edit(struct mirilla_slab *slab_state)
     return 0;
 }
 
+/* Allocate a child-owned slab without exposing any parent-owned state on failure. */
+static void mirilla_slab_vm_open(struct vm_area_struct *vma)
+{
+    struct mirilla_slab *parent = vma->vm_private_data;
+    struct mirilla_slab_set *child_set;
+    struct mirilla_slab *child;
+    void *snapshot;
+    int error_code;
+
+    /* .open is void. NULL is the permanent fail-closed state for this VMA. The child-only
+     * WIPEONFORK bit also makes dup_mmap skip copy_page_range after this callback. */
+    vma->vm_private_data = NULL;
+    vm_flags_set(vma, VM_WIPEONFORK);
+    if (!parent || parent->address_space == vma->vm_mm)
+        return;
+
+    /* dup_mmap holds the parent mmap write lock here. No parent fault can repopulate these
+     * PTEs before copy_page_range examines them. Zap even if a later allocation fails, so the
+     * child can never inherit a PTE into the parent's vmalloc backing. */
+    zap_special_vma_range(parent->owner_vma, parent->owner_vma->vm_start,
+                          parent->slab_set->slab_size);
+
+    child_set =
+        parent->slab_set->operation_table->fork_set(parent->slab_set->owner_context, vma->vm_mm);
+    if (IS_ERR(child_set))
+        return;
+
+    /* fork_set returns a temporary owner reference, separate from the VMA reference. */
+    error_code = mirilla_slab_reserve(child_set);
+    if (error_code)
+        goto put_owner;
+    if (!child_set->operation_table->owner_get(child_set->owner_context))
+        goto release_slot;
+
+    child = kzalloc(sizeof(*child), GFP_KERNEL);
+    if (!child)
+        goto put_vma_owner;
+    child->slab_storage = vmalloc(child_set->slab_size);
+    if (!child->slab_storage)
+        goto free_child;
+
+    memcpy(child->slab_storage, parent->slab_storage, child_set->slab_size);
+    child->slab_set = child_set;
+    child->address_space = vma->vm_mm;
+    child->owner_vma = vma;
+
+    if ((vma->vm_flags & (VM_READ | VM_WRITE | VM_EXEC)) == VM_READ) {
+        snapshot = kvmalloc(child_set->slab_size, GFP_KERNEL);
+        if (!snapshot)
+            goto free_storage;
+        memcpy(snapshot, child->slab_storage, child_set->slab_size);
+        error_code = child_set->operation_table->publish(
+            child_set->owner_context, snapshot, child_set->slab_size, &child->publication_handle);
+        if (error_code) {
+            kvfree(snapshot);
+            goto free_storage;
+        }
+    } else if ((vma->vm_flags & (VM_READ | VM_WRITE | VM_EXEC)) != (VM_READ | VM_WRITE)) {
+        goto free_storage;
+    }
+
+    vma->vm_private_data = child;
+    child_set->operation_table->owner_put(child_set->owner_context);
+    return;
+
+free_storage:
+    vfree(child->slab_storage);
+free_child:
+    kfree(child);
+put_vma_owner:
+    child_set->operation_table->owner_put(child_set->owner_context);
+release_slot:
+    mirilla_slab_release(child_set);
+put_owner:
+    child_set->operation_table->owner_put(child_set->owner_context);
+}
+
 /* Enforce whole-VMA writable and read-only publication transitions. */
 static int mirilla_slab_vm_mprotect(struct vm_area_struct *vma, unsigned long start,
                                     unsigned long end, unsigned long newflags)
@@ -192,6 +280,11 @@ static int mirilla_slab_vm_mprotect(struct vm_area_struct *vma, unsigned long st
 
     if (!slab_state)
         MIRILLA_ERROR_AND_RETURN(-EPERM, "slab mprotect has no private state");
+
+    /* Core mprotect_fixup checks this only after the callback. Do it before changing the
+     * publication so a sealed VMA cannot revoke a table and then fail with -EPERM. */
+    if (vma->vm_flags & VM_SEALED)
+        MIRILLA_ERROR_AND_RETURN(-EPERM, "sealed slab cannot change protection");
 
     if (!whole_vma)
         MIRILLA_ERROR_AND_RETURN(-EPERM, "partial slab mprotect is not supported");
@@ -256,6 +349,7 @@ static void mirilla_slab_vm_close(struct vm_area_struct *vma)
 /* Define the lifecycle shared by every slab consumer. */
 static const struct vm_operations_struct mirilla_slab_vm_operations = {
     .fault = mirilla_slab_vm_fault,
+    .open = mirilla_slab_vm_open,
     .close = mirilla_slab_vm_close,
     .may_split = mirilla_slab_vm_may_split,
     .mremap = mirilla_slab_vm_mremap,
@@ -332,10 +426,211 @@ int mirilla_slab_map(struct mirilla_slab_set *slab_set, struct vm_area_struct *v
     }
 
     slab_state->slab_set = slab_set;
+    slab_state->address_space = vma->vm_mm;
+    slab_state->owner_vma = vma;
     vma->vm_ops = &mirilla_slab_vm_operations;
     vma->vm_private_data = slab_state;
-    vm_flags_set(vma, VM_IO | VM_MIXEDMAP | VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP);
+    vm_flags_set(vma, VM_IO | VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP);
     vm_flags_clear(vma, VM_MAYEXEC);
 
     return 0;
 }
+
+#if defined(MIRILLA_KUNIT)
+static struct mirilla_slab_set *mirilla_slab_test_failed_fork_set(void *owner_context,
+                                                                  struct mm_struct *child_mm)
+{
+    (void)owner_context;
+    (void)child_mm;
+    return ERR_PTR(-ENOMEM);
+}
+
+void mirilla_slab_test_fork_failure(struct kunit *test)
+{
+    const struct mirilla_slab_operations operations = {
+        .fork_set = mirilla_slab_test_failed_fork_set,
+    };
+    struct mm_struct *parent_mm = kunit_kzalloc(test, sizeof(*parent_mm), GFP_KERNEL);
+    struct mm_struct *child_mm = kunit_kzalloc(test, sizeof(*child_mm), GFP_KERNEL);
+    struct mirilla_slab_set slab_set = {
+        .operation_table = &operations,
+        .slab_size = PAGE_SIZE,
+    };
+    struct mirilla_slab parent = {
+        .slab_set = &slab_set,
+        .address_space = parent_mm,
+    };
+    /* The synthetic VMA lacks VM_MIXEDMAP, so zap_special_vma_range is a no-op. */
+    struct vm_area_struct parent_vma = {
+        .vm_mm = parent_mm,
+        .vm_end = PAGE_SIZE,
+    };
+    struct vm_area_struct child_vma = {
+        .vm_mm = child_mm,
+        .vm_private_data = &parent,
+    };
+    struct vm_fault fault = {
+        .vma = &child_vma,
+    };
+
+    KUNIT_ASSERT_NOT_NULL(test, parent_mm);
+    KUNIT_ASSERT_NOT_NULL(test, child_mm);
+    parent.owner_vma = &parent_vma;
+    mirilla_slab_vm_open(&child_vma);
+    KUNIT_EXPECT_PTR_EQ(test, child_vma.vm_private_data, NULL);
+    KUNIT_EXPECT_PTR_EQ(test, parent.slab_set, &slab_set);
+    KUNIT_EXPECT_EQ(test, mirilla_slab_vm_fault(&fault), VM_FAULT_SIGBUS);
+    KUNIT_EXPECT_EQ(test, mirilla_slab_vm_mprotect(&child_vma, 0, 0, VM_READ), -EPERM);
+}
+
+struct mirilla_slab_test_fork_owner {
+    struct mirilla_slab_set *child_set;
+    int references;
+    bool reject_publication;
+    unsigned int publications;
+    unsigned int revocations;
+};
+
+static struct mirilla_slab_set *mirilla_slab_test_reserved_fork_set(void *owner_context,
+                                                                    struct mm_struct *child_mm)
+{
+    struct mirilla_slab_test_fork_owner *owner = owner_context;
+
+    (void)child_mm;
+    owner->references++;
+    return owner->child_set;
+}
+
+static void mirilla_slab_test_reserved_owner_put(void *owner_context)
+{
+    struct mirilla_slab_test_fork_owner *owner = owner_context;
+
+    owner->references--;
+}
+
+static bool mirilla_slab_test_reserved_owner_get(void *owner_context)
+{
+    struct mirilla_slab_test_fork_owner *owner = owner_context;
+
+    owner->references++;
+    return true;
+}
+
+static int mirilla_slab_test_clone_publish(void *owner_context, void *snapshot_data,
+                                           virtual_size_t snapshot_size, void **publication_handle)
+{
+    struct mirilla_slab_test_fork_owner *owner = owner_context;
+
+    (void)snapshot_size;
+    if (owner->reject_publication)
+        return -ENOMEM;
+    owner->publications++;
+    *publication_handle = snapshot_data;
+    return 0;
+}
+
+static void mirilla_slab_test_clone_revoke(void *owner_context, void *publication_handle)
+{
+    struct mirilla_slab_test_fork_owner *owner = owner_context;
+
+    owner->revocations++;
+    kvfree(publication_handle);
+}
+
+void mirilla_slab_test_fork_reservation_failure(struct kunit *test)
+{
+    const struct mirilla_slab_operations operations = {
+        .fork_set = mirilla_slab_test_reserved_fork_set,
+        .owner_put = mirilla_slab_test_reserved_owner_put,
+    };
+    struct mirilla_slab_set parent_set = { .operation_table = &operations, .slab_size = PAGE_SIZE };
+    struct mirilla_slab_set child_set = {
+        .operation_table = &operations,
+        .slab_size = PAGE_SIZE,
+        .slab_limit = 1,
+    };
+    struct mirilla_slab_test_fork_owner owner = { .child_set = &child_set };
+    struct mm_struct *parent_mm = kunit_kzalloc(test, sizeof(*parent_mm), GFP_KERNEL);
+    struct mm_struct *child_mm = kunit_kzalloc(test, sizeof(*child_mm), GFP_KERNEL);
+    struct vm_area_struct parent_vma = { .vm_mm = parent_mm, .vm_end = PAGE_SIZE };
+    struct mirilla_slab parent = {
+        .slab_set = &parent_set,
+        .address_space = parent_mm,
+        .owner_vma = &parent_vma,
+    };
+    struct vm_area_struct child_vma = { .vm_mm = child_mm, .vm_private_data = &parent };
+
+    KUNIT_ASSERT_NOT_NULL(test, parent_mm);
+    KUNIT_ASSERT_NOT_NULL(test, child_mm);
+    parent_set.owner_context = &owner;
+    child_set.owner_context = &owner;
+    atomic_set(&child_set.slab_count, 1);
+    mirilla_slab_vm_open(&child_vma);
+    KUNIT_EXPECT_PTR_EQ(test, child_vma.vm_private_data, NULL);
+    KUNIT_EXPECT_EQ(test, atomic_read(&child_set.slab_count), 1);
+    KUNIT_EXPECT_EQ(test, owner.references, 0);
+    KUNIT_EXPECT_PTR_EQ(test, parent.owner_vma, &parent_vma);
+}
+
+void mirilla_slab_test_fork_publication_lifecycle(struct kunit *test)
+{
+    const struct mirilla_slab_operations operations = {
+        .owner_get = mirilla_slab_test_reserved_owner_get,
+        .owner_put = mirilla_slab_test_reserved_owner_put,
+        .fork_set = mirilla_slab_test_reserved_fork_set,
+        .publish = mirilla_slab_test_clone_publish,
+        .revoke = mirilla_slab_test_clone_revoke,
+    };
+    struct mirilla_slab_test_fork_owner owner = { .reject_publication = true };
+    struct mirilla_slab_set parent_set = { .operation_table = &operations,
+                                           .slab_size = PAGE_SIZE,
+                                           .owner_context = &owner };
+    struct mirilla_slab_set child_set = { .operation_table = &operations,
+                                          .slab_size = PAGE_SIZE,
+                                          .slab_limit = 1,
+                                          .owner_context = &owner };
+    struct mm_struct *parent_mm = kunit_kzalloc(test, sizeof(*parent_mm), GFP_KERNEL);
+    struct mm_struct *child_mm = kunit_kzalloc(test, sizeof(*child_mm), GFP_KERNEL);
+    void *parent_storage = kunit_kzalloc(test, PAGE_SIZE, GFP_KERNEL);
+    struct vm_area_struct parent_vma = { .vm_mm = parent_mm, .vm_end = PAGE_SIZE };
+    struct mirilla_slab parent = { .slab_set = &parent_set,
+                                   .slab_storage = parent_storage,
+                                   .address_space = parent_mm,
+                                   .owner_vma = &parent_vma };
+    struct vm_area_struct child_vma = {
+        .vm_mm = child_mm, .vm_end = PAGE_SIZE, .vm_flags = VM_READ, .vm_private_data = &parent
+    };
+    struct mirilla_slab *child;
+
+    KUNIT_ASSERT_NOT_NULL(test, parent_mm);
+    KUNIT_ASSERT_NOT_NULL(test, child_mm);
+    KUNIT_ASSERT_NOT_NULL(test, parent_storage);
+    memset(parent_storage, 0xa5, PAGE_SIZE);
+    owner.child_set = &child_set;
+    atomic_set(&child_set.slab_count, 0);
+
+    mirilla_slab_vm_open(&child_vma);
+    KUNIT_EXPECT_PTR_EQ(test, child_vma.vm_private_data, NULL);
+    KUNIT_EXPECT_EQ(test, atomic_read(&child_set.slab_count), 0);
+    KUNIT_EXPECT_EQ(test, owner.references, 0);
+    KUNIT_EXPECT_EQ(test, owner.publications, 0U);
+
+    owner.reject_publication = false;
+    child_vma.vm_private_data = &parent;
+    mirilla_slab_vm_open(&child_vma);
+    child = child_vma.vm_private_data;
+    KUNIT_ASSERT_NOT_NULL(test, child);
+    KUNIT_EXPECT_PTR_NE(test, child->slab_storage, parent_storage);
+    KUNIT_EXPECT_EQ(test, memcmp(child->slab_storage, parent_storage, PAGE_SIZE), 0);
+    KUNIT_EXPECT_PTR_NE(test, child->publication_handle, NULL);
+    KUNIT_EXPECT_EQ(test, atomic_read(&child_set.slab_count), 1);
+    KUNIT_EXPECT_EQ(test, owner.references, 1);
+    KUNIT_EXPECT_EQ(test, owner.publications, 1U);
+
+    mirilla_slab_vm_close(&child_vma);
+    KUNIT_EXPECT_EQ(test, atomic_read(&child_set.slab_count), 0);
+    KUNIT_EXPECT_EQ(test, owner.references, 0);
+    KUNIT_EXPECT_EQ(test, owner.revocations, 1U);
+    KUNIT_EXPECT_EQ(test, ((unsigned char *)parent_storage)[0], (unsigned char)0xa5);
+}
+#endif

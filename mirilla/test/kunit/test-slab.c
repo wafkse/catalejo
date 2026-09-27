@@ -1,4 +1,5 @@
 #include <kunit/test.h>
+#include <linux/err.h>
 #include <linux/mm.h>
 
 #include "mirilla-slab.h"
@@ -14,6 +15,15 @@ static bool mirilla_slab_test_owner_get(void *owner_context)
 static void mirilla_slab_test_owner_put(void *owner_context)
 {
     (void)owner_context;
+}
+
+/* The configuration test does not fork, but its operation table must be complete. */
+static struct mirilla_slab_set *mirilla_slab_test_fork_set(void *owner_context,
+                                                           struct mm_struct *child_mm)
+{
+    (void)owner_context;
+    (void)child_mm;
+    return ERR_PTR(-EOPNOTSUPP);
 }
 
 /* Return the supplied KUnit snapshot as its publication handle. */
@@ -38,6 +48,7 @@ static void mirilla_slab_test_revoke(void *owner_context, void *publication_hand
 static const struct mirilla_slab_operations mirilla_slab_test_operations = {
     .owner_get = mirilla_slab_test_owner_get,
     .owner_put = mirilla_slab_test_owner_put,
+    .fork_set = mirilla_slab_test_fork_set,
     .publish = mirilla_slab_test_publish,
     .revoke = mirilla_slab_test_revoke,
 };

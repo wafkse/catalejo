@@ -44,7 +44,7 @@ __attribute((unused)) static const char *MIRILLA_COMMAND_NAME_EXCEPT_TABLE[] = {
     };                                                    \
     MIRILLA_ASSERT_IO_SIZE(except_##name)
 
-/** An identifier for an fd-owned exception context. */
+/** An identifier for an fd-owned exception family. */
 typedef mirilla_id_t mirilla_except_id_t;
 
 /** A bit mask of architectural exception vectors. */
@@ -278,10 +278,10 @@ MIRILLA_CONTEXT_DEFINE(
     };);
 
 /*
- * The fd-owned exception context permanently bound to one mm.
+ * One mm-bound exception context in an fd-owned family.
  *
  * NOTE(invariant): address_space owns one mm_count reference. The registry entry is weak. Every
- * live slab owns one context reference through slab_set. table_lock protects active immutable
+ * live slab owns one context reference through slab_set. The family list is weak. table_lock protects active immutable
  * table membership. The generic slab layer owns VMA storage and publication transitions.
  */
 MIRILLA_CONTEXT_DEFINE(
@@ -290,6 +290,10 @@ MIRILLA_CONTEXT_DEFINE(
         mirilla_except_id_t id;
         /** Permanently bound address space. */
         struct mm_struct *address_space;
+        /** Family retained by this context, if associated with an exception file. */
+        struct mirilla_except_family *family;
+        /** Weak link in the family per-mm context list. */
+        struct list_head family_node;
         /** Generic fixed-slab mapping and publication state. */
         struct mirilla_slab_set slab_set;
         /** Protects active immutable table membership and reference acquisition. */
@@ -367,6 +371,9 @@ mirilla_except_handle_command(struct mirilla_device_context *device_context,
                               mirilla_command_t command, mirilla_command_argument_t argument);
 
 #if defined(MIRILLA_KUNIT)
+struct kunit;
+/** Exercise family selection, independent publications, and child teardown. */
+void mirilla_except_test_family_lifecycle(struct kunit *test);
 /** Link a constructed context into the registry for a KUnit lifetime test. */
 int mirilla_except_test_registry_insert(struct mirilla_except_context *except_context,
                                         struct mm_struct *address_space);

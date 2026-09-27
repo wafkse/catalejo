@@ -192,6 +192,9 @@ static void mirilla_except_detach_active_reader_test(struct kunit *test)
 /* Enumerate the reusable-slab and exception-table KUnit cases. */
 static struct kunit_case mirilla_except_test_case_list[] = {
     KUNIT_CASE(mirilla_slab_set_initialization_test),
+    KUNIT_CASE(mirilla_slab_test_fork_failure),
+    KUNIT_CASE(mirilla_slab_test_fork_reservation_failure),
+    KUNIT_CASE(mirilla_slab_test_fork_publication_lifecycle),
     KUNIT_CASE(mirilla_except_empty_snapshot_test),
     KUNIT_CASE(mirilla_except_trailing_zero_occupancy_test),
     KUNIT_CASE(mirilla_except_snapshot_validation_test),
@@ -200,6 +203,7 @@ static struct kunit_case mirilla_except_test_case_list[] = {
     KUNIT_CASE(mirilla_except_context_final_reference_test),
     KUNIT_CASE(mirilla_except_registry_reference_handoff_test),
     KUNIT_CASE(mirilla_except_detach_active_reader_test),
+    KUNIT_CASE(mirilla_except_test_family_lifecycle),
     {}
 };
 

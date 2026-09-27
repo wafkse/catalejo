@@ -5,11 +5,16 @@
 #include <linux/fs.h>
 #include <linux/hash.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
+
+#if defined(MIRILLA_KUNIT)
+#include <kunit/test.h>
+#endif
 
 #include "mirilla-device.h"
 #include "mirilla-except.h"
@@ -28,6 +33,25 @@ struct mirilla_except_global_context mirilla_except_context;
 
 /* Define the exception consumer callbacks used by the reusable slab layer. */
 static const struct mirilla_slab_operations mirilla_except_slab_operations;
+
+/* The file owns one reference. Contexts keep the family alive but its list is weak. The
+ * creator_context anchor is released in file->release, breaking the initial reference cycle. */
+struct mirilla_except_family {
+    refcount_t reference_count;
+    struct mutex lock;
+    struct list_head context_list;
+    struct mirilla_except_context *creator_context;
+    virtual_size_t slab_size;
+    mirilla_except_id_t id;
+};
+
+static void mirilla_except_family_put(struct mirilla_except_family *family)
+{
+    if (refcount_dec_and_test(&family->reference_count)) {
+        MIRILLA_EXCEPT_WARN_ON_ONCE(!list_empty(&family->context_list));
+        kfree(family);
+    }
+}
 
 /* Define the context reference acquisition operation used by slab readers. */
 MIRILLA_CONTEXT_REFERENCE_GET_DEFINE(except)
@@ -93,7 +117,8 @@ static struct mirilla_except_context *mirilla_except_registry_get(struct mm_stru
     /* NOTE(lifetime): The bucket lock keeps the weak registry link live while the context
      * reference is acquired. */
     except_context = mirilla_except_registry_find_locked(registry_bucket, address_space);
-    if (except_context && !mirilla_context_except_reference_get(except_context))
+    /* A final put may have reached zero while its destructor waits for this bucket lock. */
+    if (except_context && !refcount_inc_not_zero(&except_context->reference_count))
         except_context = NULL;
 
     raw_spin_unlock(&registry_bucket->lock);
@@ -116,6 +141,7 @@ MIRILLA_CONTEXT_CONSTRUCTOR(except)
     raw_spin_lock_init(&except_context->table_lock);
     INIT_LIST_HEAD(&except_context->table_list);
     INIT_HLIST_NODE(&except_context->registry_node);
+    INIT_LIST_HEAD(&except_context->family_node);
 
     *context_storage = except_context;
 
@@ -130,17 +156,96 @@ MIRILLA_CONTEXT_DESTRUCTOR(except)
     MIRILLA_EXCEPT_WARN_ON_ONCE(!mirilla_slab_set_empty(&target_context->slab_set));
     MIRILLA_EXCEPT_WARN_ON_ONCE(!list_empty(&target_context->table_list));
 
-    if (target_context->address_space) {
+    if (target_context->family) {
+        struct mirilla_except_family *family = target_context->family;
+
+        /* Use family -> registry lock order, matching insertion. A lookup cannot see a
+         * zero-ref context, and a new context cannot race ahead of registry removal. */
+        mutex_lock(&family->lock);
+        if (target_context->address_space) {
+            registry_bucket = mirilla_except_registry_bucket(target_context->address_space);
+            raw_spin_lock(&registry_bucket->lock);
+            if (!hlist_unhashed(&target_context->registry_node))
+                hlist_del_init(&target_context->registry_node);
+            raw_spin_unlock(&registry_bucket->lock);
+        }
+        if (!list_empty(&target_context->family_node))
+            list_del_init(&target_context->family_node);
+        mutex_unlock(&family->lock);
+    } else if (target_context->address_space) {
         registry_bucket = mirilla_except_registry_bucket(target_context->address_space);
         raw_spin_lock(&registry_bucket->lock);
         if (!hlist_unhashed(&target_context->registry_node))
             hlist_del_init(&target_context->registry_node);
         raw_spin_unlock(&registry_bucket->lock);
-
-        mmdrop(target_context->address_space);
     }
+    if (target_context->address_space)
+        mmdrop(target_context->address_space);
+
+    if (target_context->family)
+        mirilla_except_family_put(target_context->family);
 
     kfree(target_context);
+}
+
+/* Return a strong context reference. A family has at most one context per mm; the global
+ * registry additionally rejects a competing family for the same mm. */
+static struct mirilla_except_context *
+mirilla_except_family_get_context(struct mirilla_except_family *family, struct mm_struct *mm)
+{
+    struct mirilla_except_context *context;
+    struct mirilla_except_registry_bucket *bucket;
+    int error_code;
+
+retry:
+    mutex_lock(&family->lock);
+    list_for_each_entry(context, &family->context_list, family_node)
+    {
+        if (context->address_space == mm) {
+            if (!refcount_inc_not_zero(&context->reference_count)) {
+                mutex_unlock(&family->lock);
+                cond_resched();
+                goto retry;
+            }
+            mutex_unlock(&family->lock);
+            return context;
+        }
+    }
+
+    error_code = mirilla_context_except_construct(&context);
+    if (error_code) {
+        mutex_unlock(&family->lock);
+        return ERR_PTR(error_code);
+    }
+
+    context->family = family;
+    refcount_inc(&family->reference_count);
+    context->address_space = mm;
+    mmgrab(mm);
+    context->id = family->id;
+    error_code = mirilla_slab_set_initialize(&context->slab_set, context,
+                                             &mirilla_except_slab_operations, family->slab_size,
+                                             MIRILLA_EXCEPT_SLAB_LIMIT);
+    if (error_code)
+        goto fail;
+
+    bucket = mirilla_except_registry_bucket(mm);
+    raw_spin_lock(&bucket->lock);
+    if (mirilla_except_registry_find_locked(bucket, mm)) {
+        raw_spin_unlock(&bucket->lock);
+        error_code = -EEXIST;
+        goto fail;
+    }
+    hlist_add_head(&context->registry_node, &bucket->context_list);
+    raw_spin_unlock(&bucket->lock);
+    list_add_tail(&context->family_node, &family->context_list);
+    mutex_unlock(&family->lock);
+    return context;
+
+fail:
+    mutex_unlock(&family->lock);
+    mirilla_context_except_reference_set(context);
+    return ERR_PTR(error_code);
 }
 
 /* Allocate one immutable table reference object. */
@@ -532,6 +637,19 @@ static void mirilla_except_slab_owner_put(void *owner_context)
     mirilla_context_except_reference_set(owner_context);
 }
 
+/* Resolve a new-mm VMA to the family context; the returned set carries one temporary ref. */
+static struct mirilla_slab_set *mirilla_except_slab_fork_set(void *owner_context,
+                                                             struct mm_struct *child_mm)
+{
+    struct mirilla_except_context *parent = owner_context;
+    struct mirilla_except_context *child;
+
+    child = mirilla_except_family_get_context(parent->family, child_mm);
+    if (IS_ERR(child))
+        return ERR_CAST(child);
+    return &child->slab_set;
+}
+
 /* Validate and publish one immutable exception-table snapshot. */
 static int mirilla_except_table_publish(void *owner_context, void *snapshot_data,
                                         virtual_size_t snapshot_size, void **publication_handle)
@@ -595,38 +713,193 @@ static void mirilla_except_table_revoke(void *owner_context, void *publication_h
     mirilla_context_except_table_reference_set(table);
 }
 
+#if defined(MIRILLA_KUNIT)
+/* Exercise the production family, weak registry, publication, and teardown paths with two
+ * synthetic mm identities. Each mm keeps a base mm_count reference owned by the test. */
+void mirilla_except_test_family_lifecycle(struct kunit *test)
+{
+    struct mirilla_except_family *family;
+    struct mirilla_except_context *parent = NULL, *child = NULL, *again;
+    struct mm_struct *parent_mm, *child_mm;
+    struct mirilla_except_record *parent_records = NULL, *child_records = NULL;
+    struct mirilla_except_action action;
+    void *parent_publication = NULL, *child_publication = NULL;
+    const virtual_size_t slab_size = MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE;
+    bool parent_active, child_active;
+
+    parent_mm = kunit_kzalloc(test, sizeof(*parent_mm), GFP_KERNEL);
+    child_mm = kunit_kzalloc(test, sizeof(*child_mm), GFP_KERNEL);
+    family = kzalloc(sizeof(*family), GFP_KERNEL);
+    if (!parent_mm || !child_mm || !family) {
+        kfree(family);
+        KUNIT_FAIL(test, "failed to allocate family test state");
+        return;
+    }
+    atomic_set(&parent_mm->mm_count, 1);
+    atomic_set(&child_mm->mm_count, 1);
+    refcount_set(&family->reference_count, 1);
+    mutex_init(&family->lock);
+    INIT_LIST_HEAD(&family->context_list);
+    family->slab_size = slab_size;
+    family->id = 1;
+
+    parent = mirilla_except_family_get_context(family, parent_mm);
+    if (IS_ERR(parent)) {
+        KUNIT_FAIL(test, "parent context allocation failed");
+        parent = NULL;
+        goto out;
+    }
+    family->creator_context = parent;
+    child = mirilla_except_family_get_context(family, child_mm);
+    if (IS_ERR(child)) {
+        KUNIT_FAIL(test, "child context allocation failed");
+        child = NULL;
+        goto out;
+    }
+    again = mirilla_except_family_get_context(family, child_mm);
+    if (IS_ERR(again)) {
+        KUNIT_FAIL(test, "child context lookup failed");
+        goto out;
+    }
+    KUNIT_EXPECT_PTR_EQ(test, again, child);
+    mirilla_context_except_reference_set(again);
+    KUNIT_EXPECT_PTR_NE(test, parent, child);
+    KUNIT_EXPECT_EQ(test, parent->id, child->id);
+
+    parent_records = kvzalloc(slab_size, GFP_KERNEL);
+    child_records = kvzalloc(slab_size, GFP_KERNEL);
+    if (!parent_records || !child_records) {
+        KUNIT_FAIL(test, "table snapshot allocation failed");
+        goto out;
+    }
+    parent_records[0] = (struct mirilla_except_record){
+        .boundary = { .base_address = 0x1000, .region_size = 4 },
+        .predicate = { .except_mask = MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT) },
+        .action = { .tag = MIRILLA_EXCEPT_ACTION_RETRY },
+    };
+    memcpy(child_records, parent_records, slab_size);
+    if (mirilla_except_table_publish(parent, parent_records, slab_size, &parent_publication)) {
+        KUNIT_FAIL(test, "family table publication failed");
+        goto out;
+    }
+    parent_records = NULL;
+    if (mirilla_except_table_publish(child, child_records, slab_size, &child_publication)) {
+        KUNIT_FAIL(test, "child table publication failed");
+        goto out;
+    }
+    child_records = NULL;
+
+    parent_active = mirilla_except_lookup(
+        parent_mm, 0x1000, MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action);
+    child_active = mirilla_except_lookup(
+        child_mm, 0x1000, MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action);
+    KUNIT_EXPECT_TRUE(test, parent_active);
+    KUNIT_EXPECT_TRUE(test, child_active);
+
+    mirilla_except_table_revoke(child, child_publication);
+    child_publication = NULL;
+    KUNIT_EXPECT_TRUE(test, mirilla_except_lookup(
+                                parent_mm, 0x1000,
+                                MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action));
+    KUNIT_EXPECT_FALSE(test, mirilla_except_lookup(
+                                 child_mm, 0x1000,
+                                 MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action));
+
+    child_records = kvzalloc(slab_size, GFP_KERNEL);
+    if (!child_records) {
+        KUNIT_FAIL(test, "child replacement snapshot allocation failed");
+        goto out;
+    }
+    child_records[0] = (struct mirilla_except_record){
+        .boundary = { .base_address = 0x2000, .region_size = 4 },
+        .predicate = { .except_mask = MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT) },
+        .action = { .tag = MIRILLA_EXCEPT_ACTION_RETRY },
+    };
+    if (mirilla_except_table_publish(child, child_records, slab_size, &child_publication)) {
+        KUNIT_FAIL(test, "child replacement publication failed");
+        goto out;
+    }
+    child_records = NULL;
+    mirilla_except_table_revoke(parent, parent_publication);
+    parent_publication = NULL;
+    KUNIT_EXPECT_FALSE(test, mirilla_except_lookup(
+                                 parent_mm, 0x1000,
+                                 MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action));
+    KUNIT_EXPECT_TRUE(test, mirilla_except_lookup(
+                                child_mm, 0x2000,
+                                MIRILLA_EXCEPT_MASK(MIRILLA_EXCEPT_X86_PAGE_FAULT), 0, &action));
+    mirilla_except_table_revoke(child, child_publication);
+    child_publication = NULL;
+    mirilla_context_except_reference_set(child);
+    child = NULL;
+    again = mirilla_except_registry_get(child_mm);
+    KUNIT_EXPECT_PTR_EQ(test, again, NULL);
+    if (again)
+        mirilla_context_except_reference_set(again);
+    again = mirilla_except_family_get_context(family, parent_mm);
+    KUNIT_EXPECT_PTR_EQ(test, again, parent);
+    if (!IS_ERR(again))
+        mirilla_context_except_reference_set(again);
+
+out:
+    if (child_publication)
+        mirilla_except_table_revoke(child, child_publication);
+    if (parent_publication)
+        mirilla_except_table_revoke(parent, parent_publication);
+    kvfree(child_records);
+    kvfree(parent_records);
+    if (child)
+        mirilla_context_except_reference_set(child);
+    if (parent)
+        mirilla_context_except_reference_set(parent);
+    mirilla_except_family_put(family);
+    KUNIT_EXPECT_EQ(test, atomic_read(&parent_mm->mm_count), 1);
+    KUNIT_EXPECT_EQ(test, atomic_read(&child_mm->mm_count), 1);
+}
+#endif
+
 /* Bind exception table ownership and validation to the generic slab lifecycle. */
 static const struct mirilla_slab_operations mirilla_except_slab_operations = {
     .owner_get = mirilla_except_slab_owner_get,
     .owner_put = mirilla_except_slab_owner_put,
+    .fork_set = mirilla_except_slab_fork_set,
     .publish = mirilla_except_table_publish,
     .revoke = mirilla_except_table_revoke,
 };
 
-/* Validate address-space ownership and delegate mapping to the reusable slab API. */
+/* Resolve the calling mm in the inherited family and map a slab owned by that mm. */
 static int mirilla_except_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct mirilla_except_context *context = file->private_data;
+    struct mirilla_except_family *family = file->private_data;
+    struct mirilla_except_context *context;
     int error_code;
 
-    if (vma->vm_mm != context->address_space)
-        MIRILLA_ERROR_AND_RETURN(-ESTALE, "exception slab belongs to another address space");
+    context = mirilla_except_family_get_context(family, vma->vm_mm);
+    if (IS_ERR(context))
+        return PTR_ERR(context);
 
     error_code = mirilla_slab_map(&context->slab_set, vma);
+    mirilla_context_except_reference_set(context);
     if (error_code)
         MIRILLA_ERROR_AND_RETURN(error_code, "failed to map exception slab");
 
     return 0;
 }
 
-/* Release the fd-owned context reference when its descriptor closes. */
+/* Release the creator anchor and file reference after all descriptors and VMAs close. */
 static int mirilla_except_file_release(struct inode *inode, struct file *file)
 {
-    struct mirilla_except_context *context = file->private_data;
+    struct mirilla_except_family *family = file->private_data;
+    struct mirilla_except_context *creator;
 
     file->private_data = NULL;
-    if (context)
-        mirilla_context_except_reference_set(context);
+    if (family) {
+        creator = family->creator_context;
+        family->creator_context = NULL;
+        if (creator)
+            mirilla_context_except_reference_set(creator);
+        mirilla_except_family_put(family);
+    }
 
     return 0;
 }
@@ -643,8 +916,8 @@ static int mirilla_except_create(struct mirilla_device_context *device_context,
                                  union mirilla_except_create_io *io,
                                  struct mirilla_fd_reservation *fd_reservation)
 {
-    struct mirilla_except_context *context MIRILLA_RESOURCE(except) = NULL;
-    struct mirilla_except_registry_bucket *bucket;
+    struct mirilla_except_family *family;
+    struct mirilla_except_context *context;
     struct file *context_file;
     virtual_size_t slab_size = io->argument.slab_size;
     int file_descriptor, error_code;
@@ -658,44 +931,40 @@ static int mirilla_except_create(struct mirilla_device_context *device_context,
     if (slab_size % sizeof(struct mirilla_except_record))
         MIRILLA_ERROR_AND_RETURN(-EINVAL, "exception slab size is not record aligned");
 
-    error_code = mirilla_context_except_construct(&context);
-    if (error_code)
-        MIRILLA_ERROR_AND_RETURN(error_code, "failed to construct exception context");
+    family = kzalloc(sizeof(*family), GFP_KERNEL);
+    if (!family)
+        MIRILLA_ERROR_AND_RETURN(-ENOMEM, "failed to allocate exception family");
+    refcount_set(&family->reference_count, 1);
+    mutex_init(&family->lock);
+    INIT_LIST_HEAD(&family->context_list);
+    family->slab_size = slab_size;
+    family->id = atomic_inc_return(&device_context->except_count);
 
-    error_code = mirilla_slab_set_initialize(&context->slab_set, context,
-                                             &mirilla_except_slab_operations, slab_size,
-                                             MIRILLA_EXCEPT_SLAB_LIMIT);
-    if (error_code)
-        MIRILLA_ERROR_AND_RETURN(error_code, "failed to initialize exception slab set");
-    context->address_space = current->mm;
-    mmgrab(context->address_space);
-    context->id = atomic_inc_return(&device_context->except_count);
-
-    bucket = mirilla_except_registry_bucket(context->address_space);
-    raw_spin_lock(&bucket->lock);
-    /* NOTE(registry): The duplicate check and weak-link insertion are one bucket-locked
-     * operation, which enforces one context per address space. */
-    if (mirilla_except_registry_find_locked(bucket, context->address_space)) {
-        raw_spin_unlock(&bucket->lock);
-
-        MIRILLA_ERROR_AND_RETURN(-EEXIST, "address space already has an exception context");
+    context = mirilla_except_family_get_context(family, current->mm);
+    if (IS_ERR(context)) {
+        error_code = PTR_ERR(context);
+        mirilla_except_family_put(family);
+        return error_code;
     }
-    hlist_add_head(&context->registry_node, &bucket->context_list);
-    raw_spin_unlock(&bucket->lock);
+    family->creator_context = context;
 
     context_file = anon_inode_create_getfile(MIRILLA_EXCEPT_INODE_NAME,
-                                             &mirilla_except_file_operations, context,
+                                             &mirilla_except_file_operations, family,
                                              MIRILLA_EXCEPT_FILE_FLAGS, NULL);
-    if (IS_ERR(context_file))
-        MIRILLA_ERROR_AND_RETURN(PTR_ERR(context_file), "failed to create exception context file");
+    if (IS_ERR(context_file)) {
+        error_code = PTR_ERR(context_file);
+        family->creator_context = NULL;
+        mirilla_context_except_reference_set(context);
+        mirilla_except_family_put(family);
+        MIRILLA_ERROR_AND_RETURN(error_code, "failed to create exception context file");
+    }
 
-    mirilla_resource_take(except, context);
     file_descriptor =
         mirilla_fd_reservation_prepare(fd_reservation, context_file, MIRILLA_EXCEPT_FILE_FLAGS);
     if (file_descriptor < 0)
         MIRILLA_ERROR_AND_RETURN(file_descriptor, "failed to reserve exception context descriptor");
 
-    io->result.id = ((struct mirilla_except_context *)context_file->private_data)->id;
+    io->result.id = family->id;
     io->result.fd = file_descriptor;
 
     return 0;
