@@ -128,7 +128,7 @@ impl Target {
         *target_id
     }
 
-    /// Return the retained handle to the current-process fault handlers.
+    /// Return the retained handle to the fork-inheritable fault handlers.
     #[inline]
     pub const fn fault_backend(&self) -> Backend {
         let &Self(_, _, fault_backend) = self;
@@ -136,16 +136,15 @@ impl Target {
         fault_backend
     }
 
-    /// Initialize a fresh fault backend for the calling address space when required.
+    /// Initialize the fault backend if it has not already been initialized.
     ///
-    /// A child created with `fork` has a distinct address space and must call this before using or
-    /// reacquiring inherited protected accessors.
+    /// A fork child inherits the initialized backend and can use protected accessors immediately.
     #[inline]
     pub fn initialize_fault_backend(&mut self) -> io::Result<()> {
         let Self(target_device, _, fault_backend) = self;
-        let refreshed_backend = Self::initialize_backend(target_device.as_fd())?;
+        let initialized_backend = Self::initialize_backend(target_device.as_fd())?;
 
-        *fault_backend = refreshed_backend;
+        *fault_backend = initialized_backend;
 
         Ok(())
     }

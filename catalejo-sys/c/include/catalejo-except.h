@@ -57,15 +57,15 @@ int catalejo_except_slab_unmap(struct mirilla_except_record *record_list, virtua
 /**
  * Initialize or reuse the process singleton for Catalejo's linked fault routines.
  *
- * A child after fork builds a fresh exception context and slab. The supplied descriptor must
- * belong to Mirilla. Returns zero or a negative errno value.
+ * The initialized backend is inherited by fork children. The supplied descriptor must belong to
+ * Mirilla. Returns zero or a negative errno value.
  */
 int catalejo_fault_backend_initialize(int device_fd, const struct catalejo_fault_backend **backend);
 
 /**
  * Retrieve the initialized backend for the calling process.
  *
- * Returns `-ESTALE` in a fork child until initialization rebuilds the backend.
+ * A fork child may retrieve the inherited backend immediately.
  */
 int catalejo_fault_backend_retrieve(const struct catalejo_fault_backend **backend);
 

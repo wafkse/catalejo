@@ -54,18 +54,14 @@ pub fn backend() -> Option<MonitorBackend> {
 /// # Safety
 ///
 /// The address must name suitable local memory and remain live through the matching [`wait`] call.
-/// The fault backend must belong to the current process.
+/// The fault backend must be initialized before access.
 #[inline]
 pub unsafe fn arm(
-    fault_backend: &Backend,
+    _fault_backend: &Backend,
     target_address: *const u8,
 ) -> Result<MonitorBackend, MonitorError> {
-    if fault_backend.validate().is_err() {
-        return Err(MonitorError::Fault);
-    }
-
     // SAFETY:
-    // The caller supplies the monitor address contract and the current process backend.
+    // The caller supplies the monitor address contract and an initialized backend.
     let target_outcome = unsafe { binding::catalejo_monitor_arm(target_address) };
 
     match target_outcome {
@@ -90,13 +86,9 @@ pub unsafe fn arm(
 /// # Safety
 ///
 /// The backend must come from the immediately preceding successful [`arm`] call on this thread.
-/// The monitored mapping must remain live. The fault backend must belong to the current process.
+/// The monitored mapping must remain live. The fault backend must be initialized.
 #[inline]
-pub unsafe fn wait(fault_backend: &Backend, backend: MonitorBackend) -> Result<(), MonitorError> {
-    if fault_backend.validate().is_err() {
-        return Err(MonitorError::Fault);
-    }
-
+pub unsafe fn wait(_fault_backend: &Backend, backend: MonitorBackend) -> Result<(), MonitorError> {
     let backend = match backend {
         MonitorBackend::IntelUmonitor => binding::CATALEJO_MONITOR_BACKEND_INTEL_UMONITOR,
         MonitorBackend::AmdMonitorx => binding::CATALEJO_MONITOR_BACKEND_AMD_MONITORX,

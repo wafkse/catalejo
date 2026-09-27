@@ -20,19 +20,15 @@ enum catalejo_fault_backend_state {
     CATALEJO_FAULT_BACKEND_UNINITIALIZED,
     /** One thread is constructing the process singleton. */
     CATALEJO_FAULT_BACKEND_INITIALIZING,
-    /** The singleton owns a published default slab for this pid. */
+    /** The singleton owns a published default slab inherited by fork children. */
     CATALEJO_FAULT_BACKEND_INITIALIZED,
-    /** The singleton was inherited across fork and must be rebuilt. */
-    CATALEJO_FAULT_BACKEND_STALE,
 };
 
 /*
  * Process singleton backing the linked fault routines.
  *
- * NOTE(invariant): INITIALIZED means the associated atomic PID is the calling process and
- * record_list names a published default slab owned by exception_fd. A fork changes the observed
- * PID and marks the inherited descriptor and absent VM_DONTCOPY mapping stale before retrieval can
- * succeed.
+ * NOTE(invariant): INITIALIZED means record_list names a published default slab owned by
+ * exception_fd. The kernel clones the slab and its publication into each forked mm.
  */
 struct catalejo_fault_backend {
     /** Kernel identifier for the built-in exception context. */
@@ -52,9 +48,6 @@ static struct catalejo_fault_backend catalejo_fault_backend = {
 
 /** Initialization state published with acquire and release ordering. */
 static atomic_int catalejo_fault_backend_state = CATALEJO_FAULT_BACKEND_UNINITIALIZED;
-
-/** PID associated with the current singleton state. */
-static atomic_int catalejo_fault_backend_process_id;
 
 /** Validate the byte size accepted by slab mapping and protection helpers. */
 static bool catalejo_except_slab_size_valid(virtual_size_t slab_size)
@@ -269,37 +262,13 @@ static int catalejo_except_records_load(struct mirilla_except_record *record_lis
     return 0;
 }
 
-/** Detect a pid change and mark inherited singleton state stale. */
-static void catalejo_fault_backend_refresh(pid_t process_id)
-{
-    int known_process_id =
-        atomic_load_explicit(&catalejo_fault_backend_process_id, memory_order_acquire);
-
-    while (known_process_id != process_id) {
-        if (!atomic_compare_exchange_weak_explicit(&catalejo_fault_backend_process_id,
-                                                   &known_process_id, process_id,
-                                                   memory_order_acq_rel, memory_order_acquire))
-            continue;
-
-        if (known_process_id != 0)
-            atomic_store_explicit(&catalejo_fault_backend_state, CATALEJO_FAULT_BACKEND_STALE,
-                                  memory_order_release);
-        break;
-    }
-}
-
-/** Build a fresh process singleton, context, mapping, and published table. */
+/** Build the singleton context, mapping, and published table. */
 static int catalejo_fault_backend_build(int device_fd)
 {
     struct mirilla_except_record *record_list = NULL;
     mirilla_except_id_t except_id = MIRILLA_ID_NONE;
     int exception_fd = -1;
     int status;
-
-    if (catalejo_fault_backend.exception_fd >= 0) {
-        close(catalejo_fault_backend.exception_fd);
-        catalejo_fault_backend.exception_fd = -1;
-    }
 
     status = catalejo_mirilla_except_create(device_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE, &except_id,
                                             &exception_fd);
@@ -338,14 +307,10 @@ close_fd:
 /** Initialize or reuse the singleton for the calling process. */
 int catalejo_fault_backend_initialize(int device_fd, const struct catalejo_fault_backend **backend)
 {
-    pid_t process_id = getpid();
-
     if (!backend)
         return -EINVAL;
 
     *backend = NULL;
-    catalejo_fault_backend_refresh(process_id);
-
     for (;;) {
         int state = atomic_load_explicit(&catalejo_fault_backend_state, memory_order_acquire);
         int expected;
@@ -381,7 +346,7 @@ int catalejo_fault_backend_initialize(int device_fd, const struct catalejo_fault
     }
 }
 
-/** Retrieve the singleton only when it is current for the calling process. */
+/** Retrieve the initialized singleton inherited by fork children. */
 int catalejo_fault_backend_retrieve(const struct catalejo_fault_backend **backend)
 {
     int state;
@@ -390,11 +355,8 @@ int catalejo_fault_backend_retrieve(const struct catalejo_fault_backend **backen
         return -EINVAL;
 
     *backend = NULL;
-    catalejo_fault_backend_refresh(getpid());
     state = atomic_load_explicit(&catalejo_fault_backend_state, memory_order_acquire);
 
-    if (state == CATALEJO_FAULT_BACKEND_STALE)
-        return -ESTALE;
     if (state != CATALEJO_FAULT_BACKEND_INITIALIZED)
         return -ENOENT;
 

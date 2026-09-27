@@ -1,4 +1,4 @@
-//! Raw fault-protected memory access through the process fault backend.
+//! Raw fault-protected memory access through the inherited fault backend.
 
 use catalejo_memory::primitive::{Primitive, PrimitiveUnion};
 
@@ -9,19 +9,14 @@ use crate::{exception::backend::Backend, ffi::binding};
 /// # Safety
 ///
 /// This has the same safety constraints as an individual `binding::catalejo_read_uN` operation,
-/// where `N` is the size of the primitive read. `fault_backend` must belong to the current process
-/// before a fault can occur.
+/// where `N` is the size of the primitive read. `fault_backend` proves initialization.
 #[inline]
 pub unsafe fn read(
-    fault_backend: &Backend,
+    _fault_backend: &Backend,
     target_source: *const PrimitiveUnion,
     target_value: *mut PrimitiveUnion,
     target_type: Primitive,
 ) -> binding::catalejo_outcome_t {
-    if fault_backend.validate().is_err() {
-        return binding::CATALEJO_OUTCOME_ERROR;
-    }
-
     // Dispatch to the fixed-width C shim selected by the primitive type.
     macro_rules! implement {
         ($target_type:ident) => {
@@ -48,19 +43,14 @@ pub unsafe fn read(
 /// # Safety
 ///
 /// This has the same safety constraints as an individual `binding::catalejo_write_uN` operation,
-/// where `N` is the size of the primitive written. `fault_backend` must belong to the current
-/// process before a fault can occur.
+/// where `N` is the size of the primitive written. `fault_backend` proves initialization.
 #[inline]
 pub unsafe fn write(
-    fault_backend: &Backend,
+    _fault_backend: &Backend,
     target_value: *mut PrimitiveUnion,
     target_source: *const PrimitiveUnion,
     target_type: Primitive,
 ) -> binding::catalejo_outcome_t {
-    if fault_backend.validate().is_err() {
-        return binding::CATALEJO_OUTCOME_ERROR;
-    }
-
     // Dispatch to the fixed-width C shim selected by the primitive type.
     macro_rules! implement {
         ($target_type:ident) => {
@@ -87,21 +77,16 @@ pub unsafe fn write(
 /// # Safety
 ///
 /// Exactly one side must be the fault-adjudicated range. The other side must be valid for the
-/// complete byte count. The ranges must not overlap. The backend must belong to the current
-/// process.
+/// complete byte count. The ranges must not overlap. The backend must be initialized.
 #[inline]
 pub unsafe fn copy(
-    fault_backend: &Backend,
+    _fault_backend: &Backend,
     target: *mut u8,
     source: *const u8,
     count: usize,
 ) -> Result<(), usize> {
-    if fault_backend.validate().is_err() {
-        return Err(0);
-    }
-
     // SAFETY:
-    // The caller supplies the complete protected-copy contract and the current process backend.
+    // The caller supplies the complete protected-copy contract and an initialized backend.
     let outcome = unsafe { binding::catalejo_copy(target, source, count) };
 
     match outcome.outcome_status {

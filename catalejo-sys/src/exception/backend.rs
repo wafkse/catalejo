@@ -1,6 +1,6 @@
-//! PID-aware access to the process singleton for Catalejo's built-in records.
+//! Access to Catalejo's fork-inheritable built-in records.
 
-use core::{num::NonZero, ptr::NonNull};
+use core::ptr::NonNull;
 use std::{
     io,
     os::fd::{AsRawFd, BorrowedFd},
@@ -10,20 +10,18 @@ use crate::ffi::binding;
 
 use super::status;
 
-/// A process-local proof that Catalejo's linked fault routines are published.
+/// A proof that Catalejo's linked fault routines are published in this mm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backend(
-    /// The process-lifetime C singleton established for the creating PID.
+    /// The process-lifetime C singleton inherited by fork children.
     NonNull<binding::catalejo_fault_backend>,
-    /// The nonzero process identifier for which the singleton was published.
-    NonZero<u32>,
 );
 
-// SAFETY: The pointer names process-lifetime singleton storage. C does not mutate an initialized
-// backend within one pid, and a fork leaves only the calling thread in the child before rebuild.
+// SAFETY: The pointer names process-lifetime singleton storage. C does not mutate it after
+// initialization, and Mirilla clones the published kernel table during fork.
 unsafe impl Send for Backend {}
 
-// SAFETY: Every thread in one pid observes the same immutable initialized backend.
+// SAFETY: Every thread sharing an mm observes the same immutable initialized backend.
 unsafe impl Sync for Backend {}
 
 impl Backend {
@@ -35,7 +33,7 @@ impl Backend {
     ///
     /// # Errors
     ///
-    /// This returns creation, mapping, loading, publication, or stale-rebuild failures.
+    /// This returns creation, mapping, loading, or publication failures.
     #[inline]
     pub unsafe fn initialize(device: BorrowedFd<'_>) -> io::Result<Self> {
         let mut target_value = core::ptr::null();
@@ -49,11 +47,11 @@ impl Backend {
         Self::lift(target_state, target_value)
     }
 
-    /// Retrieve the backend initialized for the calling pid.
+    /// Retrieve the backend initialized in this process or inherited across fork.
     ///
     /// # Errors
     ///
-    /// This returns not-found before initialization and stale in a fork child.
+    /// This returns not-found before initialization.
     #[inline]
     pub fn retrieve() -> io::Result<Self> {
         let mut target_value = core::ptr::null();
@@ -74,25 +72,6 @@ impl Backend {
 
         let raw = NonNull::new(raw.cast_mut())
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-        let process_id = NonZero::new(std::process::id())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-
-        Ok(Self(raw, process_id))
-    }
-
-    /// Verify that this backend was published for the calling process.
-    ///
-    /// # Errors
-    ///
-    /// This returns stale when the handle was inherited across `fork`.
-    #[inline]
-    pub fn validate(&self) -> io::Result<()> {
-        let &Self(_, process_id) = self;
-        let current_process = std::process::id();
-
-        match process_id.get() == current_process {
-            true => Ok(()),
-            false => Err(io::Error::from_raw_os_error(libc::ESTALE)),
-        }
+        Ok(Self(raw))
     }
 }

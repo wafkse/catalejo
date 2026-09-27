@@ -1,6 +1,6 @@
 //! Exception contexts, slabs, actions, and the process fault backend.
 //!
-//! A context owns the kernel exception file descriptor. Each mapped slab is edited while writable
+//! A context owns a fork-inheritable exception family descriptor. Each mapped slab is edited while writable
 //! and published by changing the whole mapping to read only. Publication installs an immutable
 //! kernel snapshot. Returning the mapping to writable removes that snapshot before editing resumes.
 
@@ -190,7 +190,7 @@ pub enum SlabAllocationError {
 pub struct Context(
     /// The anonymous exception file descriptor capability.
     OwnedFd,
-    /// The kernel identifier for the exception context.
+    /// The kernel identifier for the exception family.
     ExceptionId,
     /// The exact byte size required by every slab mapping.
     SlabSize,
@@ -201,7 +201,12 @@ pub struct Context(
 );
 
 impl Context {
-    /// Create the one exception context allowed for the current address space.
+    /// Create the one exception family allowed for the current address space.
+    ///
+    /// A fork child inherits the descriptor and all live slab mappings. The kernel resolves the
+    /// descriptor to the child's own mm context, so [`Self::map`] works without reinitialization.
+    /// If the kernel cannot allocate a child slab during fork, that inherited VMA remains mapped
+    /// but faults with `SIGBUS`; the kernel VMA callback cannot report allocation failure to fork.
     ///
     /// # Safety
     ///
@@ -286,7 +291,11 @@ impl Context {
         soft_limit
     }
 
-    /// Return the number of currently mapped slabs.
+    /// Return the number of currently mapped slabs managed by this wrapper.
+    ///
+    /// Fork copies this counter with the inherited slab VMAs. When all live slabs are inherited,
+    /// subsequent map and drop operations update each process's copy independently. Explicitly
+    /// excluding a slab with `MADV_DONTFORK` breaks that correspondence.
     #[inline]
     pub fn allocated(&self) -> usize {
         let Self(_, _, _, _, allocated_count) = self;
@@ -373,10 +382,10 @@ enum SlabState {
 
 /// One complete exception slab mapping owned by a [`Context`].
 // NOTE(invariant): The pointer owns one complete mapping from the borrowed context and `SlabState`
-// matches the mapping's current protection and publication state.
+// matches the mapping's current protection and publication state after successful kernel clone.
 #[derive(Debug)]
 pub struct Slab<'context>(
-    /// The context that owns the file descriptor used to create this slab.
+    /// The context that owns the inherited file descriptor used to create this slab.
     &'context Context,
     /// The first exception record in the complete slab mapping.
     NonNull<binding::mirilla_except_record>,
