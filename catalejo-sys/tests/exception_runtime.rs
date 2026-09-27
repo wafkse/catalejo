@@ -176,7 +176,7 @@ fn sealed_slab_keeps_its_soft_allocation_slot() {
 
 #[test]
 #[ignore = "requires a loaded Mirilla module"]
-fn zz_backend_reuse_and_postfork_rebuild() {
+fn zz_backend_reuse_and_fork_inheritance() {
     let device = device();
     // SAFETY: The descriptor was opened from the Mirilla device.
     let left = unsafe { Backend::initialize(device.as_fd()) }.expect("backend initialization");
@@ -189,32 +189,9 @@ fn zz_backend_reuse_and_postfork_rebuild() {
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork must succeed");
     if child == 0 {
-        let inherited = left
-            .validate()
-            .expect_err("the inherited proof must be stale");
-        if inherited.raw_os_error() != Some(libc::ESTALE) {
+        if !matches!(Backend::retrieve(), Ok(inherited) if inherited == left) {
             // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
             unsafe { libc::_exit(2) };
-        }
-
-        let stale = Backend::retrieve().expect_err("the inherited backend must be stale");
-        if stale.raw_os_error() != Some(libc::ESTALE) {
-            // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
-            unsafe { libc::_exit(3) };
-        }
-
-        // SAFETY: The inherited descriptor still belongs to Mirilla and initialization creates a
-        // new child context and VM_DONTCOPY slab.
-        let child_backend = match unsafe { Backend::initialize(device.as_fd()) } {
-            Ok(child_backend) => child_backend,
-            Err(_) => {
-                // SAFETY: _exit terminates the fork child without running inherited destructors.
-                unsafe { libc::_exit(4) };
-            }
-        };
-        if child_backend.validate().is_err() {
-            // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
-            unsafe { libc::_exit(5) };
         }
 
         // SAFETY: _exit terminates the fork child without running inherited Rust destructors.
@@ -229,4 +206,57 @@ fn zz_backend_reuse_and_postfork_rebuild() {
     );
     assert!(libc::WIFEXITED(child_status));
     assert_eq!(libc::WEXITSTATUS(child_status), 0);
+}
+
+#[test]
+#[ignore = "requires a loaded Mirilla module"]
+fn forked_context_keeps_independent_slab_count_and_publication() {
+    let device = device();
+    // SAFETY: The descriptor was opened from the Mirilla device.
+    let context =
+        unsafe { Context::create(device.as_fd(), SlabSize::DEFAULT, SoftSlabLimit::DEFAULT) }
+            .expect("the exception context must be created");
+    let mut slab = context.map().expect("the parent slab must map");
+    slab.publish().expect("the parent slab must publish");
+    assert_eq!(context.allocated(), 1);
+
+    // SAFETY: The child runs one thread and exits without inherited test harness destructors.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0);
+    if child == 0 {
+        if context.allocated() != 1 || !slab.is_published() {
+            unsafe { libc::_exit(2) };
+        }
+        if slab.edit().is_err() || slab.publish().is_err() {
+            unsafe { libc::_exit(3) };
+        }
+        drop(slab);
+        if context.allocated() != 0 {
+            unsafe { libc::_exit(4) };
+        }
+        let replacement = match context.map() {
+            Ok(replacement) => replacement,
+            Err(_) => unsafe { libc::_exit(5) },
+        };
+        if context.allocated() != 1 {
+            unsafe { libc::_exit(6) };
+        }
+        drop(replacement);
+        if context.allocated() != 0 {
+            unsafe { libc::_exit(7) };
+        }
+        unsafe { libc::_exit(0) };
+    }
+
+    let mut child_status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(child, &raw mut child_status, 0) },
+        child
+    );
+    assert!(libc::WIFEXITED(child_status));
+    assert_eq!(libc::WEXITSTATUS(child_status), 0);
+    assert_eq!(context.allocated(), 1);
+    assert!(slab.is_published());
+    drop(slab);
+    assert_eq!(context.allocated(), 0);
 }

@@ -260,12 +260,20 @@ static void mseal_interaction_test(void)
     assert(child_pid >= 0);
     if (child_pid == 0) {
         struct exception_fixture child_fixture = exception_fixture_create();
+        struct mirilla_except_record *other_record_list = NULL;
+        void *target_page =
+            mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         size_t slab_size = MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE;
         long seal_status;
 
+        if (target_page == MAP_FAILED)
+            _exit(1);
         if (catalejo_except_slab_map(child_fixture.exception_fd, slab_size,
                                      &child_fixture.record_list))
             _exit(2);
+        if (catalejo_except_slab_map(child_fixture.exception_fd, slab_size, &other_record_list))
+            _exit(2);
+        child_fixture.record_list[0] = exception_record_create(target_page, 64);
         if (catalejo_except_slab_publish(child_fixture.record_list, slab_size))
             _exit(3);
 
@@ -274,6 +282,9 @@ static void mseal_interaction_test(void)
         if (seal_status == 0) {
             if (catalejo_except_slab_edit(child_fixture.record_list, slab_size) != -EPERM)
                 _exit(4);
+            other_record_list[0] = exception_record_create(target_page, 64);
+            if (catalejo_except_slab_publish(other_record_list, slab_size) != -EEXIST)
+                _exit(6);
         } else if (catalejo_except_slab_edit(child_fixture.record_list, slab_size)) {
             _exit(5);
         }
@@ -454,30 +465,235 @@ static int exception_descriptor_receive(int socket_fd)
     return received_fd;
 }
 
-/** Verify inherited descriptors become stale and the child singleton rebuilds. */
-static void fork_and_backend_test(void)
+/** Wait for a forked test process to finish successfully. */
+static void exception_wait_child(pid_t child_pid)
+{
+    int child_status;
+
+    assert(waitpid(child_pid, &child_status, 0) == child_pid);
+    assert(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+}
+
+/** Map from another thread sharing the same mm and descriptor. */
+struct thread_slab_result {
+    int exception_fd;
+    int device_fd;
+    int status;
+};
+
+static void *thread_slab_map(void *argument)
+{
+    struct thread_slab_result *result = argument;
+    struct mirilla_except_record *record_list = NULL;
+    mirilla_except_id_t duplicate_id;
+    int duplicate_fd;
+
+    if (catalejo_mirilla_except_create(result->device_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE,
+                                       &duplicate_id, &duplicate_fd) != -EEXIST) {
+        result->status = 1;
+        return NULL;
+    }
+    if (catalejo_except_slab_map(result->exception_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE,
+                                 &record_list)) {
+        result->status = 2;
+        return NULL;
+    }
+    result->status = catalejo_except_slab_unmap(record_list, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE);
+    return NULL;
+}
+
+static void shared_mm_thread_test(void)
 {
     struct exception_fixture fixture = exception_fixture_create();
-    const struct catalejo_fault_backend *fault_backend = NULL;
-    pid_t child_pid;
-    int child_status;
-    int device_fd;
-    int socket_list[2];
+    struct thread_slab_result result = {
+        .exception_fd = fixture.exception_fd,
+        .device_fd = fixture.device_fd,
+    };
+    pthread_t worker;
 
     assert(catalejo_except_slab_map(fixture.exception_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE,
                                     &fixture.record_list) == 0);
+    assert(pthread_create(&worker, NULL, thread_slab_map, &result) == 0);
+    assert(pthread_join(worker, NULL) == 0);
+    assert(result.status == 0);
+    exception_fixture_destroy(&fixture);
+}
+
+/** Exercise independent writable backing and an inherited descriptor. */
+static void fork_editable_slab_test(void)
+{
+    struct exception_fixture fixture = exception_fixture_create();
+    size_t slab_size = MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE;
+    int parent_to_child[2], child_to_parent[2];
+    pid_t child_pid;
+    char signal_byte;
+    size_t last_record = slab_size / sizeof(*fixture.record_list) - 1;
+
+    assert(catalejo_except_slab_map(fixture.exception_fd, slab_size, &fixture.record_list) == 0);
+    fixture.record_list[0].boundary.base_address = 0x1000;
+    fixture.record_list[last_record].boundary.base_address = 0x4000;
+    /* Materialize writable parent PTEs at both ends before fork. */
+    assert(fixture.record_list[0].boundary.base_address == 0x1000);
+    assert(fixture.record_list[last_record].boundary.base_address == 0x4000);
+    assert(madvise(fixture.record_list, slab_size, MADV_KEEPONFORK) == 0);
+    assert(pipe(parent_to_child) == 0 && pipe(child_to_parent) == 0);
     child_pid = fork();
     assert(child_pid >= 0);
     if (child_pid == 0) {
-        struct mirilla_except_record *record_list = NULL;
+        struct mirilla_except_record *extra = NULL;
+        mirilla_except_id_t duplicate_id;
+        int duplicate_fd;
 
-        if (catalejo_except_slab_map(fixture.exception_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE,
-                                     &record_list) != -ESTALE)
+        close(parent_to_child[1]);
+        close(child_to_parent[0]);
+        if (fixture.record_list[0].boundary.base_address != 0x1000 ||
+            fixture.record_list[last_record].boundary.base_address != 0x4000)
             _exit(2);
+        if (catalejo_mirilla_except_create(fixture.device_fd, slab_size, &duplicate_id,
+                                           &duplicate_fd) != -EEXIST)
+            _exit(3);
+        fixture.record_list[0].boundary.base_address = 0x2000;
+        fixture.record_list[last_record].boundary.base_address = 0x5000;
+        if (write(child_to_parent[1], "a", 1) != 1 ||
+            read(parent_to_child[0], &signal_byte, 1) != 1)
+            _exit(4);
+        if (fixture.record_list[0].boundary.base_address != 0x2000 ||
+            fixture.record_list[last_record].boundary.base_address != 0x5000)
+            _exit(5);
+        if (catalejo_except_slab_map(fixture.exception_fd, slab_size, &extra) || !extra)
+            _exit(6);
+        if (catalejo_except_slab_unmap(extra, slab_size))
+            _exit(7);
+        if (write(child_to_parent[1], "b", 1) != 1 ||
+            read(parent_to_child[0], &signal_byte, 1) != 1)
+            _exit(8);
+        if (fixture.record_list[0].boundary.base_address != 0x2000 ||
+            fixture.record_list[last_record].boundary.base_address != 0x5000)
+            _exit(9);
+        if (catalejo_except_slab_unmap(fixture.record_list, slab_size))
+            _exit(10);
         _exit(0);
     }
-    assert(waitpid(child_pid, &child_status, 0) == child_pid && WIFEXITED(child_status) &&
-           WEXITSTATUS(child_status) == 0);
+
+    close(parent_to_child[0]);
+    close(child_to_parent[1]);
+    assert(read(child_to_parent[0], &signal_byte, 1) == 1);
+    assert(fixture.record_list[0].boundary.base_address == 0x1000);
+    assert(fixture.record_list[last_record].boundary.base_address == 0x4000);
+    fixture.record_list[0].boundary.base_address = 0x3000;
+    fixture.record_list[last_record].boundary.base_address = 0x6000;
+    assert(write(parent_to_child[1], "a", 1) == 1);
+    assert(read(child_to_parent[0], &signal_byte, 1) == 1);
+    assert(fixture.record_list[0].boundary.base_address == 0x3000);
+    assert(fixture.record_list[last_record].boundary.base_address == 0x6000);
+    assert(catalejo_except_slab_unmap(fixture.record_list, slab_size) == 0);
+    fixture.record_list = NULL;
+    assert(write(parent_to_child[1], "b", 1) == 1);
+    exception_wait_child(child_pid);
+    close(parent_to_child[1]);
+    close(child_to_parent[0]);
+    exception_fixture_destroy(&fixture);
+}
+
+/** Exercise independent published tables, edit/revoke, and a nested fork. */
+static void fork_published_slab_test(void)
+{
+    struct exception_fixture fixture = exception_fixture_create();
+    struct mirilla_except_record *candidate = NULL;
+    size_t slab_size = MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE;
+    void *target_page =
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int parent_to_child[2], child_to_parent[2];
+    pid_t child_pid;
+    char signal_byte;
+
+    assert(target_page != MAP_FAILED);
+    assert(catalejo_except_slab_map(fixture.exception_fd, slab_size, &fixture.record_list) == 0);
+    fixture.record_list[0] = exception_record_create(target_page, 64);
+    assert(catalejo_except_slab_publish(fixture.record_list, slab_size) == 0);
+    assert(fixture.record_list[0].boundary.base_address == (uintptr_t)target_page);
+    assert(pipe(parent_to_child) == 0 && pipe(child_to_parent) == 0);
+    child_pid = fork();
+    assert(child_pid >= 0);
+    if (child_pid == 0) {
+        struct mirilla_except_record *child_candidate = NULL;
+        pid_t grandchild;
+
+        close(parent_to_child[1]);
+        close(child_to_parent[0]);
+        if (fixture.record_list[0].boundary.base_address != (uintptr_t)target_page)
+            _exit(2);
+        if (catalejo_except_slab_edit(fixture.record_list, slab_size))
+            _exit(3);
+        fixture.record_list[0] = exception_record_create((char *)target_page + 128, 64);
+        if (catalejo_except_slab_publish(fixture.record_list, slab_size))
+            _exit(4);
+        if (catalejo_except_slab_map(fixture.exception_fd, slab_size, &child_candidate))
+            _exit(5);
+        child_candidate[0] = exception_record_create(target_page, 64);
+        if (catalejo_except_slab_publish(child_candidate, slab_size))
+            _exit(6);
+        if (catalejo_except_slab_unmap(child_candidate, slab_size))
+            _exit(7);
+
+        grandchild = fork();
+        if (grandchild < 0)
+            _exit(8);
+        if (grandchild == 0) {
+            struct mirilla_except_record *nested_candidate = NULL;
+
+            if (catalejo_except_slab_map(fixture.exception_fd, slab_size, &nested_candidate))
+                _exit(9);
+            nested_candidate[0] = exception_record_create((char *)target_page + 128, 64);
+            if (catalejo_except_slab_publish(nested_candidate, slab_size) != -EEXIST)
+                _exit(10);
+            _exit(0);
+        }
+        exception_wait_child(grandchild);
+        if (write(child_to_parent[1], "a", 1) != 1 ||
+            read(parent_to_child[0], &signal_byte, 1) != 1)
+            _exit(11);
+        if (fixture.record_list[0].boundary.base_address != (uintptr_t)target_page + 128)
+            _exit(12);
+        if (catalejo_except_slab_map(fixture.exception_fd, slab_size, &child_candidate))
+            _exit(13);
+        child_candidate[0] = exception_record_create((char *)target_page + 128, 64);
+        if (catalejo_except_slab_publish(child_candidate, slab_size) != -EEXIST)
+            _exit(14);
+        if (catalejo_except_slab_unmap(child_candidate, slab_size))
+            _exit(15);
+        _exit(0);
+    }
+
+    close(parent_to_child[0]);
+    close(child_to_parent[1]);
+    assert(read(child_to_parent[0], &signal_byte, 1) == 1);
+    assert(fixture.record_list[0].boundary.base_address == (uintptr_t)target_page);
+    assert(catalejo_except_slab_map(fixture.exception_fd, slab_size, &candidate) == 0);
+    candidate[0] = exception_record_create(target_page, 64);
+    assert(catalejo_except_slab_publish(candidate, slab_size) == -EEXIST);
+    candidate[0] = exception_record_create((char *)target_page + 128, 64);
+    assert(catalejo_except_slab_publish(candidate, slab_size) == 0);
+    assert(catalejo_except_slab_unmap(candidate, slab_size) == 0);
+    assert(catalejo_except_slab_edit(fixture.record_list, slab_size) == 0);
+    fixture.record_list[0] = exception_record_create((char *)target_page + 256, 64);
+    assert(catalejo_except_slab_publish(fixture.record_list, slab_size) == 0);
+    assert(catalejo_except_slab_unmap(fixture.record_list, slab_size) == 0);
+    fixture.record_list = NULL;
+    assert(write(parent_to_child[1], "b", 1) == 1);
+    exception_wait_child(child_pid);
+    close(parent_to_child[1]);
+    close(child_to_parent[0]);
+    assert(munmap(target_page, 4096) == 0);
+    exception_fixture_destroy(&fixture);
+}
+
+/** Verify a descriptor passed through SCM_RIGHTS still resolves the receiver's mm. */
+static void transferred_descriptor_test(void)
+{
+    struct exception_fixture fixture = exception_fixture_create();
+    int socket_list[2];
+    pid_t child_pid;
 
     assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, socket_list) == 0);
     child_pid = fork();
@@ -490,10 +706,11 @@ static void fork_and_backend_test(void)
         close(fixture.exception_fd);
         received_fd = exception_descriptor_receive(socket_list[1]);
         if (received_fd < 0)
-            _exit(6);
-        if (catalejo_except_slab_map(received_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE, &record_list) !=
-            -ESTALE)
-            _exit(7);
+            _exit(2);
+        if (catalejo_except_slab_map(received_fd, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE, &record_list))
+            _exit(3);
+        if (catalejo_except_slab_unmap(record_list, MIRILLA_EXCEPT_DEFAULT_SLAB_SIZE))
+            _exit(4);
         close(received_fd);
         _exit(0);
     }
@@ -501,30 +718,33 @@ static void fork_and_backend_test(void)
     close(socket_list[1]);
     assert(exception_descriptor_send(socket_list[0], fixture.exception_fd) == 0);
     close(socket_list[0]);
-    assert(waitpid(child_pid, &child_status, 0) == child_pid && WIFEXITED(child_status) &&
-           WEXITSTATUS(child_status) == 0);
+    exception_wait_child(child_pid);
     exception_fixture_destroy(&fixture);
+}
 
-    device_fd = open(MIRILLA_DEVICE, O_RDWR | O_CLOEXEC);
+/** The child immediately uses the parent's published linked fault table. */
+static void inherited_backend_test(void)
+{
+    const struct catalejo_fault_backend *fault_backend = NULL;
+    int device_fd = open(MIRILLA_DEVICE, O_RDWR | O_CLOEXEC);
+    pid_t child_pid;
+
     assert(device_fd >= 0);
     assert(catalejo_fault_backend_initialize(device_fd, &fault_backend) == 0 && fault_backend);
-
     child_pid = fork();
     assert(child_pid >= 0);
     if (child_pid == 0) {
         const struct catalejo_fault_backend *child_backend = NULL;
         uint32_t target_value = 0;
 
-        if (catalejo_fault_backend_retrieve(&child_backend) != -ESTALE || child_backend)
-            _exit(3);
-        if (catalejo_fault_backend_initialize(device_fd, &child_backend) || !child_backend)
-            _exit(4);
+        /* Deliberately fault before any child-side backend API call. */
         if (catalejo_read_u32((const uint32_t *)0x50, &target_value) != CATALEJO_OUTCOME_ERROR)
-            _exit(5);
+            _exit(2);
+        if (catalejo_fault_backend_retrieve(&child_backend) || child_backend != fault_backend)
+            _exit(3);
         _exit(0);
     }
-    assert(waitpid(child_pid, &child_status, 0) == child_pid && WIFEXITED(child_status) &&
-           WEXITSTATUS(child_status) == 0);
+    exception_wait_child(child_pid);
     close(device_fd);
 }
 
@@ -627,7 +847,11 @@ int mirilla_test_exception(void)
     mseal_interaction_test();
     pte_freeze_stress_test();
     concurrent_backend_test();
-    fork_and_backend_test();
+    shared_mm_thread_test();
+    fork_editable_slab_test();
+    fork_published_slab_test();
+    transferred_descriptor_test();
+    inherited_backend_test();
     direct_fault_routine_test();
     puts("exception slab publication passed");
 
