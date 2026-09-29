@@ -16,7 +16,7 @@ use catalejo::{
     target::Target,
 };
 
-use catalejo_sys::ffi;
+use catalejo_sys::{exception::backend::Backend, ffi};
 
 /// Engage the current process as a target, panicking with a clear message on failure.
 fn engage_self() -> Target {
@@ -89,13 +89,18 @@ fn address_of_pointer<T>(target_pointer: *const T) -> ViAddr {
 #[ignore = "requires the mirilla device"]
 fn independent_targets_retain_one_fault_backend() {
     let first_target = engage_self();
-    let second_target = engage_self();
-    let nested_target = first_target
+    let first_backend = Backend::retrieve().expect("first engagement should publish the backend");
+
+    let _second_target = engage_self();
+    let second_backend = Backend::retrieve().expect("second engagement should reuse the backend");
+
+    let _nested_target = first_target
         .engage_within(std::process::id() as libc::pid_t)
         .expect("nested engagement should reuse the established handlers");
+    let nested_backend = Backend::retrieve().expect("nested engagement should reuse the backend");
 
-    assert_eq!(first_target.fault_backend(), second_target.fault_backend());
-    assert_eq!(first_target.fault_backend(), nested_target.fault_backend());
+    assert_eq!(first_backend, second_backend);
+    assert_eq!(first_backend, nested_backend);
 }
 
 #[test]

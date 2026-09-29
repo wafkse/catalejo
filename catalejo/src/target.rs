@@ -59,7 +59,8 @@ impl Target {
                 .open(target_path)?,
         );
 
-        let fault_backend = Self::initialize_backend(target_device.as_fd())?;
+        // SAFETY: The device file descriptor was opened from the configured Mirilla path.
+        let fault_backend = unsafe { Backend::initialize(target_device.as_fd())? };
 
         // SAFETY: The provided file descriptor was created by the appropriate kernel module.
         let target_id = unsafe { ffi::command::engage(target_device.as_fd(), process_id)? };
@@ -82,7 +83,8 @@ impl Target {
     ) -> io::Result<Self> {
         let target_clone = target_device.try_clone_to_owned()?;
 
-        let fault_backend = Self::initialize_backend(target_clone.as_fd())?;
+        // SAFETY: The caller guarantees that the supplied descriptor was created by Mirilla.
+        let fault_backend = unsafe { Backend::initialize(target_clone.as_fd())? };
 
         // SAFETY: The provided file descriptor was created by "mirilla".
         let target_id = unsafe { ffi::command::engage(target_clone.as_fd(), process_id)? };
@@ -104,14 +106,6 @@ impl Target {
 }
 
 impl Target {
-    /// Ensure the linked fault routines have a published table for this address space.
-    #[inline]
-    fn initialize_backend(target_device: BorrowedFd<'_>) -> io::Result<Backend> {
-        // SAFETY: target_device is opened from the configured Mirilla path or supplied under the
-        // matching unsafe contract.
-        unsafe { Backend::initialize(target_device) }
-    }
-
     /// Determine the device file descriptor that is in-use by the [`Target`].
     #[inline]
     pub fn device(&self) -> BorrowedFd<'_> {
@@ -126,27 +120,6 @@ impl Target {
         let Self(_, target_id, ..) = self;
 
         *target_id
-    }
-
-    /// Return the retained handle to the fork-inheritable fault handlers.
-    #[inline]
-    pub const fn fault_backend(&self) -> Backend {
-        let &Self(_, _, fault_backend) = self;
-
-        fault_backend
-    }
-
-    /// Initialize the fault backend if it has not already been initialized.
-    ///
-    /// A fork child inherits the initialized backend and can use protected accessors immediately.
-    #[inline]
-    pub fn initialize_fault_backend(&mut self) -> io::Result<()> {
-        let Self(target_device, _, fault_backend) = self;
-        let initialized_backend = Self::initialize_backend(target_device.as_fd())?;
-
-        *fault_backend = initialized_backend;
-
-        Ok(())
     }
 
     /// Duplicate the handle to the active process.
