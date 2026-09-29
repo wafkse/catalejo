@@ -115,7 +115,7 @@ impl PeepholeContext {
                 initialize_word.bits(),
             )?
         };
-        let fault_backend = target_context.fault_backend();
+        let fault_backend = Backend::retrieve()?;
         let peephole_window = {
             let region_size = address_range
                 .size()
@@ -158,14 +158,6 @@ impl PeepholeContext {
             address_range,
             peephole_window,
         })
-    }
-
-    /// Return the fault handlers retained by this peephole context.
-    #[inline]
-    const fn fault_backend(&self) -> &Backend {
-        let Self { fault_backend, .. } = self;
-
-        fault_backend
     }
 }
 
@@ -517,7 +509,8 @@ where
                 continue;
             };
 
-            let fault_backend = target_handle.fault_backend();
+            let Foreign(target_peephole, ..) = target_handle;
+            let PeepholeContext { fault_backend, .. } = &**target_peephole;
 
             // SAFETY:
             //
@@ -633,14 +626,6 @@ where
     // NOTE: Allow regular structures to be `Foreign`, but not readable as a primitive.
     F: Unassociated,
 {
-    /// Return the fault handlers retained by the owning peephole.
-    #[inline]
-    fn fault_backend(&self) -> &Backend {
-        let Self(target_peephole, ..) = self;
-
-        PeepholeContext::fault_backend(target_peephole)
-    }
-
     /// Determine the local downstream address in the peephole mapping.
     #[inline]
     pub fn address(&self) -> Option<NonZero<usize>> {
@@ -880,7 +865,8 @@ where
     #[inline]
     pub fn read(&self) -> Option<F> {
         let target_address = Foreign::address(self)?;
-        let fault_backend = Foreign::fault_backend(self);
+        let Self(target_peephole, ..) = self;
+        let PeepholeContext { fault_backend, .. } = &**target_peephole;
 
         // SAFETY:
         //
@@ -905,7 +891,8 @@ where
     pub fn write(&self, target_value: F) -> bool {
         match Foreign::address(self) {
             Some(target_address) => {
-                let fault_backend = Foreign::fault_backend(self);
+                let Self(target_peephole, ..) = self;
+                let PeepholeContext { fault_backend, .. } = &**target_peephole;
 
                 // SAFETY:
                 //
@@ -939,7 +926,8 @@ where
         let target_address = Foreign::address(self).ok_or(MonitorArmError::Fault)?;
         let target_address =
             ptr::with_exposed_provenance::<u8>(NonZero::<usize>::get(target_address));
-        let fault_backend = Foreign::fault_backend(self);
+        let Self(target_peephole, ..) = self;
+        let PeepholeContext { fault_backend, .. } = &**target_peephole;
 
         let target_backend =
             // SAFETY:
