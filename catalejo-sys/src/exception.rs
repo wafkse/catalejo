@@ -349,10 +349,11 @@ impl Context {
         let Self(_, _, _, soft_limit, allocated_count) = self;
         let limit_count = soft_limit.get();
         let update_result =
-            allocated_count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |allocated_count| {
-                match allocated_count < limit_count {
-                    true => Some(allocated_count + 1),
-                    false => None,
+            allocated_count.try_update(Ordering::AcqRel, Ordering::Acquire, |allocated_count| {
+                if allocated_count < limit_count {
+                    Some(allocated_count + 1)
+                } else {
+                    None
                 }
             });
 
@@ -364,7 +365,8 @@ impl Context {
 
     /// Return one userspace slab allocation slot.
     fn release_slab(&self) {
-        let Self(_, _, _, _, allocated_count) = self;
+        let Self(.., allocated_count) = self;
+
         let previous_count = allocated_count.fetch_sub(1, Ordering::AcqRel);
 
         debug_assert!(previous_count != 0);
