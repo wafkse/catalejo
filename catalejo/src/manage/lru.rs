@@ -239,40 +239,45 @@ impl LruRebase {
                 Some(target_peephole) => target_peephole,
                 None => {
                     let Self { rebase_map, .. } = self;
+                    let mut target_evicted = None;
 
-                    match rebase_map.entry(target_frame) {
+                    let target_opened = match rebase_map.entry(target_frame) {
                         Entry::Occupied(mut target_entry) => {
                             match target_entry.get().upgrade().map(Peephole) {
-                                Some(target_peephole) => target_peephole,
+                                Some(target_peephole) => Ok(target_peephole),
                                 None => {
-                                    Lru::reserve(target_manager);
+                                    target_evicted = Lru::reserve(target_manager);
 
                                     let target_range = Self::range(self, target_frame);
-                                    let target_peephole =
-                                        Peephole::view(Lru::engaged(target_manager), target_range)?;
-                                    let Peephole(target_handle) = &target_peephole;
-                                    let target_weak = Arc::downgrade(target_handle);
+                                    Peephole::view(Lru::engaged(target_manager), target_range)
+                                        .inspect(|target_peephole| {
+                                            let Peephole(target_handle) = target_peephole;
+                                            let target_weak = Arc::downgrade(target_handle);
 
-                                    let _ = target_entry.insert(target_weak);
-
-                                    target_peephole
+                                            let _ = target_entry.insert(target_weak);
+                                        })
                                 }
                             }
                         }
                         Entry::Vacant(target_entry) => {
-                            Lru::reserve(target_manager);
+                            target_evicted = Lru::reserve(target_manager);
 
                             let target_range = Self::range(self, target_frame);
-                            let target_peephole =
-                                Peephole::view(Lru::engaged(target_manager), target_range)?;
-                            let Peephole(target_handle) = &target_peephole;
-                            let target_weak = Arc::downgrade(target_handle);
 
-                            target_entry.insert(target_weak);
+                            Peephole::view(Lru::engaged(target_manager), target_range).inspect(
+                                |target_peephole| {
+                                    let Peephole(target_handle) = target_peephole;
+                                    let target_weak = Arc::downgrade(target_handle);
 
-                            target_peephole
+                                    target_entry.insert(target_weak);
+                                },
+                            )
                         }
-                    }
+                    };
+
+                    Lru::release(target_manager, target_evicted);
+
+                    target_opened?
                 }
             };
 
@@ -447,15 +452,12 @@ impl Lru {
         }
     }
 
-    /// Free one manager retention slot before opening another operating-system peephole.
-    fn reserve(&self) {
-        let target_evicted = {
-            let mut target_retained = Self::lock_retained(self);
+    /// Detach one retained peephole before opening another operating-system peephole.
+    /// The caller releases it after dropping the weak-index entry guard.
+    fn reserve(&self) -> Option<(WindowKey, Peephole)> {
+        let mut target_retained = Self::lock_retained(self);
 
-            Self::make_room(&mut target_retained)
-        };
-
-        Self::release(self, target_evicted);
+        Self::make_room(&mut target_retained)
     }
 
     /// Retain one peephole as most recently used and release a capacity eviction afterward.
