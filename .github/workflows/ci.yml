@@ -8,9 +8,6 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: true
 
-# The kernel matrix the mirilla-powered jobs run against: the latest longterm and
-# the latest stable series. Bump the tags as kernel.org moves; the cache key
-# follows the tag. Kept here as YAML so every VM job shares one definition.
 env:
     VNG_VERSION: "1.41"
 
@@ -62,7 +59,7 @@ jobs:
             fail-fast: false
             matrix:
                 kernel:
-                    - { series: "7.2", tag: "v7.2.7" }
+                    - { series: "7.2", tag: "v7.2.8" }
         steps:
             - uses: actions/checkout@v7
 
