@@ -209,12 +209,12 @@ impl LruRebase {
     {
         let target_frame = Self::frame(self, target_address);
         let target_offset = Self::offset(self, target_address);
-        let target_admitted = Self::admits::<U>(self, target_offset);
 
-        match target_admitted {
-            true => Self::find(self, target_frame)
-                .map(|target_peephole| Access::intent(target_peephole, target_offset)),
-            false => None,
+        if Self::admits::<U>(self, target_offset) {
+            Self::find(self, target_frame)
+                .map(|target_peephole| Access::intent(target_peephole, target_offset))
+        } else {
+            None
         }
     }
 
@@ -431,23 +431,22 @@ impl Lru {
     ) -> Option<(WindowKey, Peephole)> {
         let target_full = target_retained.len() == target_retained.cap().get();
 
-        match target_full {
-            false => None,
-            true => {
-                let target_reclaimable = target_retained
-                    .iter()
-                    .filter(|(_, target_peephole)| {
-                        let Peephole(target_handle) = target_peephole;
+        if !target_full {
+            None
+        } else {
+            let target_reclaimable = target_retained
+                .iter()
+                .filter(|(_, target_peephole)| {
+                    let Peephole(target_handle) = target_peephole;
 
-                        Arc::strong_count(target_handle) == 1
-                    })
-                    .map(|(target_key, _)| *target_key)
-                    .next_back();
+                    Arc::strong_count(target_handle) == 1
+                })
+                .map(|(target_key, _)| *target_key)
+                .next_back();
 
-                match target_reclaimable {
-                    Some(target_key) => target_retained.pop_entry(&target_key),
-                    None => target_retained.pop_lru(),
-                }
+            match target_reclaimable {
+                Some(target_key) => target_retained.pop_entry(&target_key),
+                None => target_retained.pop_lru(),
             }
         }
     }
@@ -545,9 +544,9 @@ impl Manage for Lru {
 
         let Self { l0, l1, .. } = self;
 
-        let target_l0 = LruRebase::acquire::<U>(l0, self, target_address)?;
+        let l0 = LruRebase::acquire::<U>(l0, self, target_address)?;
 
-        match target_l0 {
+        match l0 {
             Some(target_access) => Ok(Some(target_access)),
             None => match l1 {
                 Some(target_l1) => LruRebase::acquire::<U>(target_l1, self, target_address),

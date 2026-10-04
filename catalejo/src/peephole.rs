@@ -1249,11 +1249,8 @@ pub trait Stabilize<const N: usize>: Lift + Eq {
         let mut target_previous = None;
 
         loop {
-            let target_within_bound = target_count < N;
-
-            match target_within_bound {
-                true => {}
-                false => break Err(StabilizeError::Unstable(target_count)),
+            if target_count >= N {
+                break Err(StabilizeError::Unstable(target_count));
             }
 
             let target_current =
@@ -1266,9 +1263,10 @@ pub trait Stabilize<const N: usize>: Lift + Eq {
                 .as_ref()
                 .is_some_and(|target_previous| target_previous == &target_current);
 
-            match target_stable {
-                true => break Ok(target_current),
-                false => target_previous = Some(target_current),
+            if target_stable {
+                break Ok(target_current);
+            } else {
+                target_previous = Some(target_current)
             }
         }
     }

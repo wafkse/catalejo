@@ -99,7 +99,12 @@ pub unsafe trait Field: Unassociated {
 /// This is required for *partial modeling* of foreign structures without artificially
 /// inflating the size of what is otherwise an opaque structure.
 ///
-/// Unlike the [`Field`] trait, this does not impose a requirement on the resulting field being part of
+/// Unlike the [`Field`] trait, this does not impose a requirement on the resulting field being part of [`Sparse::Structure`].
+///
+/// # Remarks
+///
+/// A foreign handle that is projected via a [`Sparse`] implementation has to understand that a refresh of the access intent may
+/// be required, as the sparse field may not be within the window the peephole is mapping.
 pub trait Sparse: Unassociated {
     /// The structure that this sparse field belongs to.
     type Structure: Unassociated;
@@ -139,7 +144,7 @@ pub trait Source {
     }
 }
 
-/// A marker type to represent an address space marker for non-relative virtual addresses.
+/// A marker type to represent an address space marker for a non-relative virtual addresses.
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
 pub struct Absolute(marker::PhantomData<Self>);
