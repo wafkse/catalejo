@@ -39,11 +39,13 @@
 /*
  * Log a formatted error string.
  */
-#define MIRILLA_ERROR(fmt, ...)                        \
+// NOTE: clang-format is being problematic with this macro.
+// clang-format off
+#define MIRILLA_ERROR(fmt, ...) 		               \
     printk(MIRILLA_LOG_ERROR_LEVEL "mirilla: "         \
                                    "error: " fmt "\n", \
            ##__VA_ARGS__)
-
+// clang-format on
 #endif
 
 /*
