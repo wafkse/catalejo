@@ -137,6 +137,19 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
                     ::catalejo::prelude::Offset::byte(::core::mem::offset_of!(super::#ident, #field_ident) as ::catalejo::ffi::binding::virtual_size_t)
                 }
             }
+
+            const _: () = {
+                assert!(
+                    ::core::mem::align_of::<#ident>()
+                        >= ::core::mem::align_of::<#field_ty>()
+                );
+
+                assert!(
+                    ::core::mem::offset_of!(#ident, #field_ident)
+                        % ::core::mem::align_of::<#field_ty>()
+                        == 0
+                );
+            };
         }
     });
 
