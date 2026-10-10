@@ -5,6 +5,7 @@
 
 # NOTE: Keep editor-specific, GitHub Workflows, and the `.gitignore` itself.
 !.gitignore
+!.ignore
 !.github/
 !.vscode/
 !.zed/
