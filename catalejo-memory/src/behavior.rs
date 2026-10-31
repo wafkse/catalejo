@@ -1,7 +1,5 @@
 //! Behavior and guarantees provided by types to be in and out of memory.
 
-use core::mem::MaybeUninit;
-
 /// A marker trait that describes an "immortal" type.
 ///
 /// By "immortal", this denotes a type that is fixed in size and has no lifetime dependencies.
@@ -32,6 +30,8 @@ impl<I> Immortal for I where I: Sized + 'static {}
 /// * The type must be appropriate for snapshot and mixed-coherence reads. Particularly, for a single-component type, it must be safe to read and write from a
 ///   concurrently mutated memory region where tearing is inherently permitted, without resulting in type-level undefined behavior. For a multi-component type, it may present inter-component tearing, but the individual components still correspond to a valid observed value.
 /// * The type is safe to transmute back-and-forth to a byte-level representation.
+/// * Every byte of a valid value must be initialized. The type must not contain padding
+///   or permit uninitialized storage, including through [`core::mem::MaybeUninit`].
 ///
 /// As a general rule, do not implement this for types or any primitive that possesses an illegal bit-pattern (e.g., `bool`, or an enum with a non-explicit **repr** with non-exhaustive discriminants).
 ///
@@ -43,10 +43,17 @@ impl<I> Immortal for I where I: Sized + 'static {}
 /// - The type itself or individual primitive components do not cross cacheline boundaries.
 ///
 /// If these concerns are not satified, the data remains safe to read, but may prove of little use due to low validity.
+/// Uninitialized storage does not satisfy this contract even when its inner type does.
+///
+/// ```compile_fail
+/// use core::mem::MaybeUninit;
+/// use catalejo_memory::behavior::Unassociated;
+///
+/// fn require_unassociated<T: Unassociated>() {}
+///
+/// require_unassociated::<MaybeUninit<u64>>();
+/// ```
 pub unsafe trait Unassociated: Immortal + Copy {}
-
-// SAFETY: If `T` implements `Unassociated`, `MaybeUninit` does too.
-unsafe impl<T> Unassociated for MaybeUninit<T> where T: Unassociated {}
 
 // SAFETY: Unsigned 8-bit integers possess no safety-related invariants and are valid for all possible bit-permutations.
 unsafe impl Unassociated for u8 {}

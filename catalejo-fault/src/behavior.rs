@@ -1,6 +1,6 @@
 //! Traits that describe the behavior of fault-tolerant types.
 
-use core::{mem, mem::MaybeUninit, ptr};
+use core::{mem, ptr};
 
 use catalejo_memory::{behavior::Unassociated, primitive::Primitive};
 
@@ -18,14 +18,6 @@ use catalejo_memory::{behavior::Unassociated, primitive::Primitive};
 pub unsafe trait Faultable: Unassociated {
     /// The primitive used for a read or a write.
     const PRIMITIVE: Primitive;
-}
-
-// SAFETY: If `T` implements `Faultable`, `MaybeUninit` does too.
-unsafe impl<F> Faultable for MaybeUninit<F>
-where
-    F: Faultable,
-{
-    const PRIMITIVE: Primitive = F::PRIMITIVE;
 }
 
 /// Implement the [`Faultable`] trait for a primitive integer type.
@@ -90,6 +82,7 @@ where
     // SAFETY:
     //
     // `Faultable` guarantees that `F` has one of the supported primitive representations.
+    // `Unassociated` guarantees that its bytes are initialized and contain no padding.
     // Both destinations are initialized and each copy writes exactly the represented width.
     unsafe {
         ptr::copy_nonoverlapping(
