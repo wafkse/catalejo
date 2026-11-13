@@ -206,4 +206,16 @@ Rust device-path feature, use `Target::engage_at` or `Target::engage_with`.
 
 ## License
 
-Licensed under GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+Copyright (C) 2026 W. Frakchi.
+
+Catalejo is free software. You can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version.
+
+Catalejo is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY,
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Catalejo.
+See [`LICENSE`](LICENSE) for the full text. If you did not receive a copy, see the
+[GNU licenses page](https://www.gnu.org/licenses/).
