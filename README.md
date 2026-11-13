@@ -1,8 +1,7 @@
 # Catalejo
 
 Catalejo gives a Linux process a fault-protected, zero-copy view into another process' memory. The
-Mirilla kernel module aliases target pages into the observer, so resident reads are local loads rather
-than a syscall and copy per access.
+Mirilla kernel module aliases target pages into the observer, so resident reads use local loads.
 
 The target keeps running while it is observed. Catalejo does not provide a process snapshot or make
 multi-field reads atomic.
@@ -32,14 +31,16 @@ sudo insmod mirilla/mirilla.ko
 ```
 
 Mirilla normally appears as `/dev/mirilla` through devtmpfs. The observer needs access to that device.
-For foreign targets, run it with `CAP_SYS_PTRACE`; during development that usually means running as
+For foreign targets, run it with `CAP_SYS_PTRACE`. During development that usually means running as
 root or assigning the capability to the built executable.
 
 ```sh
 sudo setcap cap_sys_ptrace=ep target/debug/observer
 ```
 
-Secure Boot or module-signature enforcement may require signing `mirilla.ko`. To unload the module:
+Secure Boot or module-signature enforcement may require signing `mirilla.ko`.
+
+To unload the module, run the following command.
 
 ```sh
 sudo rmmod mirilla
@@ -96,10 +97,13 @@ target virtual range       shared physical frames       observer peephole VMA
 [foreign addresses]  --->  [page][page][page]  <---     [local addresses]
 ```
 
-Mirilla tracks the target mapping with an MMU interval notifier. If the target unmaps, remaps, or
-exits, the peephole is invalidated and installed aliases are removed. Catalejo performs accesses
-through fault-recovery routines, so invalidation becomes an operation failure instead of a crash in
-the observer.
+Mirilla tracks the target range with an MMU interval notifier. When the target changes that range,
+installed observer aliases are removed before they can expose stale frames. A later access resolves
+the target address again, so it can observe replacement memory at the same address or fail if the
+address is no longer accessible.
+
+Target address-space teardown marks the peephole dead. Catalejo's protected routines report faults
+as access failures, allowing the observer to handle unavailable memory.
 
 `Foreign<F>` holds the peephole, a checked offset, and the accessed type. Managers choose and reuse
 peepholes so repeated reads do not reopen the same target range.
@@ -111,7 +115,7 @@ peepholes so repeated reads do not reopen the same target range.
 | `Foreign::read` | Fault-protected, machine-word-coherent read of a naturally aligned `Faultable` value. |
 | `Foreign::write` | Fault-protected store. Returns whether the store completed. Available through the default `write` feature. |
 | `Foreign::copy` | Copies an `Unassociated` value. A concurrent writer may tear the result across fields or bytes. |
-| Invalidation | Unmap, remap, and target exit invalidate affected peepholes. Protected operations report failure rather than reading a stale frame. |
+| Invalidation | Mapping changes remove installed aliases. Later access resolves the target address again. Address-space teardown kills the peephole. |
 | Synchronization | No target suspension and no happens-before relationship with the target. |
 
 `Unassociated` is the type boundary for values that may be observed from arbitrary or torn bytes. It
@@ -123,15 +127,15 @@ excludes references, owning pointers, booleans, and enums with invalid bit patte
 | --- | --- |
 | `Memoize` | Tight page-aligned windows around arbitrary spans. Windows stay cached for the manager lifetime. |
 | `Rebased` | Fixed-granule windows with a second offset grid for values that straddle a granule boundary. |
-| `Lru` | `Rebased` placement with bounded strong peephole retention. |
+| `Lru` | `Rebased` placement with a limit on cached peepholes. |
 
 `Rebased` and `Lru` default to a 2 MiB granule. Values served by their two-grid placement must fit
 within half of the selected granule.
 
 ## Performance
 
-The hot path is intentionally small: cached resolution stays in userspace, a fresh window costs an
-`ioctl` plus `mmap`, first touch faults in the alias, and a resident read is a protected local load.
+Cached resolution stays in userspace. Opening a window requires an `ioctl` and `mmap`, and
+its first access faults in the alias. Subsequent resident reads use protected local loads.
 
 A reference run on a Ryzen 7 7700X with DDR5-6000 CL30 and Linux 7.1.3 produced these medians:
 
@@ -154,10 +158,10 @@ just kunit      # kernel KUnit suite in a VM
 just test-vm    # Mirilla ABI + Rust integration tests with the module loaded
 ```
 
-`KDIR` selects the kernel tree for module and VM builds. `just kunit` needs `CONFIG_KUNIT=y`; the VM
-recipes use `virtme-ng`.
+`KDIR` selects the kernel tree for module and VM builds. The VM recipes use `virtme-ng`, and
+`just kunit` additionally requires `CONFIG_KUNIT=y`.
 
-To exercise a module already loaded on the host:
+To exercise a module already loaded on the host, run the device-backed tests.
 
 ```sh
 sudo mirilla/test/mirilla-test

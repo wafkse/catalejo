@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// A [`ParseCallbacks`] for directing specific bindgen behavior.
+/// Select unsigned integer types for Mirilla constants in generated bindings.
 #[derive(Debug, Copy, Clone)]
 pub struct MirillaCallbacks;
 

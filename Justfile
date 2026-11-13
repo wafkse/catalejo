@@ -1,9 +1,8 @@
 # Catalejo task runner.
 #
-# Testing has three entry points: host-safe checks, KUnit, and the complete VM
-# integration path. The VM path runs the Mirilla C ABI coverage and Rust device
-# tests under the same loaded module. Private recipes only bridge host/guest
-# execution and are intentionally hidden from the public task surface.
+# Testing has three entry points for host checks, KUnit, and VM integration.
+# The VM path runs the Mirilla C ABI and Rust device tests under the same loaded
+# module. Private recipes pass commands and environment into the guest.
 #
 # Run each recipe line under a strict shell so a failing command aborts the recipe.
 
