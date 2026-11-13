@@ -1,4 +1,4 @@
-//! Faultable region management for the `catalejo-fault` crate.
+//! Address handles for primitive reads and writes with fault recovery.
 
 use core::{
     marker,
@@ -31,18 +31,20 @@ unsafe impl Faultable for Opaque {
     const PRIMITIVE: Primitive = u8::PRIMITIVE;
 }
 
-/// A maybe-fault pointer represents a non-null pointer to memory region where reads or writes may result in a synchronous hardware exception.
+/// A non-null address for primitive accesses that may raise a recoverable fault.
 ///
-/// This may be due to an unpopulated page table, bad access to the underlying page table, or another
-/// synchronous hardware exception accepted by the published Mirilla table.
+/// The address can refer to an inaccessible page, so construction does not
+/// establish mapping validity or alignment. Each access instead requires the
+/// caller to supply the alignment and memory-kind guarantees documented on that
+/// operation, together with an active Mirilla recovery backend.
 ///
-/// This is `repr(transparent)` over the managed [`NonZero`] `<usize>` address. It stores a bare, provenance-free address rather than a live pointer. At
-/// the point of access the address is reconstituted into a pointer carrying *exposed* provenance, under which memory outside the Rust abstract machine,
-/// such as this MMU-adjudicated foreign region disjoint from the stack, heap, and statics, is always accessible.
+/// # Representation
 ///
-/// ## Remarks
-///
-/// Even if this may be fault-resiliant, the sole standing constraint is that the address is never null, hence a [`NonZero`]`<usize>` is required.
+/// To support foreign mappings without borrowing a Rust allocation, the handle
+/// stores an address without pointer provenance and reconstructs a pointer with
+/// exposed provenance at access time. Callers must therefore establish that the
+/// addressed memory is suitable for this access model. The recovery backend
+/// handles supported synchronous faults but does not discharge those obligations.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[repr(transparent)]
 pub struct MaybeFault<F>(NonZero<usize>, marker::PhantomData<F>)
@@ -53,9 +55,12 @@ impl<F> MaybeFault<F>
 where
     F: Faultable,
 {
-    /// Construct a maybe-fault region with the target parameters.
+    /// Store a non-null address for later protected access.
     ///
-    /// This is safe, but the act of reading from a maybe-fault region is still unsafe.
+    /// # Notes
+    ///
+    /// Construction performs no memory access. Reading or writing still
+    /// requires the caller to satisfy the operation's safety contract.
     #[inline]
     pub const fn new(target_address: NonZero<usize>) -> Self {
         Self(target_address, marker::PhantomData::<F>)
@@ -78,8 +83,11 @@ where
     ///
     /// # Safety
     ///
-    /// The address must be aligned for `F` and must name ordinary memory suitable for a protected
-    /// hardware access. `fault_backend` must belong to the current process.
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The stored address must be aligned for the accessed type and identify
+    ///   ordinary memory suitable for protected hardware access.
+    /// * The recovery capability must belong to the current address space.
     #[inline]
     pub unsafe fn read(&self, fault_backend: &Backend) -> Option<F> {
         let &Self(target_source, ..) = self;
@@ -121,8 +129,11 @@ where
     ///
     /// # Safety
     ///
-    /// The address must be aligned for `F` and writable as ordinary memory. `fault_backend` must
-    /// belong to the current process.
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The stored address must be aligned for the accessed type and suitable
+    ///   for protected stores to ordinary memory.
+    /// * The recovery capability must belong to the current address space.
     #[inline]
     pub unsafe fn write(&self, fault_backend: &Backend, target_value: F) -> bool {
         let &Self(target_address, ..) = self;
@@ -209,7 +220,7 @@ mod test {
         let target_device = OwnedFd::from(target_file);
 
         // SAFETY:
-        // The descriptor was opened from Mirilla. C retains the backend state for this process.
+        // The descriptor was opened from Mirilla. The initialized backend has process lifetime.
         let fault_backend = unsafe { Backend::initialize(target_device.as_fd()) }
             .expect("the fault backend must initialize");
 
@@ -370,8 +381,8 @@ mod test {
             "reading a live mapping must yield the written sentinel",
         );
 
-        // Revoke access in place rather than `munmap`-ing: a bare unmapped
-        // address can be concurrently re-mapped by another (parallel) test,
+        // Revoke access while reserving the address. An unmapped
+        // address could be reused by a parallel test,
         // which would make the fault below non-deterministic. Reserving the
         // address as `PROT_NONE` pins it while still forcing the access to fault.
         protect(target_page, libc::PROT_NONE);

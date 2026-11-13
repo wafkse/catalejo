@@ -4,15 +4,22 @@ use core::{mem, ptr};
 
 use catalejo_memory::{behavior::Unassociated, primitive::Primitive};
 
-/// A trait that describes a faulting primitive access to memory.
+/// A value supported by protected machine-word accesses.
 ///
-/// This provides the guarantees already by the [`Unassociated`] trait (as this is a supertrait of such), on top of:
-///
-/// * That the fault-resilient reads performed are of both *machine-word* and *snapshot* coherence.
+/// In addition to the validity requirements of [`Unassociated`], protected reads
+/// must observe the primitive without tearing.
 ///
 /// # Safety
 ///
-/// * The implementor type must have the same in-memory representation as the [`PrimitiveUnion`] type, and be sound to copy-transmuted to and from it.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * Every byte of a valid value must be initialized. The type must contain no
+///   padding or storage that permits uninitialized bytes, including
+///   [`core::mem::MaybeUninit`], because [`equal()`] compares raw object representations.
+/// * The selected primitive width must match the size of the implementing type.
+/// * The type must be safely transferable to and from the corresponding member
+///   of [`PrimitiveUnion`] without changing its bits or violating alignment
+///   requirements.
 ///
 /// [`PrimitiveUnion`]: catalejo_memory::primitive::PrimitiveUnion
 pub unsafe trait Faultable: Unassociated {
@@ -68,9 +75,10 @@ faultable!(for isize);
 
 /// Determine whether two [`Faultable`] values have equal bit representations.
 ///
-/// This compares the complete primitive representation rather than using [`PartialEq`].
-/// Floating point values are therefore compared by their encoded bits and equal NaN payloads
-/// compare as equal.
+/// # Notes
+///
+/// Comparison uses encoded bits, so floating-point values with equal NaN
+/// payloads compare equal and positive and negative zero compare unequal.
 #[inline]
 pub const fn equal<F>(target_left: F, target_right: F) -> bool
 where
@@ -82,7 +90,7 @@ where
     // SAFETY:
     //
     // `Faultable` guarantees that `F` has one of the supported primitive representations.
-    // `Unassociated` guarantees that its bytes are initialized and contain no padding.
+    // `Faultable` also guarantees that its bytes are initialized and contain no padding.
     // Both destinations are initialized and each copy writes exactly the represented width.
     unsafe {
         ptr::copy_nonoverlapping(
