@@ -17,24 +17,26 @@ use quote::{ToTokens, format_ident, quote};
 
 use syn::{Data, DeriveInput, Fields};
 
-/// Derive the `catalejo` `Field` trait for the named fields of a type.
+/// Generate typed field markers for a structure or union with named fields.
 ///
-/// For a `struct` or `union` with named fields, this reifies each field as a
-/// distinct, default-constructible marker type that implements `Field` with its
-/// `Structure` set to the annotated type and its offset resolved through
-/// [`offset_of!`]. Each marker is also exposed as an inherent associated constant
-/// on the annotated type, so that a field is named as `Structure::field`.
+/// Each field becomes an associated constant such as `Header::length`. Its
+/// marker implements `Field`, identifying the enclosing type, field type, and
+/// byte offset computed by [`offset_of!`]. Field documentation is copied to the
+/// marker and associated constant.
 ///
-/// An `Unassociated` implementation is emitted for the annotated type, gated on
-/// each of its field types being `Unassociated` as well. This gate is a
-/// soundness requirement rather than a silent opt-out. The bound ranges over the
-/// concrete field types, so deriving on a type that holds a non-`Unassociated`
-/// field is a compile error, as stable Rust rejects unsatisfiable trivial bounds
-/// (see rust-lang/rust#48214). Derive this only for types whose fields are all
-/// `Unassociated`.
+/// Because projection produces typed foreign handles, the derive also
+/// implements `Unassociated` for the enclosing type and requires that trait on
+/// every field. A field that cannot satisfy the bound causes compilation to fail.
 ///
-/// A generic type is rejected. Bindgen does not emit generic types, and such a
-/// type can implement `Field` by hand.
+/// # Layout
+///
+/// Padding is permitted and need not be initialized. The derive checks that
+/// fields are aligned for projection.
+///
+/// # Supported layouts
+///
+/// Generic types, enums, tuple structures, and unit structures are rejected.
+/// Types outside these supported forms need manual trait implementations.
 ///
 /// [`offset_of!`]: core::mem::offset_of
 #[proc_macro_derive(Field)]
@@ -194,10 +196,9 @@ fn expand_field(derive_input: DeriveInput) -> syn::Result<TokenStream> {
             #( #const_item_list )*
         }
 
-        // SAFETY: For a `repr(C)` aggregate every byte belongs to some field. If each
-        // field type is `Unassociated` (valid for every bit-pattern and tolerant of
-        // tearing), the aggregate is too, and it round-trips through its byte form, and
-        // padding contributes only always-valid bytes.
+        // SAFETY: Each field type is `Unassociated`, so value-bearing fields remain
+        // valid under arbitrary bit patterns and tearing. Any padding need not be
+        // initialized and imposes no additional validity requirements.
         unsafe impl ::catalejo::prelude::Unassociated for #ident #where_clause {}
     })
 }
