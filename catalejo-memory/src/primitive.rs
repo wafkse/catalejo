@@ -1,4 +1,4 @@
-//! Primitive types in respect to a memory operation.
+//! Primitive widths used by memory access routines.
 
 use core::mem;
 
@@ -21,7 +21,14 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    /// Determine an appropriate [`Primitive`] type variant for the target type.
+    /// Select the access width matching the byte size of `T`.
+    ///
+    /// Returns [`None`] for unsupported sizes.
+    ///
+    /// # Notes
+    ///
+    /// Selection checks size only. Alignment and accessibility must be checked
+    /// for the address where the value will be accessed.
     #[inline]
     pub const fn appropriate<T>() -> Option<Self>
     where
@@ -37,9 +44,12 @@ impl Primitive {
     }
 }
 
-/// An union of all primitives.
+/// Transfer storage for dispatching accesses by primitive width.
 ///
-/// This is used for primitive-independent operations.
+/// # Representation
+///
+/// Only the member selected by the access width represents the transferred
+/// value. A narrow access does not initialize the remaining bytes.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub union PrimitiveUnion {

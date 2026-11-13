@@ -1,49 +1,46 @@
-//! Behavior and guarantees provided by types to be in and out of memory.
+//! Value validity requirements for potentially torn memory observations.
 
-/// A marker trait that describes an "immortal" type.
-///
-/// By "immortal", this denotes a type that is fixed in size and has no lifetime dependencies.
+/// A fixed-size type with no borrowed lifetime dependencies.
 pub trait Immortal: Sized + 'static {}
 
-/// Blanket implementation for all "immortal" types.
+/// Fixed-size static types satisfy the lifetime requirement.
 impl<I> Immortal for I where I: Sized + 'static {}
 
-/// A trait that models an unassociated (i.e., no attached lifetime, immortal), trivially-copiable type that can be read from memory.
+/// A value that remains valid when observed as arbitrary, potentially torn bytes.
 ///
-/// # Hardware Coherence Model
+/// When another process changes memory during a copy, the result can combine
+/// bytes from different updates. Implementing this trait asserts that even
+/// those combinations are valid values, allowing access routines to construct
+/// the result without validating its bit pattern.
 ///
-/// When dealing with concurrent, un-synchronized memory reads, understanding the physical hardware access model is critical:
+/// # Notes
 ///
-/// * **Machine-Word Coherence:** The hardware guarantee that a CPU can fetch data up to its native word size (e.g., 64-bits on x86_64) in a single, indivisible memory bus transaction.
-/// * **Snapshot Coherence:** A read resulting from a single, indivisible transaction. The resulting value represents the exact state of the memory at an isolated point in time.
-/// * **Mixed Coherence (Tearing):** A read assembled from multiple hardware transactions. If another thread mutates the memory between these fetches, the resulting value is a temporal mix of old and new bytes.
-///
-/// Mixed coherence inevitably occurs under two conditions:
-/// 1. The data type exceeds the hardware machine word (e.g., attempting a concurrent read on a 256-byte `struct`).
-/// 2. The memory access is **unaligned**. For example, reading an 8-byte `u64` that physically straddles two distinct CPU cachelines forces the hardware to split the read into two distinct fetches, immediately destroying snapshot coherence.
+/// Value validity does not establish that fields agree or that the copy was
+/// atomic. Those guarantees depend on the access routine and hardware, including
+/// the access width and alignment, and must be established separately.
 ///
 /// # Safety
 ///
-/// To be able to implement this trait safely, all the following requirements must have been satisfied:
+/// For soundness purposes, the following must be satisfied:
 ///
-/// * The type is valid and presents no broken safety-related invariants in all possible bit-permutations, as well as be able to survive a round-trip through both bitstream and whole-type states.
-/// * The type must be appropriate for snapshot and mixed-coherence reads. Particularly, for a single-component type, it must be safe to read and write from a
-///   concurrently mutated memory region where tearing is inherently permitted, without resulting in type-level undefined behavior. For a multi-component type, it may present inter-component tearing, but the individual components still correspond to a valid observed value.
-/// * The type is safe to transmute back-and-forth to a byte-level representation.
-/// * Every byte of a valid value must be initialized. The type must not contain padding
-///   or permit uninitialized storage, including through [`core::mem::MaybeUninit`].
+/// * Every bit pattern in value-bearing fields must represent a valid value
+///   without violating a safety invariant, including patterns assembled by torn reads.
+/// * Conversion to bytes and back must preserve value validity.
+/// * Value-bearing fields must be initialized. Padding is permitted and need not
+///   be initialized. This trait does not permit reading padding as initialized bytes.
 ///
-/// As a general rule, do not implement this for types or any primitive that possesses an illegal bit-pattern (e.g., `bool`, or an enum with a non-explicit **repr** with non-exhaustive discriminants).
+/// Types with restricted bit patterns, such as `bool` and enums with invalid
+/// discriminants, cannot satisfy this contract. A representation attribute on
+/// an enum does not by itself make every discriminant valid.
 ///
-/// # Data Validity
+/// # Interpreting observations
 ///
-/// As a global concern, validate that:
+/// Alignment and access width affect whether a read can tear. Even if individual
+/// fields are read without tearing, their values may come from different updates.
+/// Validate any relationships required by the application before using the data.
 ///
-/// - The alignment for the type you're reading is correct.
-/// - The type itself or individual primitive components do not cross cacheline boundaries.
-///
-/// If these concerns are not satified, the data remains safe to read, but may prove of little use due to low validity.
-/// Uninitialized storage does not satisfy this contract even when its inner type does.
+/// Uninitialized value-bearing storage does not satisfy this contract even when
+/// its inner type does.
 ///
 /// ```compile_fail
 /// use core::mem::MaybeUninit;
@@ -85,10 +82,10 @@ unsafe impl Unassociated for usize {}
 // SAFETY: Pointer-sized signed integers possess no safety-related invariants and are valid for all possible bit-permutations.
 unsafe impl Unassociated for isize {}
 
-// SAFETY: 32-bit floats possess no safety-related invariants. NaN bit patterns are mathematically valid states.
+// SAFETY: 32-bit floats possess no safety-related invariants. All NaN encodings are valid floating-point values.
 unsafe impl Unassociated for f32 {}
 
-// SAFETY: 64-bit floats possess no safety-related invariants. NaN bit patterns are mathematically valid states.
+// SAFETY: 64-bit floats possess no safety-related invariants. All NaN encodings are valid floating-point values.
 unsafe impl Unassociated for f64 {}
 
 // SAFETY: The element type `U` implements `Unassociated`, therefore, a const-generic array does too.
