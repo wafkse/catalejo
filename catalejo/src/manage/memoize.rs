@@ -1,4 +1,4 @@
-//! The home module for the [`Memoize`] manager.
+//! Page-aligned windows sized to requested address spans.
 
 use std::{io, sync::RwLock};
 
@@ -17,36 +17,27 @@ use crate::{
     target::Target,
 };
 
-/// An interval-indexed manager that opens one tight, page-aligned [`Peephole`] per observed span.
+/// Cache page-aligned windows sized to the requested spans.
 ///
-/// # Why this exists
+/// A request reuses a cached window if that window covers the value. Otherwise,
+/// the manager opens a window around the value's page-aligned extent. Values
+/// are not subject to the half-granule size limit of [`crate::manage::Rebased`].
 ///
-/// [`crate::manage::rebased::Rebased`] quantizes every access to a granule, so it opens a granule-sized window even for a
-/// single word. Against a foreign target the observer's address space is unrelated to the target's
-/// and the kernel places the view clear of everything, so the oversized window is harmless. When the
-/// observer engages itself the picture changes. The observed granule reaches past the mapped
-/// structure into unpopulated address space, and the kernel is then free to place the view inside
-/// that unpopulated tail, overlapping the very range it observes. The kernel rejects such a
-/// self-overlapping view with `-EINVAL`, because a view over its own observed range can never resolve.
+/// # Self-observation
 ///
-/// [`Memoize`] opens a window that covers only the page-aligned span the structure actually occupies.
-/// A structure that is itself page resident yields a fully mapped observed range, leaving the kernel
-/// no unpopulated hole to place the view into, so the self-peephole resolves. This makes [`Memoize`]
-/// the manager to reach for when the observer is its own target. It is a drop-in [`Manage`], so it
-/// substitutes for [`crate::manage::rebased::Rebased`] without any other change.
+/// This placement is useful for self-observation. A large fixed window can
+/// include unmapped target addresses where the kernel might place the observer
+/// mapping. If the two ranges overlap, Mirilla rejects the mapping with
+/// `EINVAL`. A tight window around mapped target pages avoids that placement.
 ///
-/// # Memoization
+/// For self-observation, the requested page-aligned span must therefore stay
+/// within mapped memory. Extending it into an unmapped gap can still allow an
+/// overlapping placement and fail.
 ///
-/// Open windows are held in an interval tree keyed by their base address. A resolution finds the
-/// window whose range covers the whole structure and reuses it, opening a fresh page-aligned window
-/// only on a miss. Reuse follows actual coverage rather than a fixed grid, so a structure of any size
-/// is served without the straddle handling a granule grid demands.
+/// # Cache lifetime
 ///
-/// # Constraints
-///
-/// The observed structure must lie within mapped, page-aligned memory. An access whose page-aligned
-/// span reaches past the end of a mapping into unpopulated address space reintroduces the very hole
-/// this manager avoids, so a self-peepholing caller keeps its observed structures page resident.
+/// Cached windows remain owned by the manager until it is dropped. Use
+/// [`crate::manage::lru::Lru`] when the cache needs a capacity limit.
 #[derive(Debug)]
 pub struct Memoize {
     /// The engaged target process that is being peepholed into.
@@ -129,7 +120,7 @@ impl Memoize {
             .then(|| Peephole::clone(target_peephole))
     }
 
-    /// Award an [`Access`] into a window for a structure at an address the window is known to cover.
+    /// Create an access intent for a value already known to fit within the window.
     #[inline]
     fn access<U>(target_peephole: Peephole, target_address: ViAddr) -> Access<U>
     where
@@ -241,7 +232,7 @@ impl Manage for Memoize {
     #[inline]
     fn granule(&self) -> Granule {
         // NOTE: Memoize sizes every window to its structure and page-aligns it, so the finest
-        // granularity it statically guarantees is a single page rather than a fixed larger window.
+        // granularity it guarantees is a page. Window sizes depend on the requested span.
         Granule::Page
     }
 }

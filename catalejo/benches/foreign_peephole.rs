@@ -1,21 +1,17 @@
 //! Foreign-peephole microbenchmarks.
 //!
-//! These measure the end-to-end cost of peepholing into a *separate* target process, the case a
-//! [`Rebased`] manager is built for. A child process maps a granule-tiled, fully-resident region and
-//! reports its base address, then the benchmarking parent engages that child and reads and mirrors
-//! its memory across the three peephole warmth states.
+//! A child process maps a resident target region and reports its base address to
+//! the benchmarking parent. The parent engages that child and measures reads
+//! with a [`Rebased`] manager, separating resident access, cached resolution, and
+//! window creation with first-touch population.
 //!
-//! * A hot peephole, its window already open and its pages already faulted into the parent mapping.
-//! * A warm peephole, reached through the fallible find-or-open surface over an already-open window.
-//! * A cold peephole, opened fresh so the `ioctl` plus `mmap` and the first page fault-in are paid.
+//! To keep target setup outside the measured operations, the same binary can
+//! run in a child role selected through an environment marker. In that role it
+//! reports the mapped region and blocks until the parent releases it.
 //!
-//! They require the mirilla kernel module loaded and its device present, and engaging a foreign
-//! process needs `CAP_SYS_PTRACE`, so the suite runs as root inside the mirilla VM. When the
-//! environment is unavailable the suite prints a skip notice and returns rather than failing, so it
-//! stays runnable everywhere.
-//!
-//! The same binary doubles as the target. Re-executed with a marker in its environment it takes the
-//! child role, maps the region, and blocks so the region stays mapped for the whole measurement.
+//! Engaging the child requires a loaded Mirilla module, device access, and
+//! `CAP_SYS_PTRACE`. The suite runs as root in the Mirilla VM for this reason.
+//! If the environment is unavailable, it prints a skip notice and returns.
 
 use std::hint::black_box;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -40,16 +36,13 @@ const TARGET_CHILD_VARIABLE: &str = "CATALEJO_FOREIGN_TARGET_CHILD";
 /// The size of the default peephole granule (a `Hugepage`), the span of a single window.
 const GRANULE_BYTES: usize = 2 * 1024 * 1024;
 
-/// The number of bytes a single peephole read observes, one machine word.
-///
-/// The read group declares this as its criterion throughput so the reported figures carry a
-/// read-speed dimension rather than a bare per-iteration latency.
+/// Bytes observed per primitive read, used for Criterion throughput reporting.
 const READ_BYTES: u64 = size_of::<u64>() as u64;
 
 /// The number of distinct granules the target region covers.
 ///
-/// A cold-path benchmark opens one window per iteration, so the region must offer enough distinct,
-/// fully-backed granules that a run rotates through fresh frames rather than re-touching one.
+/// Cold-path measurements rotate through these backed granules, opening a
+/// window per iteration so cached windows do not replace the setup being timed.
 const GRANULE_COUNT: usize = 32;
 
 /// The addressable span of the target region.
@@ -76,7 +69,7 @@ impl Region {
         let mut backing = vec![0_u64; word_count].into_boxed_slice();
 
         // NOTE: Touch every word so all backing pages are resident, the parent then measures the
-        // fault-in of its own peephole mapping rather than of the target region.
+        // fault-in of its own peephole mapping over resident target pages.
         for (index, slot) in backing.iter_mut().enumerate() {
             *slot = index as u64;
         }
@@ -196,12 +189,11 @@ fn warm_foreign(manager: &Rebased, target_address: ViAddr) -> Foreign<u64> {
     target_foreign
 }
 
-/// Time a whole-structure hot mirror of a `[u64; N]` payload out of an already-open granule window.
+/// Measure copy throughput for a `[u64; N]` payload in a resident window.
 ///
-/// The window is open over the warm granule, so the handle is materialized once and the mapping
-/// pages the payload spans are faulted in by a priming copy. The timed loop then measures the
-/// steady-state byte-granular stream into a caller-owned buffer, so its figure is a mirror speed
-/// rather than the one-off open and fault-in cost.
+/// A priming copy populates the mapping before timing begins. Each iteration
+/// copies into caller-owned storage, excluding window creation and first-touch
+/// faults from the measurement. Criterion reports throughput by payload size.
 fn bench_copy_hot<const N: usize>(
     copy_group: &mut BenchmarkGroup<'_, WallTime>,
     manager: &Rebased,

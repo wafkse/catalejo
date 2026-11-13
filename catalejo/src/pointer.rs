@@ -15,7 +15,7 @@ mod detail {
     pub trait Sealed {}
 }
 
-/// A trait that describes a type that can be formatted in hex format.
+/// Hexadecimal formatting for foreign addresses.
 pub trait Formatted: fmt::LowerHex + fmt::UpperHex + detail::Sealed {}
 
 impl<T> Formatted for T where T: fmt::LowerHex + fmt::UpperHex + detail::Sealed + ?Sized {}
@@ -29,7 +29,18 @@ impl Address for u64 {}
 impl detail::Sealed for u32 {}
 impl detail::Sealed for u64 {}
 
-/// A pointee-tagged generic pointer presumed to reside in foreign memory.
+/// An encoded foreign address tagged with its pointee type.
+///
+/// Foreign layouts can encode addresses at a different width from the observer,
+/// so `A` selects a 32-bit or 64-bit representation while `T` identifies the
+/// intended pointee. This records how to interpret the address without owning
+/// or borrowing target memory.
+///
+/// # Notes
+///
+/// Since the encoded address may be null or unmapped, the value cannot be
+/// dereferenced as a local pointer. Resolve it through a target memory manager
+/// before attempting access.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Pointer<T, A>(A, marker::PhantomData<fn() -> T>)
@@ -119,10 +130,10 @@ where
     }
 }
 
-/// A type-level alias to the respective 32-bit pointer type.
+/// A foreign pointer encoded as a 32-bit address.
 pub type Pointer32<T> = Pointer<T, u32>;
 
-/// A type-level alias to the respective 64-bit pointer type.
+/// A foreign pointer encoded as a 64-bit address.
 pub type Pointer64<T> = Pointer<T, u64>;
 
 #[cfg(test)]

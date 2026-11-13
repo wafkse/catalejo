@@ -1,21 +1,17 @@
 //! Self-peephole microbenchmarks.
 //!
-//! These measure the end-to-end latency of reading a machine word out of a peephole window that
-//! points back into the benchmarking process itself. The suite isolates the three costs a read can
-//! incur, matching the layered memoization of the manager.
+//! The suite observes the benchmarking process through its own peephole mappings.
+//! To show where read latency comes from, separate groups measure cached manager
+//! resolution, window creation through `ioctl` and `mmap`, and first-touch page
+//! population. Resident-read groups then measure access after those setup costs
+//! have been paid.
 //!
-//! * The memoized `Manage` resolution, an address to frame quantization plus a sharded map lookup.
-//! * The lazy `ioctl` plus `mmap` that opens a fresh window the first time a granule is touched.
-//! * The lazy fault-in of a window page the first time that page is read through the mapping.
+//! Larger values use `Foreign::copy`, so a separate group reports copy throughput
+//! across several payload sizes after populating the mapping with a priming copy.
 //!
-//! A final suite measures `Foreign::copy`, the whole-structure mirror that streams an aggregate
-//! wider than a machine word out of the window byte-granular, so its figures carry a mirror-speed
-//! throughput across several payload sizes rather than the single-word latency of the read suite.
-//!
-//! They require the `mirilla` kernel module to be loaded and its device present, and they engage
-//! the current process as their own target so no second process is needed. When the environment is
-//! unavailable the suite prints a skip notice and returns rather than failing, so it stays runnable
-//! everywhere.
+//! Self-engagement needs a loaded Mirilla module and access to its device but no
+//! target child process. If that environment is unavailable, the suite prints a
+//! skip notice and returns.
 
 use std::hint::black_box;
 use std::mem::MaybeUninit;
@@ -36,17 +32,13 @@ use criterion::{
 /// The size of the default peephole granule (a `Hugepage`), the span of a single window.
 const GRANULE_BYTES: usize = 2 * 1024 * 1024;
 
-/// The number of bytes a single peephole read observes, one machine word.
-///
-/// The read groups declare this as their criterion throughput so the reported figures carry a
-/// read-speed dimension (bytes per second, which criterion renders as GiB/s) rather than a bare
-/// per-iteration latency.
+/// Bytes observed per primitive read, used for Criterion throughput reporting.
 const READ_BYTES: u64 = size_of::<u64>() as u64;
 
 /// The number of distinct granules the backing region covers.
 ///
-/// A cold-path benchmark opens one window per iteration, so the region must offer enough distinct,
-/// fully-backed granules that a run rotates through fresh frames rather than re-touching one.
+/// Cold-path measurements rotate through these backed granules, opening a
+/// window per iteration so cached windows do not replace the setup being timed.
 const GRANULE_COUNT: usize = 32;
 
 /// The addressable span of the backing region.
@@ -73,7 +65,7 @@ impl Region {
         let mut backing = vec![0_u64; word_count].into_boxed_slice();
 
         // NOTE: Touch every word so all backing pages are resident, the cold path then measures the
-        // fault-in of the peephole mapping rather than of the target region.
+        // fault-in of the peephole mapping over resident target pages.
         for (index, slot) in backing.iter_mut().enumerate() {
             *slot = index as u64;
         }
@@ -119,13 +111,11 @@ fn warm_foreign(manager: &Rebased, target_address: ViAddr) -> Foreign<u64> {
     target_foreign
 }
 
-/// Time the whole-structure mirror of a `[u64; N]` payload out of an already-open granule window.
+/// Measure copy throughput for a `[u64; N]` payload in a resident window.
 ///
-/// The window is open over the warm granule, so the handle is materialized once and the mapping
-/// pages the payload spans are faulted in by a priming copy. The timed loop then measures the
-/// steady-state byte-granular stream into a caller-owned buffer, so its figure is a mirror speed
-/// rather than the one-off open and fault-in cost. The payload byte span is declared as the group
-/// throughput, and the size names the benchmark so a run reports one mirror speed per payload width.
+/// A priming copy populates the mapping before timing begins. Each iteration
+/// copies into caller-owned storage, excluding window creation and first-touch
+/// faults from the measurement. Criterion reports throughput by payload size.
 fn bench_copy<const N: usize>(
     copy_group: &mut BenchmarkGroup<'_, WallTime>,
     manager: &Rebased,

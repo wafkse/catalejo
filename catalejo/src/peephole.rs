@@ -1,4 +1,19 @@
-//! In-memory peephole module.
+//! Revocable target mappings, typed access, and change monitoring.
+//!
+//! ```text
+//! Target address a                  Observer address o + (a - b)
+//!       |                                      |
+//!       +--------> shared physical page <------+
+//!
+//! b = target window base     o = observer mapping base
+//! ```
+//!
+//! The alias permits local access to target pages without copying their contents.
+//! When the target replaces or unmaps those pages, Mirilla removes affected
+//! aliases. A subsequent access resolves the target address again, allowing it
+//! to observe replacement memory or report failure if the address is unavailable.
+//! Address-space teardown marks the peephole dead and prevents further resolution.
+
 #![allow(
     clippy::std_instead_of_core,
     reason = "imports are false-flagged by clippy where the fix would be nightly-only"
@@ -53,7 +68,7 @@ bitflags! {
     /// Each flag mirrors one generated `MIRILLA_MAP_PEEPHOLE_INITIALIZE_*` preference.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct InitializeWord: ffi::binding::mirilla_map_peephole_initialize_word_t {
-        /// Populate the mapping during `mmap` rather than on first touch.
+        /// Populate the mapping during `mmap`.
         const POPULATE = ffi::binding::MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE
             as ffi::binding::mirilla_map_peephole_initialize_word_t;
     }
@@ -74,7 +89,7 @@ pub struct PeepholeContext {
     /// The foreign virtual address range of this peephole.
     address_range: ViRange,
 
-    /// The lazily memory-mapped area of the peephole.
+    /// The observer mapping whose page aliases are populated on demand.
     peephole_window: Window,
 }
 
@@ -115,7 +130,9 @@ impl PeepholeContext {
                 initialize_word.bits(),
             )?
         };
+
         let fault_backend = Backend::retrieve()?;
+
         let peephole_window = {
             let region_size = address_range
                 .size()
@@ -128,9 +145,12 @@ impl PeepholeContext {
                     ProtFlags::PROT_NONE
                 };
 
-            // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
-            // file, which is exactly what the kernel module requires, it validates the
-            // parameters and rejects (with `-EINVAL` or `-EACCES`) anything else.
+            // SAFETY:
+            //
+            // * The descriptor owns a peephole for the requested range.
+            // * The mapping covers the entire range at file offset zero and is private.
+            // * Its protection matches the requested read or write access mode.
+            // * Mirilla validates the mapping shape before installing its VMA operations.
             let target_value = unsafe {
                 nix::sys::mman::mmap(
                     None,
@@ -166,7 +186,7 @@ impl PeepholeContext {
     ///
     /// # Failure
     ///
-    /// This may fail if the underlying peephole file descriptor failed to be duplicated.
+    /// Descriptor duplication or creation of the additional observer mapping can fail.
     #[inline]
     pub fn duplicate(&self) -> io::Result<Self> {
         let &Self {
@@ -187,9 +207,12 @@ impl PeepholeContext {
                 .size()
                 .ok_or(io::Error::from(ErrorKind::InvalidInput))?;
 
-            // SAFETY: A private, full-length, zero-offset, read-only mapping of the peephole
-            // file, which is exactly what the kernel module requires, it validates the
-            // parameters and rejects (with `-EINVAL` or `-EACCES`) anything else.
+            // SAFETY:
+            //
+            // * The descriptor owns a peephole for the requested range.
+            // * The mapping covers the entire range at file offset zero and is private.
+            // * Its protection matches the requested read or write access mode.
+            // * Mirilla validates the mapping shape before installing its VMA operations.
             let target_value = unsafe {
                 nix::sys::mman::mmap(
                     None,
@@ -251,7 +274,15 @@ impl Peephole {
             .map(Self)
     }
 
-    /// Fabricate a [`Foreign`] handle for `F` at the specified offset from the peephole base address.
+    /// Create a typed handle at an offset from the peephole base.
+    ///
+    /// Returns [`None`] if the value would exceed the window or the offset is
+    /// misaligned.
+    ///
+    /// # Notes
+    ///
+    /// This checks the handle's layout without reading the target, so success
+    /// does not establish that the target pages are accessible.
     #[inline]
     pub fn at<F>(&self, target_displacement: Offset) -> Option<Foreign<F>>
     where
@@ -306,7 +337,7 @@ impl Peephole {
         address_range
     }
 
-    /// Fabricate a reference to then underlying window area.
+    /// Borrow the observer mapping owned by this peephole.
     #[inline]
     pub fn window(&self) -> &Window {
         let Self(target_handle) = self;
@@ -426,8 +457,10 @@ pub enum MonitorWaitOutcome {
 
 /// An armed monitor borrowing a [`Foreign`] value.
 ///
-/// The borrow keeps the peephole mapping alive through the wait. The token is bound to the
-/// arming thread because hardware monitor state is local to a logical processor context.
+/// Waiting depends on both the mapped address and the hardware state set up
+/// during arming. The token therefore borrows the [`Foreign`] handle to keep
+/// its mapping alive and cannot move to another thread, where that hardware
+/// state would not be available.
 ///
 /// ```compile_fail
 /// use catalejo::peephole::ArmedMonitor;
@@ -473,9 +506,15 @@ where
 
     /// Wait until the value changes or the finite deadline is reached.
     ///
-    /// This consumes the armed token so its same-thread hardware state cannot be reused. Hardware
-    /// waits run in bounded slices. Every wake is followed by another protected arm and snapshot
-    /// sequence. Unsupported hardware switches to cooperative polling with the same deadline.
+    /// Hardware waits run in bounded slices so the value and deadline can be
+    /// checked between waits. After a wake, the operation re-arms and reads
+    /// again before waiting further. If the hardware becomes unavailable, it
+    /// continues through cooperative polling with the same deadline.
+    ///
+    /// # Notes
+    ///
+    /// Waiting consumes the token because its hardware state belongs to this
+    /// arming sequence and cannot be reused for another wait.
     #[inline]
     pub fn wait(self, target_deadline: Instant) -> MonitorWaitOutcome {
         let Self {
@@ -613,7 +652,11 @@ impl ByteCopy<'_> {
     }
 }
 
-/// A [`Faultable`]-family type located in a foreign address space.
+/// A typed access handle within a foreign memory mapping.
+///
+/// The handle keeps its peephole alive and identifies an in-bounds, aligned
+/// value. The target can still invalidate the mapping. Primitive reads require
+/// [`Faultable`], while byte copies support any [`Unassociated`] value.
 #[derive(Debug, Clone)]
 // NOTE(invariant): Offset is in-bounds and properly aligned for `F`.
 pub struct Foreign<F>(Peephole, Offset, marker::PhantomData<F>)
@@ -634,7 +677,15 @@ where
         Window::address(target_peephole.window()).checked_add(target_displacement.native())
     }
 
-    /// Field-project into a field of `F`, to the respective `P::Value`.
+    /// Project this handle to a field within `F`.
+    ///
+    /// The [`Field`] contract guarantees that the result stays in bounds and
+    /// aligned.
+    ///
+    /// # Notes
+    ///
+    /// Projection does not read the target or check whether the mapping has
+    /// been invalidated.
     #[inline]
     pub fn project<P>(&self, target_project: impl Borrow<P>) -> Foreign<P::Value>
     where
@@ -661,9 +712,11 @@ where
 
     /// Create a sparse access intent for a profile-selected field of `F`.
     ///
-    /// The returned intent may lie outside the current peephole. Resolve it with
-    /// [`Manage::refresh`] before reading so the
-    /// manager can reuse or open a window that fits the projected value.
+    /// # Notes
+    ///
+    /// The field may lie outside the current peephole, so resolve the intent
+    /// with [`Manage::refresh`] before reading. The manager can then reuse or
+    /// open a window that fits the projected value.
     #[inline]
     pub fn sparse<P>(&self, target_project: impl Borrow<P>) -> Option<Access<P::Value>>
     where
@@ -675,12 +728,15 @@ where
         Some(Access::intent(peephole_state.clone(), target_displacement))
     }
 
-    /// Cast a foreign value to another, as long as:
+    /// Reinterpret this handle as a value with a compatible size and alignment.
     ///
-    /// * The casted-to type has the same alignment requirement or smaller.
-    /// * The casted-to type is equal or smaller in size compared to the casted-from type.
+    /// The destination type must be no larger or more strictly aligned than
+    /// `F`, so the existing bounds and alignment checks also cover the new
+    /// handle. If either requirement fails, the cast returns [`None`].
     ///
-    /// This is required to not alter the soundness-providing invariants of the [`Foreign`] handle.
+    /// # Notes
+    ///
+    /// No target bytes are read or converted during the cast.
     #[inline]
     pub fn cast<V>(self) -> Option<Foreign<V>>
     where
@@ -702,7 +758,7 @@ where
         }
     }
 
-    /// Attempt to lift the [`Foreign`] type into the locally-managed value.
+    /// Construct a local value from this handle.
     #[inline]
     pub fn lift<L>(self) -> Result<L, L::Error>
     where
@@ -732,7 +788,7 @@ where
         <L as Stabilize<N>>::construct(self)
     }
 
-    /// Attempt to lift the [`Foreign`] type into the locally-managed value.
+    /// Construct a local value from this handle.
     #[inline]
     pub fn lift_with<L>(self, target_context: &L::Context) -> Result<L, L::Error>
     where
@@ -741,7 +797,7 @@ where
         L::construct_with(self, target_context)
     }
 
-    /// Assemble a locally managed value through this foreign handle and one access manager.
+    /// Assemble a local value using this handle and the supplied access manager.
     #[inline]
     pub fn assemble<A, M>(self, target_manager: &M) -> Result<A, A::Error>
     where
@@ -752,7 +808,7 @@ where
         A::assemble(target_manager, self)
     }
 
-    /// Assemble a locally managed value through this foreign handle and one access manager.
+    /// Assemble a local value using this handle and the supplied access manager.
     #[inline]
     pub fn assemble_with<A, M>(
         self,
@@ -787,21 +843,20 @@ where
         <L as Stabilize<N>>::construct_with(self, target_context)
     }
 
-    /// Attempt to mirror the whole [`Unassociated`] `F` out of the foreign address space.
+    /// Copy the foreign value into caller-provided storage.
     ///
-    /// Where [`read`](Self::read) is restricted to a single machine-word-coherent [`Faultable`]
-    /// primitive, this streams the entire byte span of `F` through the fault-protected copy, so it
-    /// serves the composite structures that exceed a machine word and therefore carry no snapshot
-    /// coherence. The bytes are assembled ascending and byte-granular, so a foreign mutation in
-    /// flight tears the observed value, yet `F` being [`Unassociated`] guarantees every resulting
-    /// bit-pattern remains a valid inhabitant.
+    /// To support composite layouts and values larger than a machine word,
+    /// the protected routine copies bytes in ascending address order. A writer
+    /// can change the target during that sequence, mixing bytes from different
+    /// updates. Although [`Unassociated`] guarantees that the resulting bits
+    /// represent a valid `F`, relationships between its fields may no longer
+    /// match any target state.
     ///
-    /// The caller owns the destination through `target_buffer`, so a large aggregate lands directly
-    /// in its final home rather than being returned by value and copied a second time. A full mirror
-    /// initializes the buffer in whole and hands back an exclusive reference to the now-live `F`. A
-    /// fault yields an [`Err`] carrying the count of bytes left uncopied at the faulting byte, and no
-    /// reference is produced, because the buffer holds only the copied prefix and its tail stays
-    /// uninitialized.
+    /// Once all bytes have been copied, the buffer is initialized and the
+    /// method returns an exclusive reference to its value. If a fault interrupts
+    /// the copy, only the written prefix is initialized, so the method returns
+    /// an [`Err`] with the number of bytes left uncopied without producing a
+    /// reference to `F`.
     #[inline]
     pub fn copy<'buffer>(
         &self,
@@ -833,8 +888,8 @@ where
         //
         // * The source names the foreign peephole window, memory outside the abstract machine
         //   reached under exposed provenance and kept mapped for the borrow by the `Arc` behind the
-        //   peephole. It is ordinary RAM rather than side-effecting MMIO, and a dead peephole faults
-        //   and is reported as `Err` rather than being undefined behavior.
+        //   peephole. The source is ordinary RAM with no MMIO side effects.
+        //   Invalidation faults are recovered and reported as `Err`.
         //
         // * The destination is the caller's `MaybeUninit<F>`, ordinary abstract-machine memory
         //   valid and writable for `target_count` bytes, exclusively borrowed for `'buffer`, and
@@ -861,7 +916,12 @@ where
     ///
     /// This is a fault-protected, machine-word-coherent read of the foreign window. A [`Some`]
     /// holds the value observed at the instant of the read, a [`None`] denotes that the read
-    /// faulted, i.e. the peephole was dead (its pages reclaimed by the kernel) at that instant.
+    /// faulted. This can happen after invalidation or when the target page cannot
+    /// be resolved.
+    ///
+    /// # Notes
+    ///
+    /// Success does not establish synchronization with the target.
     #[inline]
     pub fn read(&self) -> Option<F> {
         let target_address = Foreign::address(self)?;
@@ -877,7 +937,7 @@ where
         //   `Arc<Window>` borrowed through the peephole, and the foreign window is ordinary RAM,
         //   never side-effecting MMIO.
         //
-        // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
+        // * Invalidation faults are recovered and reported as access failure.
         unsafe { MaybeFault::<F>::new(target_address).read(fault_backend) }
     }
 
@@ -903,7 +963,7 @@ where
                 //   `Arc<Window>` borrowed through the peephole, and the foreign window is ordinary RAM,
                 //   never side-effecting MMIO.
                 //
-                // * A dead peephole faults and is reported as `None` rather than being undefined behavior.
+                // * Invalidation faults are recovered and reported as access failure.
                 unsafe { MaybeFault::<F>::new(target_address).write(fault_backend, target_value) }
             }
             None => false,
@@ -912,9 +972,10 @@ where
 
     /// Arm a monitor for changes to this foreign value.
     ///
-    /// The protected instruction receives the local downstream address in the peephole mapping.
-    /// A snapshot read after arming closes the race between the initial read and monitor setup.
-    /// Unsupported optional instructions select polling instead of failing the operation.
+    /// The monitor first reads a baseline value, then arms the local peephole
+    /// address and reads again to detect a change during setup. If the optional
+    /// hardware instructions are unavailable, it uses polling so callers can
+    /// wait through the same interface on unsupported processors.
     ///
     /// # Failure
     ///
@@ -932,8 +993,7 @@ where
         let target_backend =
             // SAFETY:
             //
-            // * The address is the in-bounds local downstream address rather than the foreign
-            //   virtual address.
+            // * The address lies within the local peephole mapping.
             //
             // * The borrow stored in the returned token keeps the peephole mapping alive.
             //
@@ -968,12 +1028,12 @@ impl Foreign<u8> {
         window_size
             .checked_sub(displacement.native())
             .and_then(NonZero::new)
-            .expect("a Foreign<u8> always retains its starting byte inside the peephole")
+            .expect("a Foreign<u8> starts inside the peephole")
     }
 
     /// Copy an arbitrary byte span from this foreign address into caller-owned storage.
     ///
-    /// The requested span may extend beyond `F` but must fit within the current peephole window.
+    /// The requested span may exceed a byte but must fit within the current peephole window.
     /// A fault returns the initialized prefix written before the faulting byte.
     ///
     /// # Failure
@@ -1005,7 +1065,7 @@ impl Foreign<u8> {
 
             // SAFETY:
             //
-            // * `Self` retains the peephole mapping and proves the starting displacement is
+            // * `Self` keeps the peephole mapping alive and proves the starting displacement is
             //   in-bounds. The runtime fit check proves the complete requested span remains in
             //   that mapping.
             //
@@ -1077,13 +1137,17 @@ impl Foreign<u8> {
     }
 }
 
-/// A trait that is implemented for foreigner-struct-wrapping types.
+/// Construct a local value from a typed foreign access handle.
 ///
-/// This describes a type that can be constructed from a respective [`Foreign`] handle.
+/// Implementations choose which fields to read and how to validate them while
+/// constructing the local value.
+///
+/// # Notes
+///
+/// A lift may involve several observations, so successful construction alone
+/// does not establish that all fields came from the same target state.
 pub trait Lift: Immortal {
-    /// The foreign structure to be read for construction purposes.
-    ///
-    /// This does not require to be [`Faultable`], as it may be a structure itself.
+    /// The source value, which may be a primitive or a composite layout.
     type Value: Unassociated;
 
     /// The context that may be used during construction.
@@ -1098,7 +1162,7 @@ pub trait Lift: Immortal {
         target_context: &Self::Context,
     ) -> Result<Self, Self::Error>;
 
-    /// Construct the type from a [`Foreign`] handle to the target value type.
+    /// Construct a local value using the default context.
     #[inline]
     fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
     where
@@ -1172,10 +1236,21 @@ where
     }
 }
 
-/// A [`Lift`] that can establish whole-structure coherence through repeated reads.
+/// Repeat a [`Lift`] until consecutive results compare equal.
 ///
-/// Two sequential lifted values must compare as equal before the newer value is returned.
-/// A foreign structure that never stabilizes can keep this operation from completing.
+/// Once two consecutive results compare equal, the newer value is returned.
+/// This is useful for data that settles between updates.
+///
+/// # Notes
+///
+/// Equality alone cannot prove an atomic snapshot because the target may change
+/// between reads or produce the same torn result twice.
+///
+/// # Termination
+///
+/// There is no retry bound. A target whose observations keep changing can
+/// prevent this operation from returning. Use [`Stabilize`] to bound the number
+/// of lifts.
 pub trait Coherent: Lift + Eq {
     /// Repeatedly lift the foreign structure until two sequential values compare as equal.
     fn construct(target_handle: Foreign<Self::Value>) -> Result<Self, Self::Error>
@@ -1210,7 +1285,7 @@ pub trait Coherent: Lift + Eq {
 
 impl<L> Coherent for L where L: Lift + Eq {}
 
-/// Failure while establishing bounded whole-structure stability.
+/// A lift failure or exhausted observation budget during stabilization.
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 pub enum StabilizeError<E> {
     /// The underlying [`Lift`] failed before stability could be established.
@@ -1223,11 +1298,17 @@ pub enum StabilizeError<E> {
     Unstable(usize),
 }
 
-/// A [`Coherent`]-like lift contract with a finite observation count.
+/// Seek equal consecutive lift results within a finite observation budget.
 ///
-/// `N` counts complete lifts including the initial baseline observation. Stability requires two
-/// sequential lifted values to compare equal. Values of `N` below two therefore always yield
-/// [`StabilizeError::Unstable`] unless an earlier lift fails.
+/// The budget `N` counts lifts, including the initial baseline. Since success
+/// requires two consecutive results to compare equal, budgets below two return
+/// [`StabilizeError::Unstable`] unless an attempted lift fails first.
+///
+/// # Notes
+///
+/// This bounds the number of observations but gives the same evidence as
+/// [`Coherent`]. Equal results can still contain torn data and do not prove
+/// that an atomic snapshot was observed.
 pub trait Stabilize<const N: usize>: Lift + Eq {
     /// Lift until two sequential observations compare equal or `N` lifts are exhausted.
     #[inline]

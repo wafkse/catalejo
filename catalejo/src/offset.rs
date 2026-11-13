@@ -1,4 +1,4 @@
-//! Offset management for elaborate structures.
+//! Byte offsets and typed field projection.
 
 use core::{borrow::Borrow, marker, mem};
 
@@ -25,9 +25,12 @@ impl Offset {
         Self(target_value)
     }
 
-    /// Construct a type-level offset from the target value.
+    /// Convert an element count to a byte offset using the size of `T`.
     ///
-    /// This determines the offset using the size of the parametric type.
+    /// # Notes
+    ///
+    /// Multiplication wraps on overflow. This does not validate the resulting
+    /// offset against a mapping.
     #[inline]
     pub const fn typed<T>(target_value: ffi::binding::virtual_offset_t) -> Self {
         let target_size = mem::size_of::<T>() as ffi::binding::virtual_offset_t;
@@ -35,7 +38,7 @@ impl Offset {
         Self::byte(target_size.wrapping_mul(target_value))
     }
 
-    /// Stack two disjoint offsets onto a singular one.
+    /// Add two offsets with overflow checking.
     ///
     /// If the resulting offset overflows, the stacked offset is `None`.
     #[inline]
@@ -51,7 +54,7 @@ impl Offset {
 }
 
 impl Offset {
-    /// Determine the encapsulated offset value.
+    /// Return the byte offset.
     #[inline]
     pub const fn value(self) -> ffi::binding::virtual_offset_t {
         let Self(target_value) = self;
@@ -59,7 +62,7 @@ impl Offset {
         target_value
     }
 
-    /// Borrow the encapsulated offset value.
+    /// Mutably borrow the byte offset without a bounds check.
     #[inline]
     pub const fn value_mut(&mut self) -> &mut ffi::binding::virtual_offset_t {
         let Self(target_value) = self;
@@ -67,7 +70,7 @@ impl Offset {
         target_value
     }
 
-    /// Determine the encapsulated offset value as a native pointer-width integer.
+    /// Convert the byte offset to a native pointer-width integer.
     #[inline]
     pub const fn native(self) -> usize {
         let Self(target_value) = self;
@@ -80,36 +83,39 @@ impl Offset {
 ///
 /// # Safety
 ///
-/// The returned offset must place the complete byte extent of [`Self::Value`]
-/// within [`Self::Structure`]. The resulting address must satisfy the alignment
-/// required by [`Self::Value`] when the structure base is properly aligned.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The offset must place the entire byte extent of [`Self::Value`] within
+///   [`Self::Structure`].
+/// * The field address must satisfy the alignment of [`Self::Value`] whenever
+///   the structure base is properly aligned.
 pub unsafe trait Field: Unassociated {
     /// The structure that this field belongs to.
     type Structure: Unassociated;
 
-    /// The value that this field is for and the thing actually read.
+    /// The value accessed at the field offset.
     type Value: Unassociated;
 
     /// Determine the offset of this field in respect to its structure.
     fn offset(target_value: impl Borrow<Self>) -> Offset;
 }
 
-/// A trait that describes a sparse field inside a specific structure.
+/// Describe a field offset beyond the modeled extent of a foreign structure.
 ///
-/// This is required for *partial modeling* of foreign structures without artificially
-/// inflating the size of what is otherwise an opaque structure.
+/// A partial layout can use this trait to locate known fields without reserving
+/// storage for unknown parts of the structure. Because the offset may extend
+/// beyond [`Self::Structure`], the field can also lie outside the current
+/// peephole window.
 ///
-/// Unlike the [`Field`] trait, this does not impose a requirement on the resulting field being part of [`Sparse::Structure`].
-///
-/// # Remarks
-///
-/// A foreign handle that is projected via a [`Sparse`] implementation has to understand that a refresh of the access intent may
-/// be required, as the sparse field may not be within the window the peephole is mapping.
+/// For this reason, [`crate::peephole::Foreign::sparse`] returns an access intent
+/// that must be resolved through [`crate::manage::Manage::refresh`]. The manager
+/// can then select a window that fits the field and check its bounds and
+/// alignment before access.
 pub trait Sparse: Unassociated {
     /// The structure that this sparse field belongs to.
     type Structure: Unassociated;
 
-    /// The value that this sparse field is for and the thing actually read.
+    /// The value accessed at the sparse offset.
     type Value: Unassociated;
 
     /// Determine the offset of this field in respect to its structure.
@@ -144,7 +150,7 @@ pub trait Source {
     }
 }
 
-/// A marker type to represent an address space marker for a non-relative virtual addresses.
+/// The address-space marker for absolute virtual addresses.
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
 pub struct Absolute(marker::PhantomData<Self>);

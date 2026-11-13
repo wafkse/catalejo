@@ -5,23 +5,48 @@ It lets a Linux `x86_64` process observe another process through revocable
 peephole mappings while keeping memory access fault protected.
 
 The target keeps running while it is observed. Catalejo therefore does not
-provide a process snapshot or make related reads atomic. Callers should choose
-an access strategy whose consistency guarantees match the data being observed.
+provide a process snapshot or make related reads atomic. If an application
+depends on relationships between fields, it must validate those relationships
+after observation.
 
 ## Core model
 
-A [`Target`](crate::target::Target) represents an engaged process. It owns the
-Mirilla session state needed to create peepholes and retains the fault backend
-used by protected accesses.
+Start by engaging a process with [`Target`](crate::target::Target), then give
+that target to a manager that resolves requests for its virtual addresses.
+To serve a request, the manager reuses or opens a
+[`Peephole`](crate::peephole::Peephole), which exposes the target range in the
+observer's address space.
 
-A [`Peephole`](crate::peephole::Peephole) maps a fixed target virtual address
-range into the observer. The mapping can become invalid when the target unmaps
-or replaces that range. [`Foreign`](crate::peephole::Foreign) carries a
-peephole together with a checked offset and type so later accesses preserve the
-range and alignment established when the handle was created.
+The request yields an access intent that can be converted into a
+[`Foreign`](crate::peephole::Foreign) handle once the requested type's bounds
+and alignment have been checked. That handle keeps the observer mapping alive,
+but the target can still unmap or replace the underlying range. Protected
+operations report failure if the mapping becomes unusable.
 
-Most callers create peepholes through a [`Manage`](crate::manage::Manage)
-implementation.
+A peephole gives target and observer addresses access to the same physical
+pages. The address changes, but reading through the alias does not copy the
+page contents.
+
+```mermaid
+flowchart LR
+    Target["Target virtual range"] -->|Maps| Pages["Shared physical pages"]
+    Observer["Observer virtual range"] -->|Aliases| Pages
+    Handle["Foreign handle"] -->|Keeps mapped| Observer
+    Target -->|Changes| Invalidation["Invalidate peephole"]
+    Invalidation --> Removal["Remove observer aliases"]
+    Removal --> Resolve["Resolve target address"]
+    Resolve --> Available{"Target address accessible?"}
+    Available -->|Yes| Install["Install current alias"]
+    Available -->|No| Failure["Report access failure"]
+```
+
+For a target address `a` in a window starting at `b`, the corresponding local
+address is `observer_base + (a - b)`. A `Foreign` handle keeps the observer
+mapping alive, but it cannot prevent target-side invalidation. After aliases
+are removed, a later access can resolve replacement memory at the same target
+address. Address-space teardown kills the peephole and prevents resolution.
+
+Choose a [`Manage`](crate::manage::Manage) implementation to control window reuse.
 
 - [`Memoize`](crate::manage::Memoize) opens tight page-aligned windows around
   requested spans. It is the preferred manager when a process observes itself.
@@ -29,7 +54,58 @@ implementation.
   second shifted grid for values that would otherwise straddle a granule
   boundary.
 - [`Lru`](crate::manage::lru::Lru) uses the same placement model as `Rebased`
-  while bounding the manager-owned set of strongly retained peepholes.
+  with a limit on the number of peepholes held by the manager.
+
+## Shifted granule grids
+
+`Rebased` divides the target address space into windows of size `G`. A value
+can cross a window boundary even when its size is much smaller than `G`, so a
+second grid starts at an offset of `G / 2`. The manager tries the unshifted grid
+first and uses the shifted grid when needed.
+
+For example, with the default `G = 2 MiB`, a value occupying `[1.75, 2.25) MiB`
+crosses the unshifted boundary at `2 MiB` but fits within `[1, 3) MiB` on the
+shifted grid. Both grids describe target ranges, not observer mapping addresses.
+
+```text
+Target address (MiB)    0       1       2       3       4
+                       |-------|-------|-------|-------|
+L0 windows             [---------------)[---------------)
+L1 window                      [---------------)
+Value                                [---)
+                                     1.75 2.25
+```
+
+```mermaid
+flowchart TD
+    Request["Receive access request"] --> Alignment{"Address aligned?"}
+    Alignment -->|Yes| L0["Compute L0 window"]
+    Alignment -->|No| Reject["Reject request"]
+    L0 --> Fits0{"Value fits L0?"}
+    Fits0 -->|Yes| Use0["Resolve L0 window"]
+    Fits0 -->|No| Shift{"Shifted grid available?"}
+    Shift -->|Yes| L1["Compute L1 window"]
+    L1 --> Fits1{"Value fits L1?"}
+    Fits1 -->|Yes| Use1["Resolve L1 window"]
+    Fits1 -->|No| Reject
+    Shift -->|No| Reject
+```
+
+For a grid with shift `s`, the frame index identifies a window relative to that
+grid's origin. The offset then locates the value within that window.
+
+| Quantity | Calculation |
+| --- | --- |
+| Frame index | `floor((a - s) / G)` |
+| Target window base | `frame * G + s` |
+| Offset within window | `a - window_base` |
+| Fit requirement | `offset + n <= G`, with the required type alignment |
+
+These calculations use wrapping address arithmetic in the implementation.
+Values must be no larger than `G / 2` to meet the manager's size contract.
+With `Granule::Page`, the half-granule shift is not page-aligned, so only `L0`
+exists and the value must fit within its page. `Lru` uses the same placement
+rules while limiting cache ownership across both grids.
 
 ## Example
 
@@ -87,9 +163,9 @@ The `write` feature adds
 [`Foreign::write`](crate::peephole::Foreign::write). The store is fault
 protected and reports whether it completed.
 
-Peephole invalidation prevents later protected operations from silently reading
-a stale mapping. It does not suspend the target or establish synchronization
-with target threads.
+Removing invalidated aliases prevents access to stale frames. Because a later
+access resolves the target address again, it may observe replacement memory at
+that address. This does not suspend the target or synchronize with its threads.
 
 ## Typed traversal
 

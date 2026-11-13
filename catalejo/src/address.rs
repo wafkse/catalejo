@@ -33,13 +33,17 @@ impl fmt::Debug for ViAddr {
     }
 }
 
-/// A virtual address range.
+/// A half-open virtual address interval.
+///
+/// # Notes
+///
+/// Construction does not validate ordering, size, or mapping availability.
 #[derive(Debug, Eq, PartialEq, Default, Hash, Clone, Copy, Ord, PartialOrd)]
 pub struct ViRange {
-    /// The start address of the range.
+    /// The inclusive lower bound.
     pub start_address: ViAddr,
 
-    /// The end address of the range.
+    /// The exclusive upper bound.
     pub end_address: ViAddr,
 }
 
@@ -62,7 +66,9 @@ impl ViRange {
         Self::new(ViAddr(start_address), ViAddr(end_address))
     }
 
-    /// Determine the size of the range.
+    /// Return the nonzero byte length if it fits in `usize`.
+    ///
+    /// Empty or reversed ranges return [`None`].
     #[inline]
     pub fn size(&self) -> Option<NonZero<usize>> {
         let &Self {
@@ -78,22 +84,24 @@ impl ViRange {
     }
 }
 
-/// An ordered, gap-separated set of non-overlapping [`ViRange`]s.
+/// Nonempty address ranges sorted by start address and separated by gaps.
 ///
-/// A scanner sweeps many disjoint stretches of a foreign address space, so it needs the stretches
-/// presented in a canonical form. A [`ViSparse`] holds that form as an invariant. The contained
-/// ranges are sorted ascending by start address, each range is non-empty, and no range overlaps or
-/// abuts another, so consecutive ranges are separated by a real gap of unmapped or excluded space.
+/// A scanner can traverse these ranges without revisiting an address. Adjacent
+/// ranges are rejected because each boundary must represent excluded space.
+///
+/// # Notes
+///
+/// The set itself may be empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViSparse(alloc::boxed::Box<[ViRange]>);
 
 impl ViSparse {
-    /// Construct a [`ViSparse`] from an iterator of individual [`ViRange`], validating the ordering and disjointness invariant.
+    /// Sort address ranges and validate that gaps separate them.
     ///
-    /// The ranges are sorted by start address first, so the caller need not pre-sort. Validation then
-    /// rejects the set when any range is empty or when two ranges overlap or abut, because an abutting
-    /// pair is really one contiguous range and would defeat the boundary-is-a-gap guarantee callers
-    /// depend on. A rejected set yields [`None`] rather than a silently repaired container.
+    /// Because callers may supply ranges in any order, validation sorts by
+    /// start address before checking that every range is nonempty and ends
+    /// before the next begins. Overlap or adjacency returns [`None`] without
+    /// merging ranges, preserving the guarantee that each boundary is a gap.
     #[inline]
     pub fn new(range_iter: impl IntoIterator<Item = ViRange>) -> Option<Self> {
         let mut range_list = range_iter.into_iter().collect::<alloc::vec::Vec<_>>();

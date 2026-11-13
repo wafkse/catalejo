@@ -1,4 +1,4 @@
-//! A peephole management context.
+//! Window placement, reuse, and resolution of typed access requests.
 
 use std::io;
 
@@ -25,12 +25,16 @@ pub use self::{
     rebased::{Rebase, Rebased},
 };
 
-/// A new-type over an [`u64`] that determines the frame indice of a [`Peephole`] in relative to its respective level.
+/// A logical window index within a rebase grid.
 ///
-/// A frame is a virtual address divided by a granule size, analogous to a page frame number. It is
-/// a logical cell index rather than an address, so it can be neither dereferenced nor mistaken for
-/// one, and is meaningful only relative to the [`Rebase`] grid (granule and offset basis) that
-/// produced it.
+/// A [`Rebase`] computes this index by subtracting its grid shift from an
+/// address and dividing by its granule size. Addresses in the same window then
+/// share an index that the manager can use for cache lookup.
+///
+/// # Notes
+///
+/// The index is meaningful only with the granule and shift of its originating
+/// grid. It is not an absolute virtual address.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Clone, Copy)]
 #[repr(transparent)]
 pub struct Frame(pub u64);
@@ -42,7 +46,7 @@ impl Frame {
         Self(target_index)
     }
 
-    /// Determine the encapsulated logical frame index.
+    /// Return the grid-relative window index.
     #[inline]
     pub const fn value(self) -> u64 {
         let Self(target_index) = self;
@@ -51,39 +55,35 @@ impl Frame {
     }
 }
 
-/// The specific granule at which peepholes are open for a target.
+/// Window size and alignment for grid-based managers.
 ///
-/// # Representation
-///
-/// This is represented as an [`prim@u64`].
+/// Larger granules allow nearby accesses to share a window. They also reserve
+/// more observer address space per window. The choice does not require the
+/// target to use hardware huge pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u64)]
 pub enum Granule {
-    /// A `4 KiB` peephole range.
+    /// A `4 KiB` window, the minimum supported mapping size.
     ///
-    /// This is the minimum size a peephole can be. This can be very expensive, as each peepholed page is
+    /// Page-sized windows limit the mapped span but cannot support a
+    /// half-granule-shifted grid because the shift would not be page-aligned.
     Page = 4 * 1024 - 1,
 
-    /// A `2 MiB` peephole range.
+    /// A `2 MiB` window, used by default.
     ///
-    /// This is fairly standard, and is a balanced middle-ground to:
-    ///
-    /// * Achieve more granular peephole placement.
-    /// * Mitigate the inherent costs to set up a peephole, effectively reducing average latency for what would be
-    ///   sequential or same-peephole random memory accesses or pointer-chasing.
+    /// Nearby reads can reuse the window, amortizing its creation cost across
+    /// sequential scans or pointer traversal within the range.
     #[default]
     Hugepage = 2 * 1024 * 1024 - 1,
 
-    /// A `1 GiB` peephole range.
+    /// A `1 GiB` window for accesses spread across a large target range.
     ///
-    /// It is recommended to use [`Granule::Hugepage`] instead.
+    /// Each window reserves a correspondingly large observer mapping.
     HumongousPage = 1024 * 1024 * 1024 - 1,
 }
 
 impl Granule {
-    /// Mask off the virtual address for the target granularity.
-    ///
-    /// This transforms an arbitrary virtual address to the base address where a peephole would reside.
+    /// Round an address down to the base of its unshifted granule window.
     #[inline]
     pub const fn base(self, target_address: ViAddr) -> ViAddr {
         let ViAddr(target_address) = target_address;
@@ -91,9 +91,7 @@ impl Granule {
         ViAddr(target_address & !(self as ffi::binding::virtual_address_t))
     }
 
-    /// Mask off the virtual address for the target granularity.
-    ///
-    /// This transforms an arbitrary virtual address to the in-peephole offset that would be used for access.
+    /// Return the byte offset within an address's unshifted granule window.
     #[inline]
     pub const fn offset(self, target_address: ViAddr) -> ViAddr {
         let ViAddr(target_address) = target_address;
@@ -130,69 +128,47 @@ impl Granule {
         self.size().trailing_zeros()
     }
 
-    /// Determine whether the [`Granule`] is indivisible.
-    ///
-    /// Peephole-mapped memory operates at the pagetable level, which limits which [`Granule`] can be used peephole sizes.
+    /// Return whether a half-granule shift would violate page alignment.
     #[inline]
     pub const fn indivisible(self) -> bool {
         matches!(self, Self::Page)
     }
 }
 
-/// A manager of foreign virtual address to [`Peephole`] mappings.
+/// Resolve foreign addresses into reusable peephole access handles.
 ///
-/// An implementor resolves an absolute address in a foreign address space into an [`Access`], the
-/// pairing of a [`Peephole`] with the in-window [`Offset`] at which the access lands. A [`Peephole`]
-/// is a relatively expensive structure to construct due to the heavy cross-address-space
-/// synchronization involved, so an implementor is expected to cache and reuse windows across
-/// accesses rather than open a fresh one per request.
+/// To serve a request, the manager chooses a window and returns an [`Access`]
+/// pairing that [`Peephole`] with the value's offset. By caching those windows,
+/// it lets nearby or repeated accesses share the cost of opening and mapping
+/// target memory.
 ///
-/// # Logical frame indexing
+/// # Constraints
 ///
-/// An implementor keys its cache on a logical frame index rather than on a raw address. Dividing an
-/// address by the granule size, a right-shift by [`Granule::shift`], yields a [`Frame`] analogous to
-/// a page frame number that names the granule-sized window an address falls into. Two addresses in
-/// the same window share a [`Frame`] and so reuse a single cached [`Peephole`], with the distance
-/// between them recovered as the in-window [`Offset`]. Keying on a frame rather than a masked
-/// address keeps the cache free of dereferenceable values and hands the backing map a dense,
-/// well-distributed key space.
-///
-/// # Structure constraints
-///
-/// A [`Peephole`] is both granule-aligned and granule-sized, so an access whose structure runs past
-/// its window boundary cannot be served from a single [`Frame`]. Address space layout randomization
-/// places a structure at an arbitrary alignment relative to the granule tiling, so whether a given
-/// structure straddles a boundary is not known ahead of time and an implementor must account for
-/// straddlers deterministically. This imposes implementor-specific constraints on the size of an
-/// accessed structure relative to the granule, documented by each implementor.
+/// The requested value must fit within a window and meet its alignment
+/// requirements. Grid-based managers may use shifted windows to accommodate
+/// values that cross a grid boundary. Each implementation documents its size
+/// limits and placement restrictions.
 pub trait Manage {
-    /// Resolve an absolute foreign address into an [`Access`] for `U` from an already-open [`Peephole`].
+    /// Look up a cached window that can serve `U` at the foreign address.
     ///
-    /// This is a pure lookup. It quantizes the address into its [`Frame`] and returns [`Some`] when a
-    /// cached [`Peephole`] already covers that frame and `U` fits the window from the derived offset,
-    /// and [`None`] otherwise. A [`None`] does not mean the address is unmappable, only that no open
-    /// window presently serves it.
+    /// Because lookup does not open windows, [`None`] only means the current
+    /// cache cannot serve the request. Use [`Manage::source`] to try opening a
+    /// suitable window before concluding that access is unavailable.
     ///
-    /// # Remarks
-    ///
-    /// Even on a [`Some`], the downstream [`Foreign`] retrieval is not to be treated as infallible.
-    ///
-    /// [`Foreign`]: crate::peephole::Foreign
+    /// When lookup succeeds, convert the returned intent through
+    /// [`Access::foreign`] to validate bounds and alignment before reading.
     fn absolute<U>(&self, target_address: ViAddr) -> Option<Access<U>>
     where
         U: Unassociated;
 
-    /// Resolve an absolute foreign address into an [`Access`] for `U`, opening a [`Peephole`] on miss.
+    /// Resolve a foreign address, opening and caching a window if needed.
     ///
-    /// This behaves as [`Manage::absolute`] save that, when no cached window covers the address, it
-    /// opens a fresh [`Peephole`] over the [`Frame`] through the engaged [`crate::target::Target`] and caches it
-    /// before awarding the [`Access`]. A [`None`] denotes that no frame of this manager can contain
-    /// `U` at the given address, which arises only when the structure exceeds the implementor size
-    /// constraint.
+    /// Returns [`None`] when the requested value cannot be served under this
+    /// manager's placement, size, or alignment constraints.
     ///
     /// # Failure
     ///
-    /// This may fail when a [`Peephole`] had to be opened and its creation or memory-mapping failed.
+    /// Opening or mapping a new peephole can return an operating system error.
     fn source<U>(&self, target_address: ViAddr) -> io::Result<Option<Access<U>>>
     where
         U: Unassociated;
@@ -220,18 +196,20 @@ pub trait Manage {
         }
     }
 
-    /// Determine the [`Granule`] at which this manager tiles the address space into windows.
+    /// Return the manager's placement granularity.
     ///
-    /// The granule is the span and alignment a window is quantized to, so a bulk consumer such as a
-    /// scanner sizes and aligns its tiles to the window grid rather than rediscovering it.
-    ///
-    /// The granule is assumed to be static for the lifetime of a manager instance, because a manager
-    /// is constructed at one granularity and never re-tiles, so a caller may read it once and cache
-    /// it rather than re-querying per resolution.
+    /// Grid-based managers use this as their window size and alignment.
+    /// [`Memoize`] reports page granularity but may open larger windows to fit
+    /// requested spans. The value is fixed for the manager's lifetime.
     fn granule(&self) -> Granule;
 }
 
-/// A structure that indicates the intent of access of foreign-address-space memory for an `U` at the contained offset for a peephole.
+/// A request to access `U` at an offset within a peephole.
+///
+/// # Notes
+///
+/// The offset may come from sparse projection and need not fit the current
+/// window. Use [`Manage::refresh`] to resolve such requests before access.
 #[derive(Debug, Clone)]
 pub struct Access<U>(pub Peephole, pub Offset, marker::PhantomData<U>)
 where
@@ -265,8 +243,7 @@ where
 
     /// Consume the intent into a [`Foreign`] handle for `U` at the resolved offset.
     ///
-    /// This is the fallible downstream retrieval alluded to by [`Manage::absolute`], and re-validates
-    /// the bounds and alignment of `U` against the peephole window.
+    /// Returns [`None`] if `U` does not fit or is misaligned within the window.
     ///
     /// [`Foreign`]: crate::peephole::Foreign
     #[inline]

@@ -1,8 +1,8 @@
-//! Bounded least-recently-used logical frame retention.
+//! Fixed-grid window reuse with a bounded least-recently-used cache.
 //!
-//! [`Lru`] mirrors the two-level rebase geometry of [`crate::manage::rebased::Rebased`]. Each level
-//! discovers live peepholes through a concurrent weak [`Frame`] index while one global [`LruCache`]
-//! owns the manager's bounded strong retention.
+//! [`Lru`] uses the placement rules of [`crate::manage::rebased::Rebased`].
+//! Eviction releases the manager's ownership of a window. Outstanding access
+//! handles can keep it alive and allow subsequent requests to find it again.
 
 use alloc::sync::{Arc, Weak};
 
@@ -26,7 +26,7 @@ use crate::{
     target::Target,
 };
 
-/// The logical rebase level that owns one frame.
+/// The logical rebase level that owns a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Level {
     /// The flush rebase grid.
@@ -36,11 +36,11 @@ pub enum Level {
     L1,
 }
 
-/// The global LRU identity of one logical frame.
+/// The global LRU identity of a logical frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct WindowKey(Level, Frame);
 
-/// One weak logical rebase level used by [`Lru`].
+/// A grid index that discovers windows without keeping their mappings alive.
 #[derive(Debug)]
 struct LruRebase {
     /// The weak peephole index keyed by logical frame.
@@ -54,7 +54,7 @@ struct LruRebase {
 }
 
 impl LruRebase {
-    /// Construct one empty weak rebase level.
+    /// Construct an empty weak rebase level.
     #[inline]
     fn level_with(target_granule: Granule, target_level: Level) -> Self {
         let rebase_map = DashMap::new();
@@ -91,7 +91,7 @@ impl LruRebase {
         }
     }
 
-    /// Determine the logical frame that owns one virtual address.
+    /// Determine the logical frame that owns a virtual address.
     #[inline]
     const fn frame(&self, target_address: ViAddr) -> Frame {
         let ViAddr(target_address) = target_address;
@@ -100,7 +100,7 @@ impl LruRebase {
         Frame(target_framed >> Granule::shift(Self::granule(self)))
     }
 
-    /// Determine the window base represented by one logical frame.
+    /// Determine the window base represented by a logical frame.
     #[inline]
     const fn base(&self, target_frame: Frame) -> ViAddr {
         let Frame(target_frame) = target_frame;
@@ -109,7 +109,7 @@ impl LruRebase {
         ViAddr(target_base.wrapping_add(Self::shift(self)))
     }
 
-    /// Determine the in-window offset of one virtual address.
+    /// Determine the in-window offset of a virtual address.
     #[inline]
     const fn offset(&self, target_address: ViAddr) -> Offset {
         let ViAddr(target_base) = Self::base(self, Self::frame(self, target_address));
@@ -118,7 +118,7 @@ impl LruRebase {
         Offset::byte(target_address.wrapping_sub(target_base))
     }
 
-    /// Determine the foreign range represented by one logical frame.
+    /// Determine the foreign range represented by a logical frame.
     #[inline]
     const fn range(&self, target_frame: Frame) -> ViRange {
         let ViAddr(target_base) = Self::base(self, target_frame);
@@ -152,7 +152,7 @@ impl LruRebase {
         target_in_bounds && target_aligned
     }
 
-    /// Determine the global retention key for one frame in this level.
+    /// Determine the global retention key for a frame in this level.
     #[inline]
     const fn key(&self, target_frame: Frame) -> WindowKey {
         let Self { rebase_level, .. } = self;
@@ -160,7 +160,7 @@ impl LruRebase {
         WindowKey(*rebase_level, target_frame)
     }
 
-    /// Resolve one weak frame entry and remove it once its peephole is dead.
+    /// Upgrade a weak frame entry, removing it if no owning handles remain.
     #[inline]
     fn find(&self, target_frame: Frame) -> Option<Peephole> {
         let Self { rebase_map, .. } = self;
@@ -180,7 +180,7 @@ impl LruRebase {
         }
     }
 
-    /// Point one frame at the selected live peephole allocation.
+    /// Point a frame at the selected live peephole allocation.
     #[inline]
     fn remember(&self, target_frame: Frame, target_peephole: &Peephole) {
         let Self { rebase_map, .. } = self;
@@ -191,7 +191,7 @@ impl LruRebase {
         let _ = rebase_map.insert(target_frame, target_weak);
     }
 
-    /// Remove one weak frame entry only when it still refers to the evicted allocation.
+    /// Remove a weak frame entry only when it still refers to the evicted allocation.
     #[inline]
     fn forget(&self, target_frame: Frame, target_weak: &Weak<PeepholeContext>) {
         let Self { rebase_map, .. } = self;
@@ -218,7 +218,7 @@ impl LruRebase {
         }
     }
 
-    /// Resolve one frame through the global LRU and open a peephole on a true miss.
+    /// Resolve a frame through the global LRU and open a peephole on a true miss.
     fn acquire<U>(
         &self,
         target_manager: &Lru,
@@ -294,8 +294,16 @@ impl LruRebase {
 
 /// A bounded two-level offset-rebased peephole manager with one global LRU order.
 ///
-/// Placement matches [`crate::manage::rebased::Rebased`]. Weak frame maps support concurrent
-/// discovery while the global LRU owns at most [`Lru::limit`] strong peephole references.
+/// Requests use the same placement rules as [`crate::manage::rebased::Rebased`],
+/// so values must meet its half-granule size limit and page-granule boundary
+/// restriction. Both placement grids share the cache capacity given by
+/// [`Lru::limit`], with eviction releasing the least recently used cached owner.
+///
+/// # Notes
+///
+/// Outstanding access handles keep their mappings alive after eviction.
+/// Consequently, the cache capacity bounds the manager's ownership but does
+/// not bound the total number of live mappings in the observer.
 #[derive(Debug)]
 // NOTE(invariant): `cache_storage` owns at most `peephole_limit` strong references. Its keys each
 // identify one logical frame in exactly one of the weak `l0` and `l1` indices.
@@ -306,7 +314,7 @@ pub struct Lru {
     /// The granule used by both logical rebase levels.
     peephole_granule: Granule,
 
-    /// The exact manager-owned strong retention bound.
+    /// The maximum number of windows owned by the cache.
     peephole_limit: NonZeroUsize,
 
     /// The flush logical frame index.
@@ -315,7 +323,7 @@ pub struct Lru {
     /// The optional half-granule-shifted logical frame index.
     l1: Option<LruRebase>,
 
-    /// The complete manager-owned strong retention and global recency order.
+    /// Cached windows ordered by recency across both placement grids.
     cache_storage: Mutex<LruCache<WindowKey, Peephole>>,
 }
 
@@ -378,7 +386,7 @@ impl Lru {
         *peephole_granule
     }
 
-    /// Determine the exact manager-owned strong retention bound.
+    /// Return the cache capacity across both placement grids.
     #[inline]
     #[must_use]
     pub const fn limit(&self) -> NonZeroUsize {
@@ -417,7 +425,7 @@ impl Lru {
         }
     }
 
-    /// Find one retained peephole and promote it to most recently used.
+    /// Find a retained peephole and promote it to most recently used.
     #[inline]
     fn retained(&self, target_key: WindowKey) -> Option<Peephole> {
         let mut target_retained = Self::lock_retained(self);
@@ -451,7 +459,7 @@ impl Lru {
         }
     }
 
-    /// Detach one retained peephole before opening another operating-system peephole.
+    /// Detach a cached peephole before opening another operating-system peephole.
     /// The caller releases it after dropping the weak-index entry guard.
     fn reserve(&self) -> Option<(WindowKey, Peephole)> {
         let mut target_retained = Self::lock_retained(self);
@@ -459,7 +467,7 @@ impl Lru {
         Self::make_room(&mut target_retained)
     }
 
-    /// Retain one peephole as most recently used and release a capacity eviction afterward.
+    /// Retain a peephole as most recently used and release a capacity eviction afterward.
     fn retain(&self, target_key: WindowKey, target_peephole: Peephole) -> Peephole {
         let (target_selected, target_evicted) = {
             let mut target_retained = Self::lock_retained(self);
@@ -483,7 +491,7 @@ impl Lru {
         target_selected
     }
 
-    /// Drop one evicted strong owner outside the retention mutex and clean dead weak metadata.
+    /// Release an evicted owner outside the cache mutex and remove expired weak entries.
     fn release(&self, target_evicted: Option<(WindowKey, Peephole)>) {
         match target_evicted {
             None => {}

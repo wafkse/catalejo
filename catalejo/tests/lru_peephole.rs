@@ -1,8 +1,10 @@
 //! Device-backed lifecycle tests for the bounded LRU manager.
 //!
-//! The parent test engages a child process whose resident region spans several hugepage granules.
-//! The test is ignored on ordinary hosts because it requires the Mirilla device and foreign-process
-//! engagement. The child-role test itself exits immediately during an ordinary test run.
+//! To test eviction while access handles remain alive, the parent engages a
+//! child exposing resident memory across several hugepage granules. This needs
+//! the Mirilla device and permission for foreign-process engagement, so the
+//! lifecycle test is ignored by default. The child-role entry point runs only
+//! when selected by the parent and otherwise returns immediately.
 
 use std::{
     hint::black_box,

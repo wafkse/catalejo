@@ -1,4 +1,4 @@
-//! Engagement target module.
+//! Process engagement and session ownership.
 
 use std::{
     fs::OpenOptions,
@@ -25,8 +25,12 @@ impl Target {
     ///
     /// # Failure
     ///
-    /// This returns [`io::ErrorKind::NotFound`] when the build does not configure a default device
-    /// path. Use [`Self::engage_at`] or [`Self::engage_with`] in that configuration.
+    /// Without a configured default path, this returns
+    /// [`io::ErrorKind::NotFound`], or `ENODEV` in stealth mode. Use
+    /// [`Self::engage_at`] or [`Self::engage_with`] to supply the device.
+    ///
+    /// Opening the device, initializing fault recovery, or engaging the process
+    /// can also fail, including when the caller lacks permission.
     #[inline]
     pub fn engage(process_id: libc::pid_t) -> io::Result<Self> {
         let target_path = match ffi::command::default_device_path() {
@@ -75,7 +79,9 @@ impl Target {
     ///
     /// # Safety
     ///
-    /// The provided device file descriptor must be `mirilla`-created.
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The provided descriptor must identify a Mirilla device.
     #[inline]
     pub unsafe fn engage_with(
         target_device: BorrowedFd,
@@ -92,7 +98,7 @@ impl Target {
         Ok(Self(target_clone, target_id, fault_backend))
     }
 
-    /// Engage a target process within the sesion context of an existing [`Target`] acquisition.
+    /// Engage a target process using the session of an existing [`Target`].
     #[inline]
     pub fn engage_within(&self, process_id: libc::pid_t) -> io::Result<Self> {
         let &Self(ref target_device, _, fault_backend) = self;
@@ -137,7 +143,11 @@ impl Target {
 }
 
 impl Target {
-    /// Disengage with the target process.
+    /// Ask Mirilla to release this target engagement.
+    ///
+    /// # Notes
+    ///
+    /// The handle is consumed even if the kernel rejects the request.
     #[inline]
     pub fn disengage(self) -> io::Result<()> {
         let Self(target_device, target_id, _) = self;

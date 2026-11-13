@@ -1,4 +1,20 @@
-//! The home module for the [`Rebased`] manager.
+//! Fixed-size peephole placement on offset grids.
+//!
+//! A half-granule shift lets values crossing an `L0` boundary fit inside an `L1`
+//! window. For a granule of 2 MiB, both grids cover the following target ranges.
+//!
+//! ```text
+//! Address (MiB)   0       1       2       3       4
+//!                 |-------|-------|-------|-------|
+//! L0              [---------------)[---------------)
+//! L1                      [---------------)
+//! Value                         [---)
+//!                             1.75 2.25
+//! ```
+//!
+//! The illustrated value crosses the `L0` boundary at 2 MiB but fits in the `L1`
+//! window from 1 to 3 MiB. Requests first try `L0`, then `L1` if it exists.
+//! [`Granule::Page`] has no shifted grid because its half is not page-aligned.
 
 use core::{alloc::Layout, mem};
 
@@ -16,12 +32,23 @@ use crate::{
     target::Target,
 };
 
-/// A 2-level offset-rebased manager for [`Peephole`] allocation.
+/// Cache fixed-size windows on an unshifted and a half-granule-shifted grid.
 ///
-/// # Implementation-specific Constraints
+/// A value that crosses an unshifted window boundary can fit in the shifted
+/// grid instead. To guarantee that either grid can accommodate a request, values
+/// must be no larger than half the selected [`Granule`]. Requests exceeding
+/// that limit trigger a debug assertion in [`Manage::source`].
 ///
-/// This is limited to structures whose size are less than `G / 2` bytes, where
-/// `G` is the size of the used [`Granule`].
+/// # Page-sized windows
+///
+/// [`Granule::Page`] has no shifted grid because its half is not page-aligned.
+/// A request using that granule must therefore fit entirely within its
+/// unshifted page.
+///
+/// # Cache lifetime
+///
+/// Once opened, windows stay cached until the manager is dropped. For the same
+/// placement rules with bounded cache ownership, use [`crate::manage::lru::Lru`].
 #[derive(Debug)]
 pub struct Rebased {
     /// The engaged target process that is being peepholed into.
@@ -30,14 +57,12 @@ pub struct Rebased {
     /// The granule at which every peephole window is sized.
     peephole_granule: Granule,
 
-    /// The offset-shifted grids of the peephole cascade. (`L0`)
+    /// The unshifted window grid.
     // NOTE(rationale): Keep the grids inline, as the cascade is at most two (`L0` and the
     // half-granule-shifted `L1`).
     l0: Rebase<0>,
 
-    /// The offset-shifted grids of the peephole cascade. (`L1`)
-    ///
-    /// This may not exist if the used peephole granule is [`Granule::Page`]
+    /// The half-granule-shifted grid, absent for [`Granule::Page`].
     l1: Option<Rebase<1>>,
 }
 
@@ -177,9 +202,12 @@ impl Manage for Rebased {
     }
 }
 
-/// A single-rebase mapping in a [`Rebased`] with an offset basis of `O`.
+/// A window grid displaced by `O` half-granules from the address-space origin.
 ///
-/// This is a sub-manager, and use of it directly is discouraged.
+/// # Notes
+///
+/// This serves an individual level of [`Rebased`]. Applications should use the
+/// enclosing manager to obtain fallback to the shifted grid when needed.
 #[derive(Debug)]
 pub struct Rebase<const O: usize> {
     /// The map of peephole frame to its respective peephole.
@@ -234,7 +262,7 @@ impl<const O: usize> Rebase<O> {
         let target_offset = self.offset(target_address);
 
         // NOTE: A straddler or a misaligned access is rejected here so the caller can slide it onto
-        // a shifted grid rather than open a window that could not serve the whole structure anyway.
+        // a shifted grid without opening an unusable window.
         if !self.admits::<U>(target_offset) {
             return Ok(None);
         }
@@ -304,7 +332,7 @@ impl<const O: usize> Rebase<O> {
         let ViAddr(target_address) = target_address;
 
         // NOTE: Rebase the address into this grid's origin before quantizing, so the shifted (`L1`)
-        // grid indexes from its own displaced basis rather than the absolute address space.
+        // grid indexes are relative to its displaced origin.
         let framed_address = target_address.wrapping_sub(self.shift());
 
         Frame(framed_address >> self.granule().shift())
@@ -313,7 +341,8 @@ impl<const O: usize> Rebase<O> {
     /// Determine the base virtual address of the window that owns the specified [`Frame`].
     ///
     /// This is the inverse of [`Rebase::frame`], re-materializing the grid-relative frame index
-    /// into the absolute, granule-aligned base address of its peephole window.
+    /// into the absolute base address of its peephole window. Shifted window
+    /// bases are page-aligned but need not be aligned to the granule size.
     #[inline]
     pub const fn base(&self, target_frame: Frame) -> ViAddr {
         let Frame(target_frame) = target_frame;
@@ -386,8 +415,10 @@ impl<const O: usize> Rebase<O> {
 
     /// Insert a [`Peephole`] for the specified [`Frame`], returning the previously-held one.
     ///
+    /// # Concurrency
+    ///
     /// The backing map shards its locks per bucket, so an insertion contends only with concurrent
-    /// operations that land on the same shard rather than with the map as a whole.
+    /// operations that land on the same shard.
     #[inline]
     pub fn emplace(&self, target_frame: Frame, target_peephole: Peephole) -> Option<Peephole> {
         let Self { rebase_map, .. } = self;

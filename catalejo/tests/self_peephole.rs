@@ -1,14 +1,15 @@
 //! Device-backed integration tests for catalejo peephole reads and writes.
 //!
-//! These engage the current process as their own target, so they require the mirilla module to be
-//! loaded and `/dev/mirilla` to be present. They are `#[ignore]`d so a default `cargo test` on a
-//! host without the device skips them cleanly. Run them where the device exists with:
+//! The tests engage the current process, requiring a loaded Mirilla module and
+//! access to `/dev/mirilla`. They are ignored by default so hosts without the
+//! device can run the remaining tests. Once the device is available, run them
+//! explicitly with the following command.
 //!
 //! ```text
 //! cargo test -p catalejo --test self_peephole -- --include-ignored
 //! ```
 //!
-//! In CI they run inside the mirilla VM against a loaded module.
+//! CI runs these tests in the Mirilla VM with the module loaded.
 
 use catalejo::{
     address::ViAddr,
@@ -153,7 +154,7 @@ fn writes_a_known_word() {
     );
 
     // SAFETY: The target page remains mapped and readable. A volatile read observes the memory
-    // reached through its original mapping rather than the peephole alias.
+    // reached through its original mapping. The peephole alias is not used here.
     assert_eq!(unsafe { target_slot.read_volatile() }, target_replacement);
     assert_eq!(target_foreign.read(), Some(target_replacement));
 
