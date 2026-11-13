@@ -59,7 +59,8 @@ jobs:
             fail-fast: false
             matrix:
                 kernel:
-                    - { series: "7.2", tag: "v7.2.9" }
+                    - { series: "7.2", tag: "v7.2.15" }
+                    - { series: "7.3", tag: "v7.3.4" }
         steps:
             - uses: actions/checkout@v7
 
