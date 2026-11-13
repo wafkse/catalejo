@@ -1,21 +1,10 @@
 /*
- * Comprehensive Test Suite for Mirilla Module (New API)
+ * Device-backed target engagement and peephole lifecycle tests.
  *
- * This test program validates the new Mirilla API which simplifies
- * the engagement model:
- * - ENGAGE: Start observing a process (returns target_id)
- * - PEEPHOLE: Create memory mirror (returns peephole_id and fd)
- * - DISENGAGE: Stop observing a process
- *
- * Tests include:
- * - Basic engagement/disengagement
- * - Single peephole creation and access
- * - Multiple peepholes on same target
- * - Multiple targets from same observer
- * - Memory change propagation
- * - MMU notifier callbacks (unmap, remap)
- * - Performance benchmarks
- * - Cleanup and error handling
+ * A child process exposes memory regions while the observer engages it through
+ * Mirilla. The cases create multiple peepholes, check that target writes reach
+ * each alias, and exercise unmap and remap notifications before releasing the
+ * mappings and engagement. A resident-read loop measures access after setup.
  */
 
 #include "test-harness.h"
@@ -635,8 +624,8 @@ static int parent_process(pid_t child_pid, int pipe_in, int pipe_out)
 
             usleep(50000);
 
-            /* Old peepholes should still work (they track the VMA, not address) */
-            /* Or they might be invalidated - depends on implementation */
+            /* Existing peepholes track the original virtual range. Moving the
+             * backing elsewhere leaves that range unable to resolve the old pages. */
             printf("[PARENT] Remap completed, existing peepholes may be invalidated\n");
             TEST_PASS("MMU Notifier - Child Remaps Region");
         }
@@ -651,7 +640,7 @@ static int parent_process(pid_t child_pid, int pipe_in, int pipe_out)
     {
         /* After remap, the old peephole points to invalid memory.
          * Accessing it should fault, which the protected read reports as an
-         * error outcome instead of crashing the observer.
+         * error outcome that the observer can handle.
          */
         printf("[PARENT] Attempting to read from peephole after child remap (should "
                "fault)...\n");

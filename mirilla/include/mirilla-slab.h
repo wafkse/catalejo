@@ -57,6 +57,7 @@ struct mirilla_slab_set {
 /**
  * Validate and initialize an unused slab set with immutable consumer configuration.
  *
+ * @par Requirements
  * slab_size must be nonzero and page aligned. slab_limit must be nonzero. operation_table must
  * provide every callback. The function returns zero on success or a logged negative errno without
  * modifying slab_set on failure.
@@ -71,10 +72,14 @@ bool mirilla_slab_set_empty(const struct mirilla_slab_set *slab_set);
 /**
  * Validate and attach one complete writable shared VMA to an initialized slab set.
  *
+ * @par Ownership and requirements
  * The VMA must be a zero-offset, exact-size, shared, non-executable RW mapping. The caller keeps
- * owner_context alive through this call. Success acquires the VMA-owned reference that retains
- * both the owner and its embedded slab set until VMA close. Failure returns a logged negative errno
- * and leaves VMA ownership with the caller. Fork invokes the consumer's fork_set callback and
+ * owner_context alive through this call. Success acquires a VMA-owned reference that keeps
+ * both the owner and its embedded slab set alive until VMA close. Failure returns a logged negative errno
+ * and leaves VMA ownership with the caller.
+ *
+ * @par Fork behavior
+ * Fork invokes the consumer's fork_set callback and
  * creates separate backing for the child. The .open callback zaps parent PTEs and marks the child
  * VMA VM_WIPEONFORK before the kernel can copy page tables, so the child cannot retain a mapping
  * to parent backing.

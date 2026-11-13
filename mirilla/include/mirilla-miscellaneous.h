@@ -22,17 +22,17 @@
  *
  * NOTE(invariant): Kernel and C++ consumers use `static_assert`, C consumers use
  * `_Static_assert`. Bindgen sees no assertion declaration. Size, alignment, and offset queries
- * retain their native language semantics behind the same Mirilla spelling.
+ * use native language semantics through the shared Mirilla macros.
  */
 #if defined(__BINDGEN__)
 /** Omit a native compile-time assertion while generating Rust bindings. */
 #define MIRILLA_ASSERT(target_condition, target_message)
 #elif defined(__KERNEL__) || defined(__cplusplus)
-/** Assert one ABI property with the native kernel or C++ spelling. */
+/** Assert one ABI property using kernel or C++ `static_assert`. */
 #define MIRILLA_ASSERT(target_condition, target_message) \
     static_assert(target_condition, target_message)
 #else
-/** Assert one ABI property with the native C spelling. */
+/** Assert one ABI property using C `_Static_assert`. */
 #define MIRILLA_ASSERT(target_condition, target_message) \
     _Static_assert(target_condition, target_message)
 #endif
@@ -144,6 +144,7 @@ typedef int64_t virtual_relative_t;
 /**
  * Apply a signed relative displacement to a virtual address.
  *
+ * @par Arithmetic
  * Converting the displacement to the unsigned address representation makes backward displacement
  * well-defined without risking signed overflow. As with ordinary virtual-address arithmetic, the
  * result wraps at the boundary of the virtual-address representation.

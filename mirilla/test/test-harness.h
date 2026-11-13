@@ -370,7 +370,7 @@ static inline int faultable_read_region(void *destination, const void *source, s
 /*
  * Verify region contents end to end: the bytes are pulled through the
  * fault-protected copy before comparison, so a faulting view reports as a
- * verification failure rather than a crash.
+ * verification failure that the suite can report.
  */
 static inline int verify_region_faultable(const void *addr, size_t size, unsigned int expected_base)
 {

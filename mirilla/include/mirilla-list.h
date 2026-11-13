@@ -23,30 +23,33 @@
 typedef uint32_t mirilla_outside_list_attribute_t;
 
 /**
- * A generic interface to handle an "outside list", an array for dynamically-sized structures to
- * be transfered from kernelspace to userspace efficiently.
+ * A userspace output buffer for a variable-length kernel result.
+ *
+ * The caller supplies storage capacity and element size. The kernel fills the available
+ * prefix and reports the total entry count separately, allowing a sizing query followed
+ * by a larger allocation when needed.
  */
 struct mirilla_outside_list {
     /**
-     * The out-pointer to the list.
+     * Userspace address of the output buffer.
      *
-     * This is a `void *`, but should be cast to the underlying type. Annotate with
-     * `MIRILLA_OUTSIDE_LIST_TYPE` for cleanliness and to avoid confusion. It will be refered to as
-     * a `backing-type` pseudo-type.
+     * @par Representation
+     * The ABI carries an integer address. `MIRILLA_OUTSIDE_LIST_TYPE` annotates
+     * the element type expected by a particular command.
      *
-     * This may never be `NULL`, unless list population is denegated via the `MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE` attribute.
+     * @par Constraints
+     * The address may be zero only when population is disabled through
+     * `MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE`.
      */
     virtual_address_t list_address;
 
     /**
-     * The size of the allocation provided for the list address.
-     *
-     * This is counted in increments of `sizeof(backing-type)`.
+     * Output buffer capacity in elements, each occupying `element_size` bytes.
      */
     uint32_t list_size;
 
     /**
-     * The size of a singular element in the list.
+     * Byte size of each output element.
      */
     uint32_t element_size;
 
@@ -56,16 +59,16 @@ struct mirilla_outside_list {
     mirilla_outside_list_attribute_t list_attribute;
 };
 
-/*+
- * An outcome to an operation performed to a `struct mirilla_outside_list`.
+/**
+ * Entry count available to an outside-list query.
  *
- * This is an outcome struct, and dictates
+ * @par Notes
+ * The count includes entries that did not fit in the supplied buffer. Only the
+ * prefix bounded by both this count and the buffer capacity has been populated.
  */
 struct mirilla_outside_list_outcome {
     /**
-     * The population count of the elements that were kernel-resident.
-     *
-     * This is counted in increments of `sizeof(backing-type)`.
+     * Total available element count, independent of the output buffer capacity.
      */
     uint32_t total_count;
 };

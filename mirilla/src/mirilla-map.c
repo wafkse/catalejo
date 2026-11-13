@@ -140,7 +140,7 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
         container_of(target_subscribe, struct mirilla_map_peephole_context, interval_subscribe);
 
     /*
-	 * NOTE(lifetime): A full-interval release prematurely kills the peephole.
+	 * NOTE(lifetime): Address-space release permanently marks the peephole dead.
 	 * Page teardown rides on the ordinary unmap invalidations `exit_mmap`
 	 * emits over the range.
 	 */
@@ -171,7 +171,7 @@ bool mirilla_map_target_notificate_invalidate_range(struct mmu_interval_notifier
     unsigned long range_start = range->start, range_end = range->end;
 
     /*
-	 * NOTE(bounds): Does this event overlap this peephole?
+	 * NOTE(bounds): Ignore invalidations outside the observed target range.
 	 */
     if (peephole_context->start_address >= range_end ||
         peephole_context->end_address <= range_start) {
@@ -370,21 +370,19 @@ vm_fault_t mirilla_map_peephole_vm_fault(struct vm_fault *vmf)
 }
 
 /*
- * NOTE(populate): Prefault the whole window at `mmap` time rather than on first
- * touch, so that a later read walks resident PTEs instead of paying a fault and
- * a remote pin per granule. This is requested through
- * `MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE`, because it trades a slower `mmap`
- * for that faster steady state and an observer that never reads the whole window
- * would not want it.
+ * Populate target-page aliases during mmap when requested by
+ * MIRILLA_MAP_PEEPHOLE_INITIALIZE_POPULATE. This moves pinning and page-table
+ * installation into mapping setup so subsequent reads can use resident PTEs.
+ * Callers that read only part of a window can leave population disabled.
  *
- * This deliberately duplicates the pin-and-install of the demand-fault path
- * rather than sharing it. The fault path resolves one racing granule, whereas
- * this pass pins `MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE` granules per
- * remote pin for throughput. Each batch still participates in the interval
- * notifier protocol: it samples the sequence before pinning, then holds the
- * install lock across the retry check and PFN installs. A collided batch is
- * dropped and left for the demand-fault path rather than risking a stale alias.
- * Population remains advisory; failure to pin a batch never fails the `mmap`.
+ * The demand-fault path resolves an individual page. This pass batches up to
+ * MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE pages per remote pin, amortizing
+ * the page-table walk and target mmap_lock acquisition across the batch.
+ *
+ * Each batch samples the interval-notifier sequence before pinning and checks
+ * it under install_lock before inserting PFNs. If invalidation raced the pin,
+ * the batch is discarded and those addresses resolve on demand. Pinning failure
+ * also ends population without failing mmap, so population is advisory.
  */
 static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *peephole_context,
                                           struct vm_area_struct *vma)
@@ -398,8 +396,7 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
     /*
 	 * NOTE(lock): A self-peephole observes the mapper's own mm, whose `mmap_lock`
 	 * we already hold for write from the outer `mmap`. Reuse it and pin with
-	 * `locked == NULL`, exactly as the fault path does, rather than recursively
-	 * re-acquire it.
+	 * `locked == NULL`, as the fault path does, to avoid recursive acquisition.
 	 */
     bool self_observer = address_space == current->mm;
 
@@ -408,8 +405,7 @@ static void mirilla_map_peephole_populate(struct mirilla_map_peephole_context *p
     /*
 	 * NOTE(refcount): The peephole pins the observed mm by `mm_count`. A remote
 	 * pin needs a live `mm_users`, so upgrade the held reference once for the
-	 * whole pass rather than reacquire it per iteration. A self-peephole already
-	 * runs on `current->mm`, whose users cannot drop under us.
+	 * pass. A self-peephole runs on `current->mm`, whose users remain live during the call.
 	 */
     if (!self_observer && !mmget_not_zero(address_space))
         return;

@@ -206,7 +206,7 @@ static int test_layout_full_population(void)
      *
      * The kernel may coalesce adjacent anonymous VMAs, so the VMA containing
      * the test region can be larger than the allocation itself. Search for a
-     * containing entry rather than an exact boundary match.
+     * containing entry that may extend beyond the allocation.
      */
     int found_region = 0;
     virtual_address_t region_start = (virtual_address_t)region;
@@ -447,7 +447,7 @@ static int test_layout_auxiliary_vector(void)
  * `DO_NOT_POPULATE`, and a nonexistent target must all be refused.
  *
  * The `catalejo-sys` C wrapper recovers `-errno` from the raw ioctl, so the
- * returned status is checked directly rather than through `errno`.
+ * returned status can be checked directly without consulting `errno`.
  */
 static int test_layout_negative(void)
 {

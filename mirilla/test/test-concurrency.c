@@ -11,9 +11,9 @@
  *   notification kills the peephole and further accesses fault.
  *
  * All view accesses ride the `catalejo-fault` protected routines, so a
- * fault the module raises surfaces as `CATALEJO_OUTCOME_ERROR` instead of
- * taking the suite down. The `SIGALRM` watchdog in `main` converts a
- * deadlocked fault path into a suite failure rather than a hung runner.
+ * fault the module raises is reported as `CATALEJO_OUTCOME_ERROR`. The
+ * `SIGALRM` watchdog in `main` terminates a deadlocked run, allowing the
+ * runner to report a suite failure.
  */
 
 #include "test-harness.h"
@@ -74,8 +74,7 @@ static void *fault_worker(void *argument)
 /*
  * Fault a self-peephole from many threads at once. Every round tears the
  * views down again, so the faults keep hitting the self path (`mmap_lock`
- * reuse, per-VMA-lock retry bounce) concurrently instead of settling into
- * installed pages.
+ * reuse and per-VMA-lock retry bounce) on each iteration.
  */
 static int test_self_multithread_fault(void)
 {

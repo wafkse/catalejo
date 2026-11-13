@@ -1,5 +1,9 @@
 /*
- * NOTE(docs): Module documentation is pending.
+ * Target engagement, page aliases, and address-space layout queries.
+ *
+ * Engagement associates a process identity with a device session. Peepholes then expose
+ * fixed virtual ranges through separate descriptors. Their observer mappings resolve target
+ * pages on demand, while interval notifications remove aliases when those pages change.
  */
 
 #ifndef _MIRILLA_MAP_H_
@@ -184,10 +188,10 @@ typedef uint32_t mirilla_map_peephole_initialize_word_t;
 /*
  * The number of observed frames a single populate iteration pins in one remote
  * pin. Batching amortizes the `get_user_pages_remote` page-table walk and the
- * observed `mmap_lock` round trip over many granules rather than paying both per
- * granule the way the demand-fault path does.
+ * observed `mmap_lock` round trip across the batch.
  *
- * WARNING: This is used to hold an array on the stack, keep the size small.
+ * @par Stack usage
+ * The batch occupies a stack array, so increasing this limit also increases kernel stack use.
  */
 #define MIRILLA_MAP_PEEPHOLE_POPULATE_ITERATION_SIZE (64)
 
@@ -195,7 +199,8 @@ struct mirilla_map_peephole_argument {
     /*
    * The monotonic identifier to the target observed virtual address space.
    *
-   * This must have been acquired for the same
+   * @par Requirements
+   * The identifier must come from an engagement on the same device session.
    */
     mirilla_map_target_id_t target_id;
 
@@ -306,8 +311,8 @@ typedef uint64_t mirilla_auxiliary_vector_value_t;
 /**
  * A mirilla-provided auxiliary vector entry.
  *
- * NOTE(bitness): On an observed `32-bit` target, the respective type-entry auxiliary entry pair
- * are widened to 64-bit integers.
+ * @par Representation
+ * On a 32-bit target, both the entry type and value are widened to 64-bit integers.
  */
 struct mirilla_auxiliary_vector_entry {
     /**
@@ -355,6 +360,7 @@ struct mirilla_map_address_space_layout_argument {
      * The monotonic identifier of the engaged target whose address space is to
      * be described.
      *
+     * @par Requirements
      * This must have been acquired via a `MAP` `ENGAGE` command on the same
      * device session.
      */

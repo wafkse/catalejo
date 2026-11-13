@@ -95,6 +95,7 @@ static inline void mirilla_fd_reservation_cleanup(struct mirilla_fd_reservation 
 /**
  * Reserve a descriptor while retaining file ownership in the reservation.
  *
+ * @par Ownership
  * The reservation consumes target_file even when descriptor allocation fails. Lexical cleanup
  * releases that file and any successful descriptor reservation unless installation consumes them.
  */
@@ -112,6 +113,7 @@ static inline int mirilla_fd_reservation_prepare(struct mirilla_fd_reservation *
 /**
  * Install a retained file and consume its descriptor reservation.
  *
+ * @par Requirements
  * The caller must invoke this only after successful preparation and result publication to
  * userspace.
  */
