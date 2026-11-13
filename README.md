@@ -5,7 +5,7 @@
 
 Fault-protected, zero-copy process memory access for Linux.
 
-Catalejo provides a Rust interface backed by its **in-tree Linux kernel module**, Mirilla, to map target process memory directly into an observer's address space.
+Catalejo provides a Rust interface backed by Mirilla, its bundled Linux kernel module, to map target process memory directly into an observer's address space.
 
 It provides:
 
