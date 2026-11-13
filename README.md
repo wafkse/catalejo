@@ -1,54 +1,42 @@
 # Catalejo
 
-Catalejo gives a Linux process a fault-protected, zero-copy view into another process' memory. The
-Mirilla kernel module aliases target pages into the observer, so resident reads use local loads.
+[![license](https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square)](#license)
+[![github actions](https://img.shields.io/github/actions/workflow/status/wafkse/catalejo/ci.yml?branch=development&style=flat-square&logo=github)](https://github.com/wafkse/catalejo/actions)
 
-The target keeps running while it is observed. Catalejo does not provide a process snapshot or make
-multi-field reads atomic.
+Fault-protected, zero-copy process memory access for Linux.
 
-Catalejo is under active development and currently targets Linux on `x86_64`.
+Catalejo provides a Rust interface backed by its **in-tree Linux kernel module**, Mirilla, to map target process memory directly into an observer's address space.
 
-## Requirements
+It provides:
 
-- stable Rust
-- a Linux `x86_64` kernel with module support and matching build headers
-- a C toolchain, `libclang`, Make, `binutils`, and `kmod`
-- permission to open the Mirilla device
-- `CAP_SYS_PTRACE` when observing another process
+- Zero-copy access to process memory through locally mapped pages, without repeated cross-process copies.
+- Fault-protected reads and writes that report inaccessible memory instead of terminating the observer.
+- Automatic mapping invalidation using Linux MMU interval notifiers.
+- Typed memory access with explicit validity and coherence guarantees.
+- Memoized, rebased, and LRU-managed memory windows.
+- Live process inspection without suspending the target.
 
-Self-observation does not require `CAP_SYS_PTRACE`.
+**Table of Contents:**
 
-## Setup
+- [Usage](#usage)
+  - [Basic usage](#basic-usage)
+  - [Inspect another process](#inspect-another-process)
+  - [Memory windows](#memory-windows)
+  - [Memory access guarantees](#memory-access-guarantees)
+  - [Performance](#performance)
+  - [Testing](#testing)
+- [Installation](#installation)
+  - [Requirements](#requirements)
+  - [From source](#from-source)
+- [Known limitations](#known-limitations)
+- [Related Projects](#related-projects)
+- [License](#license)
 
-Build against the running kernel unless `KDIR` points at another prepared kernel tree.
+## Usage
 
-```sh
-export KDIR="/lib/modules/$(uname -r)/build"
+### Basic usage
 
-make -C mirilla KDIR="$KDIR" module test
-cargo build --workspace
-sudo insmod mirilla/mirilla.ko
-```
-
-Mirilla normally appears as `/dev/mirilla` through devtmpfs. The observer needs access to that device.
-For foreign targets, run it with `CAP_SYS_PTRACE`. During development that usually means running as
-root or assigning the capability to the built executable.
-
-```sh
-sudo setcap cap_sys_ptrace=ep target/debug/observer
-```
-
-Secure Boot or module-signature enforcement may require signing `mirilla.ko`.
-
-To unload the module, run the following command.
-
-```sh
-sudo rmmod mirilla
-```
-
-## Example
-
-This reads a `u64` from the current process through a memoized peephole.
+Read a `u64` from the current process through a memoized memory window:
 
 ```rust
 use catalejo::{
@@ -70,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let access = manager
         .source::<u64>(address)?
         .ok_or_else(|| std::io::Error::other("manager cannot serve this address"))?;
+
     let foreign = access
         .foreign()
         .ok_or_else(|| std::io::Error::other("peephole was invalidated"))?;
@@ -80,64 +69,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For a foreign process, pass its PID to `Target::engage` and use addresses from that process' address
-space.
+`Target::engage` establishes access to the target process. The memory manager resolves and caches windows, while `Foreign::read` performs fault-protected access to the mapped memory.
 
-## How it works
+### Inspect another process
 
-A peephole is a revocable mapping of a fixed, page-aligned range in the target. Mirilla exposes the
-range through an instance file descriptor, and Catalejo maps that descriptor into the observer.
+To inspect a different process, pass its PID to `Target::engage` and use addresses from its virtual address space.
 
-The mapping starts empty. On first touch, the module resolves the corresponding target address and
-installs an alias for the same physical frame. Once resident, reads go through the observer's own page
-table.
+Accessing another process requires `CAP_SYS_PTRACE` and permission to open the Catalejo kernel device.
 
-```text
-target virtual range       shared physical frames       observer peephole VMA
-[foreign addresses]  --->  [page][page][page]  <---     [local addresses]
-```
+Self-observation does not require `CAP_SYS_PTRACE`.
 
-Mirilla tracks the target range with an MMU interval notifier. When the target changes that range,
-installed observer aliases are removed before they can expose stale frames. A later access resolves
-the target address again, so it can observe replacement memory at the same address or fail if the
-address is no longer accessible.
+The target continues running during observation. Catalejo does not suspend the process or provide a consistent snapshot.
 
-Target address-space teardown marks the peephole dead. Catalejo's protected routines report faults
-as access failures, allowing the observer to handle unavailable memory.
+### Memory windows
 
-`Foreign<F>` holds the peephole, a checked offset, and the accessed type. Managers choose and reuse
-peepholes so repeated reads do not reopen the same target range.
+Catalejo exposes target memory through revocable mappings called *peepholes*.
 
-## Memory model
+Each peephole maps a page-aligned region of a target process into the observer's address space. The mapping initially contains no resident aliases.
+
+On first access, the in-tree kernel module resolves the target address and maps the corresponding physical frame into the observer. Subsequent resident accesses use local memory operations.
+
+When the target changes its mappings, MMU interval notifiers trigger invalidation of the observer's aliases.
+
+Catalejo provides three window managers:
+
+| Manager | Behavior |
+| --- | --- |
+| `Memoize` | Caches page-aligned windows for reuse. |
+| `Rebased` | Uses fixed-size windows and a second offset grid to support accesses crossing granule boundaries. |
+| `Lru` | Extends rebased placement with bounded window caching. |
+
+`Rebased` and `Lru` default to 2 MiB granules.
+
+### Memory access guarantees
+
+Catalejo exposes typed memory operations with different guarantees:
 
 | Operation | Contract |
 | --- | --- |
-| `Foreign::read` | Fault-protected, machine-word-coherent read of a naturally aligned `Faultable` value. |
-| `Foreign::write` | Fault-protected store. Returns whether the store completed. Available through the default `write` feature. |
-| `Foreign::copy` | Copies an `Unassociated` value. A concurrent writer may tear the result across fields or bytes. |
-| Invalidation | Mapping changes remove installed aliases. Later access resolves the target address again. Address-space teardown kills the peephole. |
-| Synchronization | No target suspension and no happens-before relationship with the target. |
+| `Foreign::read` | Fault-protected, machine-word-coherent reads of naturally aligned `Faultable` values. |
+| `Foreign::write` | Fault-protected writes that report whether the store completed. |
+| `Foreign::copy` | Copies `Unassociated` values, potentially observing torn data during concurrent writes. |
 
-`Unassociated` is the type boundary for values that may be observed from arbitrary or torn bytes. It
-excludes references, owning pointers, booleans, and enums with invalid bit patterns.
+`Foreign::write` is enabled by the default `write` feature.
 
-## Window managers
+Typed access is constrained by validity requirements. `Unassociated` excludes types that cannot safely be reconstructed from arbitrary bit patterns, including references and owning pointers.
 
-| Manager | Intended use |
-| --- | --- |
-| `Memoize` | Tight page-aligned windows around arbitrary spans. Windows stay cached for the manager lifetime. |
-| `Rebased` | Fixed-granule windows with a second offset grid for values that straddle a granule boundary. |
-| `Lru` | `Rebased` placement with a limit on cached peepholes. |
+No operation establishes synchronization with the target process.
 
-`Rebased` and `Lru` default to a 2 MiB granule. Values served by their two-grid placement must fit
-within half of the selected granule.
+### Performance
 
-## Performance
+Cached window resolution remains in userspace. Opening a new window requires an `ioctl` and `mmap`, followed by an initial page fault when the mapping is accessed.
 
-Cached resolution stays in userspace. Opening a window requires an `ioctl` and `mmap`, and
-its first access faults in the alias. Subsequent resident reads use protected local loads.
-
-A reference run on a Ryzen 7 7700X with DDR5-6000 CL30 and Linux 7.1.3 produced these medians:
+A reference benchmark on a Ryzen 7 7700X with DDR5-6000 CL30 and Linux 7.1.3 produced these medians:
 
 | Operation | Self target | Foreign target |
 | --- | ---: | ---: |
@@ -147,62 +131,86 @@ A reference run on a Ryzen 7 7700X with DDR5-6000 CL30 and Linux 7.1.3 produced 
 | Fresh window open | 3.55 µs | 4.01 µs |
 | Fresh window + first read | 8.37 µs | 8.28 µs |
 
-These numbers are workload- and machine-dependent. Full Criterion output is under
-[`docs/benchmarks`](docs/benchmarks).
+Resident-read timings exclude the initial cost of opening and faulting in a window.
 
-## Testing
+Measurements depend on hardware, kernel version, and workload. Full Criterion results are available in [docs/benchmarks](docs/benchmarks).
 
-```sh
-just test       # host-safe Rust/C checks
-just kunit      # kernel KUnit suite in a VM
-just test-vm    # Mirilla ABI + Rust integration tests with the module loaded
-```
+### Testing
 
-`KDIR` selects the kernel tree for module and VM builds. The VM recipes use `virtme-ng`, and
-`just kunit` additionally requires `CONFIG_KUNIT=y`.
-
-To exercise a module already loaded on the host, run the device-backed tests.
+Catalejo includes Rust tests, userspace C tests, kernel KUnit tests, and device-backed integration tests.
 
 ```sh
-sudo mirilla/test/mirilla-test
-cargo test --workspace -- --include-ignored --test-threads=1
+just test       # Host-side checks
+just kunit      # Kernel KUnit tests in a VM
+just test-vm    # Kernel ABI and Rust integration tests
 ```
 
-Foreign-target tests need `CAP_SYS_PTRACE`.
+The VM recipes use `virtme-ng` and a prepared Linux kernel tree. KUnit requires `CONFIG_KUNIT=y`.
 
-## Stealth mode
+[GitHub Actions](https://github.com/wafkse/catalejo/actions) runs Rust and C checks alongside kernel and userspace integration tests.
 
-Stealth mode builds a seeded release module without project logging, debug metadata, BTF, or stable
-project-owned symbol names. The seed determines the module name, parameter name, metadata, and
-internal C aliases.
+## Installation
+
+### Requirements
+
+Catalejo currently targets Linux `x86_64`.
+
+Building the project requires:
+
+- Stable Rust and Cargo.
+- A C toolchain, Make, binutils, and kmod.
+- `libclang`.
+- Linux kernel headers matching the target kernel.
+- A kernel supporting loadable modules.
+
+Running Catalejo requires permission to access the device exposed by its kernel module.
+
+### From source
+
+Clone the repository:
 
 ```sh
-seed=replace-with-a-release-seed
-device_name=example-device
-module_name=$(python3 mirilla/tools/mirilla-stealth.py --seed "$seed" --module-name)
-module_path="mirilla/$module_name.ko"
-
-make -C mirilla MIRILLA_STEALTH_MODE=1 MIRILLA_STEALTH_SEED="$seed" module
-
-parameter_name=$(modinfo -F parm "$module_path" | cut -d: -f1)
-sudo insmod "$module_path" "$parameter_name=$device_name"
-
-cargo build -p catalejo --features stealth-mode --no-default-features
+git clone https://github.com/wafkse/catalejo.git
+cd catalejo
 ```
 
-Set `MIRILLA_DEVICE_NAME` at module build time to embed a default device name. Without the default
-Rust device-path feature, use `Target::engage_at` or `Target::engage_with`.
+Build the included kernel module and userspace components:
 
-## Workspace
+```sh
+export KDIR="/lib/modules/$(uname -r)/build"
 
-| Crate | Responsibility |
-| --- | --- |
-| [`catalejo`](catalejo) | Target engagement, peepholes, managers, typed access, copying, and monitoring. |
-| [`catalejo-memory`](catalejo-memory) | Bit-pattern validity and coherence contracts. |
-| [`catalejo-fault`](catalejo-fault) | Fault-protected linked access routines. |
-| [`catalejo-sys`](catalejo-sys) | Mirilla ABI bindings and low-level system calls. |
-| [`catalejo-macro`](catalejo-macro) | Derive support for typed field projection. |
-| [`mirilla`](mirilla) | Kernel-side target engagement, page aliasing, and invalidation. |
+make -C mirilla KDIR="$KDIR" module test
+cargo build --workspace
+```
+
+Load the module:
+
+```sh
+sudo insmod mirilla/mirilla.ko
+```
+
+The module normally exposes `/dev/mirilla` through devtmpfs.
+
+To unload it:
+
+```sh
+sudo rmmod mirilla
+```
+
+Secure Boot or kernel module signature enforcement may require signing the module.
+
+## Known limitations
+
+- Only Linux `x86_64` is currently supported.
+- The in-tree kernel module must be built and loaded before device-backed access.
+- Catalejo does not create atomic snapshots of target processes.
+- Concurrent writes can produce inconsistent or torn observations.
+- Access does not establish synchronization with the target process.
+- Foreign-process inspection requires appropriate tracing and device permissions.
+
+## Related Projects
+
+- [Ganymede](https://github.com/wafkse/ganymede) — Process memory and binary analysis toolkit using Catalejo for live memory inspection.
 
 ## License
 
