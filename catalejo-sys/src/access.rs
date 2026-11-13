@@ -4,12 +4,17 @@ use catalejo_memory::primitive::{Primitive, PrimitiveUnion};
 
 use crate::{exception::backend::Backend, ffi::binding};
 
-/// Perform a bare-bones primitive read via the C-implemented shims.
+/// Read a primitive with fault recovery.
 ///
 /// # Safety
 ///
-/// This has the same safety constraints as an individual `binding::catalejo_read_uN` operation,
-/// where `N` is the size of the primitive read. `fault_backend` proves initialization.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The source must be ordinary memory suitable for fault-protected access,
+///   aligned to the selected primitive width.
+/// * The destination must be writable for that width and must not overlap the
+///   source. It must remain valid for the duration of the call.
+/// * The recovery capability must belong to the current address space.
 #[inline]
 pub unsafe fn read(
     _fault_backend: &Backend,
@@ -38,12 +43,17 @@ pub unsafe fn read(
     }
 }
 
-/// Perform a bare-bones primitive write via the C-implemented shims.
+/// Write a primitive with fault recovery.
 ///
 /// # Safety
 ///
-/// This has the same safety constraints as an individual `binding::catalejo_write_uN` operation,
-/// where `N` is the size of the primitive written. `fault_backend` proves initialization.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The destination must be ordinary memory suitable for fault-protected
+///   stores, aligned to the selected primitive width.
+/// * The source must contain initialized bytes readable for that width and must
+///   not overlap the destination. It must remain valid during the call.
+/// * The recovery capability must belong to the current address space.
 #[inline]
 pub unsafe fn write(
     _fault_backend: &Backend,
@@ -72,12 +82,20 @@ pub unsafe fn write(
     }
 }
 
-/// Perform a fault-protected byte copy.
+/// Copy bytes with recovery from faults in the protected range.
+///
+/// Success means all requested bytes were copied. Failure reports the number
+/// left uncopied, leaving an initialized prefix in the destination.
 ///
 /// # Safety
 ///
-/// Exactly one side must be the fault-adjudicated range. The other side must be valid for the
-/// complete byte count. The ranges must not overlap. The backend must be initialized.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * Exactly one range must be designated for fault-protected access to ordinary
+///   memory. The other range must remain valid for the requested byte count.
+/// * Source bytes must be initialized when read, and destination bytes must be
+///   writable. The ranges must not overlap.
+/// * The recovery capability must belong to the current address space.
 #[inline]
 pub unsafe fn copy(
     _fault_backend: &Backend,

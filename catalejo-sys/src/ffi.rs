@@ -1,4 +1,4 @@
-//! Foreign Function Interface module for the `catalejo-sys` crate.
+//! Mirilla bindings, device commands, and raw layout queries.
 
 pub mod binding {
     #![allow(
@@ -9,7 +9,7 @@ pub mod binding {
         clippy::missing_safety_doc,
         reason = "bindgen-generated bindings have non-standard style and generated unsafe helper methods"
     )]
-    //! Bare automatically-generated bindings to the C-based subsystem.
+    //! Generated declarations for the userspace C routines and Mirilla ABI.
 
     // NOTE: Include the `bindgen`-generated bindings for our own crate.
     include!(concat!(env!("OUT_DIR"), "/catalejo-binding.rs"));
@@ -42,9 +42,7 @@ pub mod command {
         id::{PeepholeId, TargetId},
     };
 
-    /// The canonical name of the device exposed by the kernel module.
-    ///
-    /// This is used for identifying and interfacing with the appropriate character device.
+    /// The configured device name used to locate the Mirilla character device.
     #[cfg(feature = "default-device-path")]
     pub const MIRILLA_DEVICE_NAME: &str = const {
         // SAFETY: The `CStr` is obtained from a `bindgen`-generated C string literal, so it always properly nul-delimited.
@@ -82,10 +80,8 @@ pub mod command {
     ///
     /// # Failure
     ///
-    /// This can fail if the:
-    ///
-    /// * Process does not exist.
-    /// * The calling process does not have the required privileges to engage.
+    /// Engagement fails if the process does not exist or the caller lacks
+    /// permission to observe it.
     ///
     /// # Safety
     ///
@@ -123,9 +119,7 @@ pub mod command {
     ///
     /// # Failure
     ///
-    /// This can fail if the:
-    ///
-    /// * Target was not previously engaged.
+    /// The kernel rejects identifiers not engaged through this session.
     ///
     /// # Safety
     ///
@@ -160,10 +154,8 @@ pub mod command {
     ///
     /// # Failure
     ///
-    /// This can fail if the:
-    ///
-    /// * Target was not previously engaged.
-    /// * Provided memory range is malformed.
+    /// The target must already be engaged through this session. The kernel
+    /// rejects requests with an unknown target or a malformed address range.
     ///
     /// # Safety
     ///
@@ -210,18 +202,23 @@ pub mod command {
     /// For an engaged target process, retrieve the full address space layout, the kernel-resident
     /// auxiliary vector, and the argument/environment metadata.
     ///
-    /// The retry mechanism against the racy kernel-resident count
-    /// is handled internally, so the caller receives owned vectors holding every kernel-resident
-    /// entry. If the VMA count or auxiliary vector changes between the sizing pass and the
-    /// population pass, the population is retried with a buffer sized to the new count, a count that
-    /// shrinks yields a truncated prefix, a count that grows triggers another retry. The number of
-    /// retries is bounded to avoid an unbounded loop under adversarial churn.
+    /// The target can change between sizing the buffers and filling them. If a count
+    /// grows, the operation retries with a larger buffer. If it shrinks, only the
+    /// populated prefix is returned.
+    ///
+    /// Retries are bounded, so repeated layout changes can cause this operation
+    /// to fail.
+    ///
+    /// # Notes
+    ///
+    /// The returned vectors own their entries, but the sizing and population
+    /// passes do not form an atomic snapshot of the target.
     ///
     /// # Failure
     ///
-    /// This can fail if the:
+    /// The query fails in the following cases.
     ///
-    /// * Target was not previously engaged.
+    /// * The target identifier does not belong to this session.
     /// * The kernel reports a count too large to allocate.
     /// * The population pass cannot converge within the retry bound.
     ///
@@ -356,7 +353,7 @@ pub mod command {
 }
 
 pub mod lower {
-    //! Low-level and plumbing structures and functions towards the Foreign-Function-Interface boundary.
+    //! Layout queries using caller-provided output buffers.
 
     use std::{io, os::fd::AsRawFd, os::fd::BorrowedFd};
 
@@ -371,8 +368,12 @@ pub mod lower {
     /// A single auxiliary vector entry, as returned by a layout query.
     pub type AuxiliaryVectorEntry = binding::mirilla_auxiliary_vector_entry;
 
-    /// The outcome of a layout query: the metadata plus the full kernel-resident
-    /// counts for each outside list.
+    /// Metadata and entry counts reported by a layout query.
+    ///
+    /// # Notes
+    ///
+    /// Counts can exceed the supplied buffer capacities. Only the populated
+    /// prefixes can be read from those buffers.
     #[derive(Debug)]
     pub struct AddressSpaceLayoutOutcome {
         /// Kernel-resident metadata of the address space whose layout was requested.
@@ -385,21 +386,23 @@ pub mod lower {
         pub auxiliary_vector_total_count: u32,
     }
 
-    /// Perform a bare-bones address space layout query via the C-implemented shim.
+    /// Query layout metadata and populate caller-provided entry buffers.
     ///
-    /// Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the backing
-    /// buffer address, capacity and element size, and the kernel populates up to the capacity
-    /// and reports the full kernel-resident count through the matching outcome. The caller is
-    /// responsible for allocating, sizing and reading back the populated prefix.
+    /// The caller describes each output buffer through a `mirilla_outside_list`,
+    /// supplying its address, capacity, and element size. The kernel fills as
+    /// many entries as fit, then reports the total available count through the
+    /// matching outcome. Because that count can exceed capacity, callers must
+    /// read only the populated prefix and resize before requesting more entries.
     ///
     /// # Safety
     ///
     /// For soundness purposes, the following must be satisfied:
     ///
     /// * The provided file descriptor must be a valid `mirilla`-created one.
-    /// * Each `mirilla_outside_list::list_address` must either be null (only valid with
-    ///   `MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE`) or name a writable buffer of at
-    ///   least `list_size * element_size` bytes for the duration of the call.
+    /// * Each output buffer must remain writable for its declared capacity
+    ///   multiplied by its element size throughout the call.
+    /// * A zero output address is permitted only when the corresponding list
+    ///   has `MIRILLA_OUTSIDE_LIST_ATTRIBUTE_DO_NOT_POPULATE` set.
     #[inline]
     pub unsafe fn address_space_layout(
         fd: BorrowedFd,

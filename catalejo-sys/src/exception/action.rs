@@ -7,7 +7,11 @@ use core::{
 
 use crate::ffi::binding;
 
-/// A complete architectural recovery policy.
+/// The action Mirilla takes when an exception matches a published record.
+///
+/// A recovery routine can redirect execution to a fallback instruction address
+/// or request a retry. Choosing [`Action::None`] leaves the exception to normal
+/// Linux handling, allowing records to express which faults they handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Leave the exception to native Linux handling.

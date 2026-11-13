@@ -1,9 +1,9 @@
 //! Integration tests for the `ADDRESS_SPACE_LAYOUT` command.
 //!
 //! These tests require the `mirilla` kernel module to be loaded and the
-//! current process to have access to `/dev/mirilla`. They are `#[ignore]` by
-//! default so `cargo test` does not fail in environments without the module;
-//! run them explicitly with `cargo test -- --ignored`.
+//! current process to have access to `/dev/mirilla`. Because ordinary hosts
+//! may lack the module, these tests are ignored by default. Run them explicitly
+//! with `cargo test -- --ignored` once the device is available.
 
 #![allow(clippy::std_instead_of_core, clippy::std_instead_of_alloc)]
 
@@ -35,7 +35,9 @@ fn open_device() -> io::Result<std::fs::File> {
 ///
 /// # Safety
 ///
-/// The caller must ensure the file descriptor comes from `mirilla`.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The provided descriptor must identify a Mirilla device.
 unsafe fn self_engage(fd: BorrowedFd) -> io::Result<TargetId> {
     // SAFETY: The caller asserts the descriptor is a `mirilla` device fd.
     unsafe { command::engage(fd, std::process::id() as _) }

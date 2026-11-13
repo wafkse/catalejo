@@ -1,8 +1,22 @@
-//! Exception contexts, slabs, actions, and the process fault backend.
+//! Recovery records for protected instructions and their publication lifecycle.
 //!
-//! A context owns a fork-inheritable exception family descriptor. Each mapped slab is edited while writable
-//! and published by changing the whole mapping to read only. Publication installs an immutable
-//! kernel snapshot. Returning the mapping to writable removes that snapshot before editing resumes.
+//! A [`Context`] allocates writable [`Slab`] mappings so callers can prepare
+//! recovery records. Publishing a slab makes its mapping read-only and installs
+//! an immutable kernel snapshot for fault handling. To change the records, the
+//! caller first revokes that snapshot by returning the slab to writable access.
+//!
+//! ```text
+//! Context --map()--> Editable slab --publish()--> Published slab
+//!                         ^                          |
+//!                         +----------edit()----------+
+//!
+//! Editable      writable records       no kernel snapshot
+//! Published     read-only records      immutable kernel snapshot
+//! ```
+//!
+//! A failed transition leaves the slab in its previous state. Fork gives the
+//! child independent record storage and publication, allowing it to use inherited
+//! recovery records while later edits remain local to each process.
 
 use core::{
     num::NonZero,
@@ -203,14 +217,21 @@ pub struct Context(
 impl Context {
     /// Create the one exception family allowed for the current address space.
     ///
-    /// A fork child inherits the descriptor and all live slab mappings. The kernel resolves the
-    /// descriptor to the child's own mm context, so [`Self::map`] works without reinitialization.
-    /// If the kernel cannot allocate a child slab during fork, that inherited VMA remains mapped
-    /// but faults with `SIGBUS`; the kernel VMA callback cannot report allocation failure to fork.
+    /// # Fork behavior
+    ///
+    /// Fork inherits the descriptor and live slab mappings. Because the kernel
+    /// resolves the descriptor against the child's address space, the child can
+    /// use [`Self::map`] without creating another context.
+    ///
+    /// Inheriting a mapping can still fail if the kernel cannot allocate its
+    /// child slab. The VMA callback cannot report this failure to fork, so the
+    /// inherited range remains mapped but faults with `SIGBUS` when accessed.
     ///
     /// # Safety
     ///
-    /// `device` must be a descriptor created by Mirilla.
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The provided descriptor must identify a Mirilla device.
     ///
     /// # Errors
     ///
@@ -292,6 +313,8 @@ impl Context {
     }
 
     /// Return the number of currently mapped slabs managed by this wrapper.
+    ///
+    /// # Notes
     ///
     /// Fork copies this counter with the inherited slab VMAs. When all live slabs are inherited,
     /// subsequent map and drop operations update each process's copy independently. Explicitly
@@ -382,14 +405,14 @@ enum SlabState {
     Published,
 }
 
-/// One complete exception slab mapping owned by a [`Context`].
+/// An exception record mapping owned by a [`Context`].
 // NOTE(invariant): The pointer owns one complete mapping from the borrowed context and `SlabState`
 // matches the mapping's current protection and publication state after successful kernel clone.
 #[derive(Debug)]
 pub struct Slab<'context>(
     /// The context that owns the inherited file descriptor used to create this slab.
     &'context Context,
-    /// The first exception record in the complete slab mapping.
+    /// The start of the mapped exception record storage.
     NonNull<binding::mirilla_except_record>,
     /// The last protection state established through this safe wrapper.
     SlabState,
@@ -404,7 +427,7 @@ impl Slab<'_> {
         matches!(slab_state, SlabState::Published)
     }
 
-    /// Return read-only access to the complete record list.
+    /// Return read-only access to the record list.
     #[inline]
     pub const fn record_list(&self) -> &[binding::mirilla_except_record] {
         let Self(target_context, record_list, _) = self;
@@ -415,7 +438,7 @@ impl Slab<'_> {
         unsafe { slice::from_raw_parts(record_list.as_ptr(), record_count) }
     }
 
-    /// Return mutable access to the complete record list while the slab is editable.
+    /// Return mutable access to the record list while the slab is editable.
     #[inline]
     pub const fn record_list_mut(&mut self) -> Option<&mut [binding::mirilla_except_record]> {
         let Self(target_context, record_list, slab_state) = self;
@@ -431,10 +454,12 @@ impl Slab<'_> {
         }
     }
 
-    /// Publish the complete record list as an immutable kernel snapshot.
+    /// Publish the record list as an immutable kernel snapshot.
     ///
-    /// A successful call leaves the slab read only. A failed call leaves the slab editable and
-    /// owned by the caller.
+    /// Publication makes the mapping read-only so the records cannot change
+    /// while Mirilla validates and installs its snapshot. If publication fails,
+    /// the slab remains editable and owned by the caller, allowing the records
+    /// to be corrected before another attempt.
     ///
     /// # Errors
     ///
@@ -465,7 +490,9 @@ impl Slab<'_> {
 
     /// Remove the active kernel snapshot and return the slab to editable memory.
     ///
-    /// A successful call leaves the slab writable. A failed call preserves the published state.
+    /// Revocation removes the kernel snapshot before making the mapping
+    /// writable, so later edits cannot affect active recovery records. If the
+    /// transition fails, the slab stays published and cannot be edited.
     ///
     /// # Errors
     ///

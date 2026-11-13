@@ -10,7 +10,13 @@ use crate::ffi::binding;
 
 use super::status;
 
-/// A proof that Catalejo's linked fault routines are published in this mm.
+/// A capability for the linked fault routines published in this address space.
+///
+/// # Lifetime
+///
+/// All threads in the address space use the same initialized backend, and fork
+/// gives the child an inherited publication. Handles can therefore be copied
+/// without creating additional exception contexts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backend(
     /// The process-lifetime C singleton inherited by fork children.
@@ -29,7 +35,9 @@ impl Backend {
     ///
     /// # Safety
     ///
-    /// `device` must be a descriptor created by Mirilla.
+    /// For soundness purposes, the following must be satisfied:
+    ///
+    /// * The provided descriptor must identify a Mirilla device.
     ///
     /// # Errors
     ///

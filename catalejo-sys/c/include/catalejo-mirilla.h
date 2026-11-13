@@ -15,7 +15,8 @@ extern "C" {
 /**
  * Engage a target process.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t catalejo_mirilla_engage(const int fd, const pid_t process_id,
                                                  mirilla_map_target_id_t *engage_id);
@@ -23,7 +24,8 @@ mirilla_command_status_t catalejo_mirilla_engage(const int fd, const pid_t proce
 /**
  * Disengage from a target process.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t catalejo_mirilla_disengage(const int fd,
                                                     mirilla_map_target_id_t target_id);
@@ -32,7 +34,8 @@ mirilla_command_status_t catalejo_mirilla_disengage(const int fd,
  * For an engaged target process, create a peephole at the specified virtual
  * memory range.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t
 catalejo_mirilla_peephole(int fd, mirilla_map_target_id_t target_id,
@@ -44,12 +47,12 @@ catalejo_mirilla_peephole(int fd, mirilla_map_target_id_t target_id,
  * For an engaged target process, retrieve the address space layout, the
  * kernel-resident auxiliary vector, and the argument/environment metadata.
  *
- * Each `mirilla_outside_list` is an in/out descriptor: the caller supplies the
- * backing buffer address, capacity and element size, and the kernel populates
- * up to the capacity and reports the full kernel-resident count through the
- * matching `mirilla_outside_list_outcome`.
+ * The caller describes each output buffer through a `mirilla_outside_list`. The kernel
+ * fills up to its capacity and reports the total available entry count through the
+ * matching `mirilla_outside_list_outcome`, allowing the caller to resize for another query.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t catalejo_mirilla_address_space_layout(
     int fd, mirilla_map_target_id_t target_id, struct mirilla_outside_list *layout_list,

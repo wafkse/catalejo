@@ -6,15 +6,18 @@ use core::ops::{Deref, DerefMut};
 
 use crate::ffi::binding::mirilla_id_t;
 
-/// A type alias to the identifier type for a engaged target.
+/// A kernel identifier for an engaged target.
 pub type TargetId = Id;
 
-/// A type alias to the identifier type for a peephole.
+/// A kernel identifier for a peephole.
 pub type PeepholeId = Id;
 
-/// An identifier managed by the module.
+/// A nonzero identifier for state owned by Mirilla.
 ///
-/// This is used to refer to any contextual structure held in the kernel for `mirilla`.
+/// # Notes
+///
+/// [`TargetId`] and [`PeepholeId`] are aliases of this type, so an identifier's
+/// resource kind and session membership must be tracked by its owner.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Id(pub NonZero<mirilla_id_t>);
@@ -46,7 +49,7 @@ const _: () = const {
     assert!(mem::size_of::<Option<Id>>() == mem::size_of::<binding::mirilla_id_t>());
     assert!(mem::align_of::<Option<Id>>() == mem::align_of::<binding::mirilla_id_t>());
 
-    // NOTE: Bogus, but better to be safe than sorry..
+    // The aliases must also match their corresponding ABI identifier widths.
 
     assert!(
         mem::size_of::<Option<TargetId>>() == mem::size_of::<binding::mirilla_map_target_id_t>()

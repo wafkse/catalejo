@@ -8,7 +8,8 @@
 /**
  * Engage a target process.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t catalejo_mirilla_engage(const int fd, const pid_t process_id,
                                                  mirilla_map_target_id_t *engage_id)
@@ -39,7 +40,8 @@ mirilla_command_status_t catalejo_mirilla_engage(const int fd, const pid_t proce
 /**
  * Disengage from a target process.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t catalejo_mirilla_disengage(const int fd, mirilla_map_target_id_t target_id)
 {
@@ -62,7 +64,8 @@ mirilla_command_status_t catalejo_mirilla_disengage(const int fd, mirilla_map_ta
 /**
  * For an engaged target process, create a peephole at the specified virtual memory range.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t
 catalejo_mirilla_peephole(const int fd, mirilla_map_target_id_t target_id,
@@ -101,7 +104,8 @@ catalejo_mirilla_peephole(const int fd, mirilla_map_target_id_t target_id,
  * For an engaged target process, retrieve the address space layout, the
  * kernel-resident auxiliary vector, and the argument/environment metadata.
  *
- * The provided file descriptor must be of the `mirilla` kernel module.
+ * @par Requirements
+ * The provided descriptor must identify a Mirilla device session.
  */
 mirilla_command_status_t
 catalejo_mirilla_address_space_layout(const int fd, mirilla_map_target_id_t target_id,

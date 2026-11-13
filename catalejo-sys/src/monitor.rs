@@ -27,7 +27,9 @@ pub enum MonitorError {
 
 /// Determine the runtime selected hardware monitor implementation.
 ///
-/// A [`None`] result requests a polling fallback from the caller.
+/// Selection checks processor support without arming an address. If no
+/// supported implementation is available, [`None`] lets callers choose polling
+/// before attempting to execute an optional instruction.
 #[inline]
 pub fn backend() -> Option<MonitorBackend> {
     // SAFETY: CPUID-backed monitor selection does not execute a protected monitor instruction.
@@ -51,10 +53,17 @@ pub fn backend() -> Option<MonitorBackend> {
 
 /// Arm the selected hardware monitor for an address.
 ///
+/// A successful result identifies the backend to pass to [`wait`] on this
+/// thread. Since instruction availability can differ from the initial feature
+/// check, callers must still handle [`MonitorError::Unsupported`] here.
+///
 /// # Safety
 ///
-/// The address must name suitable local memory and remain live through the matching [`wait`] call.
-/// The fault backend must be initialized before access.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The monitored address must identify suitable local memory whose mapping
+///   remains live through the matching [`wait`] call.
+/// * The recovery capability must belong to the current address space.
 #[inline]
 pub unsafe fn arm(
     _fault_backend: &Backend,
@@ -83,10 +92,19 @@ pub unsafe fn arm(
 
 /// Wait for one bounded interval with an armed hardware monitor.
 ///
+/// # Notes
+///
+/// A wake does not establish that the monitored value changed. Read it again
+/// after waiting, then re-arm if another wait is needed.
+///
 /// # Safety
 ///
-/// The backend must come from the immediately preceding successful [`arm`] call on this thread.
-/// The monitored mapping must remain live. The fault backend must be initialized.
+/// For soundness purposes, the following must be satisfied:
+///
+/// * The selected monitor implementation must come from the immediately
+///   preceding successful [`arm`] call on this thread.
+/// * The monitored mapping must remain live through the wait.
+/// * The recovery capability must belong to the current address space.
 #[inline]
 pub unsafe fn wait(_fault_backend: &Backend, backend: MonitorBackend) -> Result<(), MonitorError> {
     let backend = match backend {

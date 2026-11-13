@@ -52,10 +52,13 @@ typedef struct {
 /**
  * Emit a rollback record from a basic inline-assembly template.
  *
- * The three addresses are assembly expressions supplied as string literals. Each displacement is
- * evaluated relative to its own 8-byte field. The allocated GNU-retained (applies `SHF_GNU_RETAIN`,
- * see https://maskray.me/blog/2021-02-28-linker-garbage-collection#gnu-ld) section remains
- * available to the built-in record loader even when linker garbage collection is enabled.
+ * @par Representation
+ * Supply the three addresses as assembly-expression string literals. The assembler encodes
+ * each as a displacement from its own 8-byte field, allowing the loader to resolve the record
+ * after relocation. The section uses `SHF_GNU_RETAIN` so linker garbage collection cannot
+ * remove records that the built-in loader still needs.
+ *
+ * See https://maskray.me/blog/2021-02-28-linker-garbage-collection#gnu-ld for linker support.
  */
 // clang-format off
 #define CATALEJO_ROLLBACK_RECORD(target_start, target_end, target_rollback, target_exception_mask) \

@@ -48,11 +48,10 @@ extern catalejo_outcome_t catalejo_monitor_wait(catalejo_monitor_backend_t targe
 /**
  * X-macro for the fault routines.
  *
- * NOTE: The "up-size" (the 32-bit register window) register is used to
- * unconditionally zero-extend the register, even if we are performing a much
- * smaller load or store where the processor does not perform automatic
- * zero-extension due to legacy concerns. This also manages to break a pipeline
- * dependency.
+ * @par Register initialization
+ * Each entry supplies both the access-width register and its 32-bit form. Clearing the
+ * 32-bit register zeroes its upper half too, so narrower loads begin with a known register
+ * value and do not depend on the result of a previous instruction.
  */
 #define CATALEJO_FAULT_ROUTINE_SPECIFICATION \
     X(u64, uint64_t, movq, rcx, ecx)         \
@@ -131,14 +130,17 @@ typedef struct catalejo_faultable_copy_outcome {
     catalejo_outcome_t outcome_status;
 
     /**
-   * The count of affected bytes, depending on the operation performed.
+   * The number of bytes left uncopied, or zero after a successful copy.
    */
     // NOTE(invariant): This should be contained in the `%rdx` register.
     size_t byte_count;
 } catalejo_faultable_copy_outcome_t;
 
 /**
- * Perform a bulk-copy that is fault-protected.
+ * Copy bytes while recovering supported faults on the source or destination.
+ *
+ * On failure, the returned byte count identifies the suffix left uncopied, so the caller can
+ * use the initialized destination prefix. Success reports zero bytes remaining.
  */
 extern catalejo_faultable_copy_outcome_t catalejo_copy(CATALEJO_UNUSED uint8_t *target_address,
                                                        CATALEJO_UNUSED const uint8_t *target_source,
