@@ -87,7 +87,7 @@ Catalejo exposes target memory through revocable mappings called *peepholes*.
 
 Each peephole maps a page-aligned region of a target process into the observer's address space. The mapping initially contains no resident aliases.
 
-On first access, the in-tree kernel module resolves the target address and maps the corresponding physical frame into the observer. Subsequent resident accesses use local memory operations.
+On first access, Mirilla resolves the target address and maps the corresponding physical frame into the observer. Subsequent resident accesses use local memory operations.
 
 When the target changes its mappings, MMU interval notifiers trigger invalidation of the observer's aliases.
 
@@ -163,7 +163,11 @@ Building the project requires:
 - Linux kernel headers matching the target kernel.
 - A kernel supporting loadable modules.
 
-Running Catalejo requires permission to access the device exposed by its kernel module.
+The test recipes additionally require `just`. Running `just test` requires `rustfmt`, `clippy`, `clang-format`, `clangd`, and `bear` for its Rust and C lint checks. 
+
+Note that VM-based tests require `virtme-ng` and a prepared kernel tree, with `CONFIG_KUNIT=y` for KUnit.
+
+Running Catalejo requires permission to access the relevant character device exposed by its kernel module.
 
 ### From source
 
@@ -202,7 +206,7 @@ Secure Boot or kernel module signature enforcement may require signing the modul
 ## Known limitations
 
 - Only Linux `x86_64` is currently supported.
-- The in-tree kernel module must be built and loaded before device-backed access.
+- The bundled Mirilla kernel module must be built and loaded before device-backed access.
 - Catalejo does not create atomic snapshots of target processes.
 - Concurrent writes can produce inconsistent or torn observations.
 - Access does not establish synchronization with the target process.
