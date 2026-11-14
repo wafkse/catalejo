@@ -78,3 +78,6 @@ Because the published records are inherited, a child can use the inherited
 fault backend without initializing it again. If the kernel cannot allocate
 child slab storage during fork, the inherited range instead faults with
 `SIGBUS` when accessed.
+
+For caller obligations, recovery-table misuse cases, and intentional kernel/ABI
+constraints, see the [exception recovery contract](../docs/exception-recovery-contract.md).
